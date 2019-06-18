@@ -366,6 +366,7 @@ public:
 
   std::vector<StringRef> DtNeeded;
   std::string SoName;
+  uint64_t CheriFlags = 0;
 
   static bool classof(const InputFile *F) { return F->kind() == SharedKind; }
 
