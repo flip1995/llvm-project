@@ -1488,7 +1488,7 @@ template <class ELFT> void DynamicSection<ELFT>::finalizeContents() {
     }
     // CHeck that we didn't link incompatible libraries:
     for (InputFile *File : SharedFiles) {
-      SharedFile<ELFT> *F = cast<SharedFile<ELFT>>(File);
+      auto *F = cast<SharedFile>(File);
       // Add an e_flags check here for CHERI-MIPS to avoid linking between
       // incompatible libraries:
       if (F->IsNeeded)
