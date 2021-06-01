@@ -16,11 +16,10 @@
 #include "llvm/MC/MCObjectFileInfo.h"
 
 namespace llvm {
-class Triple;
 
 class RISCVMCObjectFileInfo : public MCObjectFileInfo {
 public:
-  unsigned getTextSectionAlignment() const;
+  unsigned getTextSectionAlignment() const override;
 };
 
 } // namespace llvm
