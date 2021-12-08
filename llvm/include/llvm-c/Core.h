@@ -2288,6 +2288,15 @@ void LLVMGlobalSetMetadata(LLVMValueRef Global, unsigned Kind,
                            LLVMMetadataRef MD);
 
 /**
+ * Adds a metadata attachment, without erasing the existing metadata attachment
+ * if it already exists for the given kind.
+ *
+ * @see llvm::GlobalObject::addMetadata()
+ */
+void LLVMGlobalAddMetadata(LLVMValueRef Global, unsigned Kind,
+                           LLVMMetadataRef MD);
+
+/**
  * Erases a metadata attachment of the given kind if it exists.
  *
  * @see llvm::GlobalObject::eraseMetadata()
