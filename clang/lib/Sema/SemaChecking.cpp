@@ -1,9 +1,8 @@
 //===- SemaChecking.cpp - Extra Semantic Checking -------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -1178,6 +1177,7 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     if (SemaBuiltinAssumeAligned(TheCall))
       return ExprError();
     break;
+  case Builtin::BI__builtin_dynamic_object_size:
   case Builtin::BI__builtin_object_size:
     if (SemaBuiltinConstantArgRange(TheCall, 1, 0, 3))
       return ExprError();
@@ -2727,8 +2727,8 @@ bool Sema::CheckHexagonBuiltinCpu(unsigned BuiltinID, CallExpr *TheCall) {
     return LHS.BuiltinID < RHS.BuiltinID;
   };
   static const bool SortOnce =
-      (std::sort(std::begin(ValidCPU), std::end(ValidCPU), SortCmp),
-       std::sort(std::begin(ValidHVX), std::end(ValidHVX), SortCmp), true);
+      (llvm::sort(ValidCPU, SortCmp),
+       llvm::sort(ValidHVX, SortCmp), true);
   (void)SortOnce;
   auto LowerBoundCmp = [](const BuiltinAndString &BI, unsigned BuiltinID) {
     return BI.BuiltinID < BuiltinID;
@@ -2977,7 +2977,7 @@ bool Sema::CheckHexagonBuiltinArgument(unsigned BuiltinID, CallExpr *TheCall) {
   // Use a dynamically initialized static to sort the table exactly once on
   // first run.
   static const bool SortOnce =
-      (std::sort(std::begin(Infos), std::end(Infos),
+      (llvm::sort(Infos,
                  [](const BuiltinInfo &LHS, const BuiltinInfo &RHS) {
                    return LHS.BuiltinID < RHS.BuiltinID;
                  }),
@@ -7778,7 +7778,8 @@ CheckPrintfHandler::HandlePrintfSpecifier(const analyze_printf::PrintfSpecifier
             startSpecifier, specifierLen);
 
   // Check the length modifier is valid with the given conversion specifier.
-  if (!FS.hasValidLengthModifier(S.getASTContext().getTargetInfo()))
+  if (!FS.hasValidLengthModifier(S.getASTContext().getTargetInfo(),
+                                 S.getLangOpts()))
     HandleInvalidLengthModifier(FS, CS, startSpecifier, specifierLen,
                                 diag::warn_format_nonsensical_length);
   else if (!FS.hasStandardLengthModifier())
@@ -8282,7 +8283,8 @@ bool CheckScanfHandler::HandleScanfSpecifier(
   }
 
   // Check the length modifier is valid with the given conversion specifier.
-  if (!FS.hasValidLengthModifier(S.getASTContext().getTargetInfo()))
+  if (!FS.hasValidLengthModifier(S.getASTContext().getTargetInfo(),
+                                 S.getLangOpts()))
     HandleInvalidLengthModifier(FS, CS, startSpecifier, specifierLen,
                                 diag::warn_format_nonsensical_length);
   else if (!FS.hasStandardLengthModifier())
@@ -9299,23 +9301,23 @@ void Sema::CheckMemaccessArguments(const CallExpr *Call,
             getContainedDynamicClass(PointeeTy, IsContained)) {
 
       unsigned OperationType = 0;
+      const bool IsCmp = BId == Builtin::BImemcmp || BId == Builtin::BIbcmp;
       // "overwritten" if we're warning about the destination for any call
       // but memcmp; otherwise a verb appropriate to the call.
-      if (ArgIdx != 0 || BId == Builtin::BImemcmp) {
+      if (ArgIdx != 0 || IsCmp) {
         if (BId == Builtin::BImemcpy)
           OperationType = 1;
         else if(BId == Builtin::BImemmove)
           OperationType = 2;
-        else if (BId == Builtin::BImemcmp)
+        else if (IsCmp)
           OperationType = 3;
       }
 
-      DiagRuntimeBehavior(
-        Dest->getExprLoc(), Dest,
-        PDiag(diag::warn_dyn_class_memaccess)
-          << (BId == Builtin::BImemcmp ? ArgIdx + 2 : ArgIdx)
-          << FnName << IsContained << ContainedRD << OperationType
-          << Call->getCallee()->getSourceRange());
+      DiagRuntimeBehavior(Dest->getExprLoc(), Dest,
+                          PDiag(diag::warn_dyn_class_memaccess)
+                              << (IsCmp ? ArgIdx + 2 : ArgIdx) << FnName
+                              << IsContained << ContainedRD << OperationType
+                              << Call->getCallee()->getSourceRange());
     } else if (PointeeTy.hasNonTrivialObjCLifetime() &&
              BId != Builtin::BImemset)
       DiagRuntimeBehavior(
@@ -10762,16 +10764,18 @@ static void AnalyzeCompoundAssignment(Sema &S, BinaryOperator *E) {
   // The below checks assume source is floating point.
   if (!ResultBT || !RBT || !RBT->isFloatingPoint()) return;
 
-  // If source is floating point but target is not.
-  if (!ResultBT->isFloatingPoint())
-    return DiagnoseFloatingImpCast(S, E, E->getRHS()->getType(),
-                                   E->getExprLoc());
+  // If source is floating point but target is an integer.
+  if (ResultBT->isInteger())
+    return DiagnoseImpCast(S, E, E->getRHS()->getType(), E->getLHS()->getType(),
+                           E->getExprLoc(), diag::warn_impcast_float_integer);
 
-  // If both source and target are floating points.
-  // Builtin FP kinds are ordered by increasing FP rank.
-  if (ResultBT->getKind() < RBT->getKind() &&
-      // We don't want to warn for system macro.
-      !S.SourceMgr.isInSystemMacro(E->getOperatorLoc()))
+  if (!ResultBT->isFloatingPoint())
+    return;
+
+  // If both source and target are floating points, warn about losing precision.
+  int Order = S.getASTContext().getFloatingTypeSemanticOrder(
+      QualType(ResultBT, 0), QualType(RBT, 0));
+  if (Order < 0 && !S.SourceMgr.isInSystemMacro(E->getOperatorLoc()))
     // warn about dropping FP rank.
     DiagnoseImpCast(S, E->getRHS(), E->getLHS()->getType(), E->getOperatorLoc(),
                     diag::warn_impcast_float_result_precision);
@@ -11090,8 +11094,9 @@ CheckImplicitConversion(Sema &S, Expr *E, QualType T, SourceLocation CC,
     if (TargetBT && TargetBT->isFloatingPoint()) {
       // ...then warn if we're dropping FP rank.
 
-      // Builtin FP kinds are ordered by increasing FP rank.
-      if (SourceBT->getKind() > TargetBT->getKind()) {
+      int Order = S.getASTContext().getFloatingTypeSemanticOrder(
+          QualType(SourceBT, 0), QualType(TargetBT, 0));
+      if (Order > 0) {
         // Don't warn about float constants that are precisely
         // representable in the target type.
         Expr::EvalResult result;
@@ -11109,7 +11114,7 @@ CheckImplicitConversion(Sema &S, Expr *E, QualType T, SourceLocation CC,
         DiagnoseImpCast(S, E, T, CC, diag::warn_impcast_float_precision);
       }
       // ... or possibly if we're increasing rank, too
-      else if (TargetBT->getKind() > SourceBT->getKind()) {
+      else if (Order < 0) {
         if (S.SourceMgr.isInSystemMacro(CC))
           return;
 
@@ -11151,6 +11156,28 @@ CheckImplicitConversion(Sema &S, Expr *E, QualType T, SourceLocation CC,
       }
     }
     return;
+  }
+
+  if (Source->isFixedPointType()) {
+    // TODO: Only CK_FixedPointCast is supported now. The other valid casts
+    // should be accounted for here.
+    if (Target->isFixedPointType()) {
+      Expr::EvalResult Result;
+      if (E->EvaluateAsFixedPoint(Result, S.Context,
+                                  Expr::SE_AllowSideEffects)) {
+        APFixedPoint Value = Result.Val.getFixedPoint();
+        APFixedPoint MaxVal = S.Context.getFixedPointMax(T);
+        APFixedPoint MinVal = S.Context.getFixedPointMin(T);
+        if (Value > MaxVal || Value < MinVal) {
+          S.DiagRuntimeBehavior(E->getExprLoc(), E,
+                                S.PDiag(diag::warn_impcast_fixed_point_range)
+                                    << Value.toString() << T
+                                    << E->getSourceRange()
+                                    << clang::SourceRange(CC));
+          return;
+        }
+      }
+    }
   }
 
   DiagnoseNullConversion(S, E, T, CC);
@@ -11781,12 +11808,12 @@ class SequenceChecker : public EvaluatedExprVisitor<SequenceChecker> {
     class Seq {
       friend class SequenceTree;
 
-      unsigned Index = 0;
+      unsigned Index;
 
       explicit Seq(unsigned N) : Index(N) {}
 
     public:
-      Seq() = default;
+      Seq() : Index(0) {}
     };
 
     SequenceTree() { Values.push_back(Value(0)); }
@@ -11850,19 +11877,19 @@ class SequenceChecker : public EvaluatedExprVisitor<SequenceChecker> {
   };
 
   struct Usage {
-    Expr *Use = nullptr;
+    Expr *Use;
     SequenceTree::Seq Seq;
 
-    Usage() = default;
+    Usage() : Use(nullptr), Seq() {}
   };
 
   struct UsageInfo {
     Usage Uses[UK_Count];
 
     /// Have we issued a diagnostic for this variable already?
-    bool Diagnosed = false;
+    bool Diagnosed;
 
-    UsageInfo() = default;
+    UsageInfo() : Uses(), Diagnosed(false) {}
   };
   using UsageInfoMap = llvm::SmallDenseMap<Object, UsageInfo, 16>;
 
@@ -12048,30 +12075,42 @@ public:
       notePostUse(O, E);
   }
 
+  void VisitSequencedExpressions(Expr *SequencedBefore, Expr *SequencedAfter) {
+    SequenceTree::Seq BeforeRegion = Tree.allocate(Region);
+    SequenceTree::Seq AfterRegion = Tree.allocate(Region);
+    SequenceTree::Seq OldRegion = Region;
+
+    {
+      SequencedSubexpression SeqBefore(*this);
+      Region = BeforeRegion;
+      Visit(SequencedBefore);
+    }
+
+    Region = AfterRegion;
+    Visit(SequencedAfter);
+
+    Region = OldRegion;
+
+    Tree.merge(BeforeRegion);
+    Tree.merge(AfterRegion);
+  }
+
+  void VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
+    // C++17 [expr.sub]p1:
+    //   The expression E1[E2] is identical (by definition) to *((E1)+(E2)). The
+    //   expression E1 is sequenced before the expression E2.
+    if (SemaRef.getLangOpts().CPlusPlus17)
+      VisitSequencedExpressions(ASE->getLHS(), ASE->getRHS());
+    else
+      Base::VisitStmt(ASE);
+  }
+
   void VisitBinComma(BinaryOperator *BO) {
     // C++11 [expr.comma]p1:
     //   Every value computation and side effect associated with the left
     //   expression is sequenced before every value computation and side
     //   effect associated with the right expression.
-    SequenceTree::Seq LHS = Tree.allocate(Region);
-    SequenceTree::Seq RHS = Tree.allocate(Region);
-    SequenceTree::Seq OldRegion = Region;
-
-    {
-      SequencedSubexpression SeqLHS(*this);
-      Region = LHS;
-      Visit(BO->getLHS());
-    }
-
-    Region = RHS;
-    Visit(BO->getRHS());
-
-    Region = OldRegion;
-
-    // Forget that LHS and RHS are sequenced. They are both unsequenced
-    // with respect to other stuff.
-    Tree.merge(LHS);
-    Tree.merge(RHS);
+    VisitSequencedExpressions(BO->getLHS(), BO->getRHS());
   }
 
   void VisitBinAssign(BinaryOperator *BO) {
@@ -12523,12 +12562,6 @@ void Sema::CheckArrayAccess(const Expr *BaseExpr, const Expr *IndexExpr,
     return;
 
   const Type *BaseType = ArrayTy->getElementType().getTypePtr();
-  // It is possible that the type of the base expression after IgnoreParenCasts
-  // is incomplete, even though the type of the base expression before
-  // IgnoreParenCasts is complete (see PR39746 for an example). In this case we
-  // have no information about whether the array access is out-of-bounds.
-  if (BaseType->isIncompleteType())
-    return;
 
   Expr::EvalResult Result;
   if (!IndexExpr->EvaluateAsInt(Result, Context, Expr::SE_AllowSideEffects))
@@ -12545,6 +12578,15 @@ void Sema::CheckArrayAccess(const Expr *BaseExpr, const Expr *IndexExpr,
     ND = ME->getMemberDecl();
 
   if (index.isUnsigned() || !index.isNegative()) {
+    // It is possible that the type of the base expression after
+    // IgnoreParenCasts is incomplete, even though the type of the base
+    // expression before IgnoreParenCasts is complete (see PR39746 for an
+    // example). In this case we have no information about whether the array
+    // access exceeds the array bounds. However we can still diagnose an array
+    // access which precedes the array bounds.
+    if (BaseType->isIncompleteType())
+      return;
+
     llvm::APInt size = ArrayTy->getSize();
     if (!size.isStrictlyPositive())
       return;

@@ -1,9 +1,8 @@
 //===- Relocations.h -------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,23 +29,9 @@ typedef uint32_t RelType;
 // from files are converted to these types so that the main code
 // doesn't have to know about architecture-specific details.
 enum RelExpr {
-  R_INVALID,
   R_ABS,
   R_ADDEND,
-  R_AARCH64_GOT_PAGE_PC,
-  // The expression is used for IFUNC support. Describes PC-relative
-  // address of the memory page of GOT entry. This entry is used for
-  // a redirection to IPLT.
-  R_AARCH64_GOT_PAGE_PC_PLT,
-  R_AARCH64_RELAX_TLS_GD_TO_IE_PAGE_PC,
-  R_AARCH64_PAGE_PC,
-  R_AARCH64_PLT_PAGE_PC,
-  R_AARCH64_TLSDESC_PAGE,
-  R_ARM_SBREL,
   R_GOT,
-  // The expression is used for IFUNC support. Evaluates to GOT entry,
-  // containing redirection to the IPLT.
-  R_GOT_PLT,
   R_GOTONLY_PC,
   R_GOTONLY_PC_FROM_END,
   R_GOTREL,
@@ -54,24 +39,12 @@ enum RelExpr {
   R_GOT_FROM_END,
   R_GOT_OFF,
   R_GOT_PC,
-  R_HEXAGON_GOT,
   R_HINT,
-  R_MIPS_GOTREL,
-  R_MIPS_GOT_GP,
-  R_MIPS_GOT_GP_PC,
-  R_MIPS_GOT_LOCAL_PAGE,
-  R_MIPS_GOT_OFF,
-  R_MIPS_GOT_OFF32,
-  R_MIPS_TLSGD,
-  R_MIPS_TLSLD,
   R_NEG_TLS,
   R_NONE,
   R_PC,
   R_PLT,
   R_PLT_PC,
-  R_PPC_CALL,
-  R_PPC_CALL_PLT,
-  R_PPC_TOC,
   R_RELAX_GOT_PC,
   R_RELAX_GOT_PC_NOPIC,
   R_RELAX_TLS_GD_TO_IE,
@@ -83,7 +56,6 @@ enum RelExpr {
   R_RELAX_TLS_IE_TO_LE,
   R_RELAX_TLS_LD_TO_LE,
   R_RELAX_TLS_LD_TO_LE_ABS,
-  R_RISCV_PC_INDIRECT,
   R_SIZE,
   R_TLS,
   R_TLSDESC,
@@ -97,6 +69,30 @@ enum RelExpr {
   R_TLSLD_GOT_OFF,
   R_TLSLD_HINT,
   R_TLSLD_PC,
+
+  // The following is abstract relocation types used for only one target.
+  //
+  // Even though RelExpr is intended to be a target-neutral representation
+  // of a relocation type, there are some relocations whose semantics are
+  // unique to a target. Such relocation are marked with R_<TARGET_NAME>.
+  R_AARCH64_GOT_PAGE_PC,
+  R_AARCH64_PAGE_PC,
+  R_AARCH64_RELAX_TLS_GD_TO_IE_PAGE_PC,
+  R_AARCH64_TLSDESC_PAGE,
+  R_ARM_SBREL,
+  R_HEXAGON_GOT,
+  R_MIPS_GOTREL,
+  R_MIPS_GOT_GP,
+  R_MIPS_GOT_GP_PC,
+  R_MIPS_GOT_LOCAL_PAGE,
+  R_MIPS_GOT_OFF,
+  R_MIPS_GOT_OFF32,
+  R_MIPS_TLSGD,
+  R_MIPS_TLSLD,
+  R_PPC_CALL,
+  R_PPC_CALL_PLT,
+  R_PPC_TOC,
+  R_RISCV_PC_INDIRECT,
   R_CHERI_CAPABILITY_TABLE_INDEX,
   R_CHERI_CAPABILITY_TABLE_INDEX_SMALL_IMMEDIATE,
   R_CHERI_CAPABILITY_TABLE_REL, // relative offset to _CHERI_CAPABILITY_TABLE_
@@ -109,55 +105,18 @@ enum RelExpr {
   // expression matches one on many possible options. This initially worked
   // for all members of RelExpr, but lately we have come close to the limit of
   // 64 entries in the RelExpr enum. If a given RelExpr is not used in a
-  // isRelExprOneOf() check with many possibly options, it should be placed
-  // at the end of the enum after whatever LAST_REL_EXPR_USED_IN_isRelExprOneOf
-  // aliases so that the available 64 bits can be used by other more common
-  // expressions. We can also skip the first few relocations.
+  // oneof() check with many possibly options, it should be placed at the end
+  // of the enum after whatever LAST_REL_EXPR_USED_IN_oneof aliases so that the
+  // available 64 bits can be used by other more common expressions. We can
+  // also skip the first few relocations.
   // TODO: If we end up neededing many more expressions we could also start
   // using two 64-bit masking operations
-  FIRST_REL_EXPR_USED_IN_isRelExprOneOf = R_AARCH64_GOT_PAGE_PC,
-  LAST_REL_EXPR_USED_IN_isRelExprOneOf = R_CHERI_CAPABILITY_TABLE_REL,
+  FIRST_REL_EXPR_USED_IN_oneof = R_AARCH64_GOT_PAGE_PC,
+  LAST_REL_EXPR_USED_IN_oneof = R_CHERI_CAPABILITY_TABLE_REL,
 };
 
-static_assert((LAST_REL_EXPR_USED_IN_isRelExprOneOf -
-               FIRST_REL_EXPR_USED_IN_isRelExprOneOf) < 64,
+static_assert((LAST_REL_EXPR_USED_IN_oneof - FIRST_REL_EXPR_USED_IN_oneof) < 64,
               "RelExpr is too large for 64-bit mask!");
-
-// Build a bitmask with one bit set for each RelExpr.
-//
-// Constexpr function arguments can't be used in static asserts, so we
-// use template arguments to build the mask.
-// But function template partial specializations don't exist (needed
-// for base case of the recursion), so we need a dummy struct.
-template <RelExpr... Exprs> struct RelExprMaskBuilder {
-  static inline uint64_t build() { return 0; }
-};
-
-// Specialization for recursive case.
-template <RelExpr Head, RelExpr... Tail>
-struct RelExprMaskBuilder<Head, Tail...> {
-  static inline uint64_t build() {
-    static_assert(0 <= Head - FIRST_REL_EXPR_USED_IN_isRelExprOneOf &&
-                  Head - FIRST_REL_EXPR_USED_IN_isRelExprOneOf < 64,
-                  "RelExpr is too large for 64-bit mask!");
-    return (uint64_t(1) << (Head - FIRST_REL_EXPR_USED_IN_isRelExprOneOf)) |
-        RelExprMaskBuilder<Tail...>::build();
-  }
-};
-
-// Return true if `Expr` is one of `Exprs`.
-// There are fewer than 64 RelExpr's, so we can represent any set of
-// RelExpr's as a constant bit mask and test for membership with a
-// couple cheap bitwise operations.
-template <RelExpr... Exprs> bool isRelExprOneOf(RelExpr Expr) {
-  if (Expr < FIRST_REL_EXPR_USED_IN_isRelExprOneOf ||
-      Expr > LAST_REL_EXPR_USED_IN_isRelExprOneOf)
-    return false;
-  unsigned Bit = (unsigned)Expr - FIRST_REL_EXPR_USED_IN_isRelExprOneOf;
-  assert(0 <= Bit && Bit < 64 &&
-         "RelExpr is too large for 64-bit mask!");
-  return (uint64_t(1) << Bit) & RelExprMaskBuilder<Exprs...>::build();
-}
 
 // Architecture-neutral representation of relocation.
 struct Relocation {
@@ -168,22 +127,9 @@ struct Relocation {
   Symbol *Sym;
 };
 
-struct RelocationOffsetComparator {
-  bool operator()(const Relocation &Lhs, const Relocation &Rhs) {
-    return Lhs.Offset < Rhs.Offset;
-  }
-
-  // For std::lower_bound, std::upper_bound, std::equal_range.
-  bool operator()(const Relocation &Rel, uint64_t Val) {
-    return Rel.Offset < Val;
-  }
-
-  bool operator()(uint64_t Val, const Relocation &Rel) {
-    return Val < Rel.Offset;
-  }
-};
-
 template <class ELFT> void scanRelocations(InputSectionBase &);
+
+void addIRelativeRelocs();
 
 class ThunkSection;
 class Thunk;

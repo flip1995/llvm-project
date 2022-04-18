@@ -54,6 +54,7 @@ add_lldb_library(lldbUtility
   DataEncoder.cpp
   DataExtractor.cpp
   Environment.cpp
+  FileCollector.cpp
   Event.cpp
   FileSpec.cpp
   IOObject.cpp
@@ -63,10 +64,10 @@ add_lldb_library(lldbUtility
   Log.cpp
   Logging.cpp
   NameMatches.cpp
-  Range.cpp
   RegisterValue.cpp
   RegularExpression.cpp
   Reproducer.cpp
+  ReproducerInstrumentation.cpp
   Scalar.cpp
   SelectHelper.cpp
   SharingPtr.cpp

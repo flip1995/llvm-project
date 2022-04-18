@@ -1,9 +1,8 @@
 //===--- MicrosoftCXXABI.cpp - Emit LLVM Code from ASTs for a Module ------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -27,7 +26,6 @@
 #include "clang/AST/VTableBuilder.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Intrinsics.h"
 
 using namespace clang;
@@ -396,7 +394,8 @@ public:
                        llvm::GlobalVariable *DeclPtr,
                        bool PerformInit) override;
   void registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
-                          llvm::Constant *Dtor, llvm::Constant *Addr) override;
+                          llvm::FunctionCallee Dtor,
+                          llvm::Constant *Addr) override;
 
   // ==== Notes on array cookies =========
   //
@@ -735,7 +734,7 @@ public:
     return ThrowInfoType;
   }
 
-  llvm::Constant *getThrowFn() {
+  llvm::FunctionCallee getThrowFn() {
     // _CxxThrowException is passed an exception object and a ThrowInfo object
     // which describes the exception.
     unsigned DefaultAS = CGM.getTargetCodeGenInfo().getDefaultAS();
@@ -745,12 +744,14 @@ public:
     };
     llvm::FunctionType *FTy =
         llvm::FunctionType::get(CGM.VoidTy, Args, /*IsVarArgs=*/false);
-    auto *Fn = cast<llvm::Function>(
-        CGM.CreateRuntimeFunction(FTy, "_CxxThrowException"));
+    llvm::FunctionCallee Throw =
+        CGM.CreateRuntimeFunction(FTy, "_CxxThrowException");
     // _CxxThrowException is stdcall on 32-bit x86 platforms.
-    if (CGM.getTarget().getTriple().getArch() == llvm::Triple::x86)
-      Fn->setCallingConv(llvm::CallingConv::X86_StdCall);
-    return Fn;
+    if (CGM.getTarget().getTriple().getArch() == llvm::Triple::x86) {
+      if (auto *Fn = cast<llvm::Function>(Throw.getCallee()))
+        Fn->setCallingConv(llvm::CallingConv::X86_StdCall);
+    }
+    return Throw;
   }
 
   llvm::Function *getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
@@ -867,7 +868,7 @@ void MicrosoftCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
   llvm::Value *Args[] = {
       llvm::ConstantPointerNull::get(CGM.Int8PtrTy),
       llvm::ConstantPointerNull::get(getThrowInfoType()->getPointerTo(DefaultAS))};
-  auto *Fn = getThrowFn();
+  llvm::FunctionCallee Fn = getThrowFn();
   if (isNoReturn)
     CGF.EmitNoreturnRuntimeCallOrInvoke(Fn, Args);
   else
@@ -941,20 +942,20 @@ bool MicrosoftCXXABI::shouldTypeidBeNullChecked(bool IsDeref,
          !getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr();
 }
 
-static llvm::CallSite emitRTtypeidCall(CodeGenFunction &CGF,
-                                       llvm::Value *Argument) {
+static llvm::CallBase *emitRTtypeidCall(CodeGenFunction &CGF,
+                                        llvm::Value *Argument) {
   llvm::Type *ArgTypes[] = {CGF.Int8PtrTy};
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(CGF.Int8PtrTy, ArgTypes, false);
   llvm::Value *Args[] = {Argument};
-  llvm::Constant *Fn = CGF.CGM.CreateRuntimeFunction(FTy, "__RTtypeid");
+  llvm::FunctionCallee Fn = CGF.CGM.CreateRuntimeFunction(FTy, "__RTtypeid");
   return CGF.EmitRuntimeCallOrInvoke(Fn, Args);
 }
 
 void MicrosoftCXXABI::EmitBadTypeidCall(CodeGenFunction &CGF) {
-  llvm::CallSite Call =
+  llvm::CallBase *Call =
       emitRTtypeidCall(CGF, llvm::Constant::getNullValue(CGM.VoidPtrTy));
-  Call.setDoesNotReturn();
+  Call->setDoesNotReturn();
   CGF.Builder.CreateUnreachable();
 }
 
@@ -964,7 +965,7 @@ llvm::Value *MicrosoftCXXABI::EmitTypeid(CodeGenFunction &CGF,
                                          llvm::Type *StdTypeInfoPtrTy) {
   std::tie(ThisPtr, std::ignore, std::ignore) =
       performBaseAdjustment(CGF, ThisPtr, SrcRecordTy);
-  auto Typeid = emitRTtypeidCall(CGF, ThisPtr.getPointer()).getInstruction();
+  llvm::CallBase *Typeid = emitRTtypeidCall(CGF, ThisPtr.getPointer());
   return CGF.Builder.CreateBitCast(Typeid, StdTypeInfoPtrTy);
 }
 
@@ -999,13 +1000,13 @@ llvm::Value *MicrosoftCXXABI::EmitDynamicCastCall(
   //   BOOL isReference)
   llvm::Type *ArgTypes[] = {CGF.Int8PtrTy, CGF.Int32Ty, CGF.Int8PtrTy,
                             CGF.Int8PtrTy, CGF.Int32Ty};
-  llvm::Constant *Function = CGF.CGM.CreateRuntimeFunction(
+  llvm::FunctionCallee Function = CGF.CGM.CreateRuntimeFunction(
       llvm::FunctionType::get(CGF.Int8PtrTy, ArgTypes, false),
       "__RTDynamicCast");
   llvm::Value *Args[] = {
       ThisPtr, Offset, SrcRTTI, DestRTTI,
       llvm::ConstantInt::get(CGF.Int32Ty, DestTy->isReferenceType())};
-  ThisPtr = CGF.EmitRuntimeCallOrInvoke(Function, Args).getInstruction();
+  ThisPtr = CGF.EmitRuntimeCallOrInvoke(Function, Args);
   return CGF.Builder.CreateBitCast(ThisPtr, DestLTy);
 }
 
@@ -1019,7 +1020,7 @@ MicrosoftCXXABI::EmitDynamicCastToVoid(CodeGenFunction &CGF, Address Value,
   // PVOID __RTCastToVoid(
   //   PVOID inptr)
   llvm::Type *ArgTypes[] = {CGF.Int8PtrTy};
-  llvm::Constant *Function = CGF.CGM.CreateRuntimeFunction(
+  llvm::FunctionCallee Function = CGF.CGM.CreateRuntimeFunction(
       llvm::FunctionType::get(CGF.Int8PtrTy, ArgTypes, false),
       "__RTCastToVoid");
   llvm::Value *Args[] = {Value.getPointer()};
@@ -2012,7 +2013,7 @@ MicrosoftCXXABI::EmitVirtualMemPtrThunk(const CXXMethodDecl *MD,
   llvm::Value *Callee =
     CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
 
-  CGF.EmitMustTailThunk(MD, getThisValue(CGF), Callee);
+  CGF.EmitMustTailThunk(MD, getThisValue(CGF), {ThunkTy, Callee});
 
   return ThunkFn;
 }
@@ -2238,7 +2239,7 @@ Address MicrosoftCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
 }
 
 static void emitGlobalDtorWithTLRegDtor(CodeGenFunction &CGF, const VarDecl &VD,
-                                        llvm::Constant *Dtor,
+                                        llvm::FunctionCallee Dtor,
                                         llvm::Constant *Addr) {
   // Create a function which calls the destructor.
   llvm::Constant *DtorStub = CGF.createAtExitStub(VD, Dtor, Addr);
@@ -2247,16 +2248,17 @@ static void emitGlobalDtorWithTLRegDtor(CodeGenFunction &CGF, const VarDecl &VD,
   llvm::FunctionType *TLRegDtorTy = llvm::FunctionType::get(
       CGF.IntTy, DtorStub->getType(), /*IsVarArg=*/false);
 
-  llvm::Constant *TLRegDtor = CGF.CGM.CreateRuntimeFunction(
+  llvm::FunctionCallee TLRegDtor = CGF.CGM.CreateRuntimeFunction(
       TLRegDtorTy, "__tlregdtor", llvm::AttributeList(), /*Local=*/true);
-  if (llvm::Function *TLRegDtorFn = dyn_cast<llvm::Function>(TLRegDtor))
+  if (llvm::Function *TLRegDtorFn =
+          dyn_cast<llvm::Function>(TLRegDtor.getCallee()))
     TLRegDtorFn->setDoesNotThrow();
 
   CGF.EmitNounwindRuntimeCall(TLRegDtor, DtorStub);
 }
 
 void MicrosoftCXXABI::registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
-                                         llvm::Constant *Dtor,
+                                         llvm::FunctionCallee Dtor,
                                          llvm::Constant *Addr) {
   if (D.isNoDestroy(CGM.getContext()))
     return;
@@ -2341,7 +2343,7 @@ static ConstantAddress getInitThreadEpochPtr(CodeGenModule &CGM) {
   return ConstantAddress(GV, Align);
 }
 
-static llvm::Constant *getInitThreadHeaderFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getInitThreadHeaderFn(CodeGenModule &CGM) {
   unsigned DefaultAS = CGM.getTargetCodeGenInfo().getDefaultAS();
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(llvm::Type::getVoidTy(CGM.getLLVMContext()),
@@ -2354,7 +2356,7 @@ static llvm::Constant *getInitThreadHeaderFn(CodeGenModule &CGM) {
       /*Local=*/true);
 }
 
-static llvm::Constant *getInitThreadFooterFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getInitThreadFooterFn(CodeGenModule &CGM) {
   unsigned DefaultAS = CGM.getTargetCodeGenInfo().getDefaultAS();
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(llvm::Type::getVoidTy(CGM.getLLVMContext()),
@@ -2367,7 +2369,7 @@ static llvm::Constant *getInitThreadFooterFn(CodeGenModule &CGM) {
       /*Local=*/true);
 }
 
-static llvm::Constant *getInitThreadAbortFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getInitThreadAbortFn(CodeGenModule &CGM) {
   unsigned DefaultAS = CGM.getTargetCodeGenInfo().getDefaultAS();
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(llvm::Type::getVoidTy(CGM.getLLVMContext()),
@@ -3958,7 +3960,7 @@ MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
   CallArgList Args;
 
   // Push the this ptr.
-  Args.add(RValue::get(This), CD->getThisType(getContext()));
+  Args.add(RValue::get(This), CD->getThisType());
 
   // Push the src ptr.
   if (SrcVal)

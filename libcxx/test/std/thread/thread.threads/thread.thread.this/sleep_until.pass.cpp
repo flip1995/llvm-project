@@ -1,9 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -19,7 +18,7 @@
 #include <cstdlib>
 #include <cassert>
 
-int main()
+int main(int, char**)
 {
     typedef std::chrono::system_clock Clock;
     typedef Clock::time_point time_point;
@@ -36,4 +35,6 @@ int main()
 #endif
     // The time slept is within 5% of 500ms
     assert(std::abs(ns.count()) < err.count());
+
+  return 0;
 }

@@ -1,15 +1,15 @@
 //===-- Platform.cpp --------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include <algorithm>
 #include <csignal>
 #include <fstream>
+#include <memory>
 #include <vector>
 
 #include "llvm/Support/FileSystem.h"
@@ -79,7 +79,7 @@ ConstString PlatformProperties::GetSettingName() {
 }
 
 PlatformProperties::PlatformProperties() {
-  m_collection_sp.reset(new OptionValueProperties(GetSettingName()));
+  m_collection_sp = std::make_shared<OptionValueProperties>(GetSettingName());
   m_collection_sp->Initialize(g_properties);
 
   auto module_cache_dir = GetModuleCacheDirectory();
@@ -1060,11 +1060,11 @@ Status Platform::LaunchProcess(ProcessLaunchInfo &launch_info) {
       uint32_t num_resumes = GetResumeCountForLaunchInfo(launch_info);
       if (log) {
         const FileSpec &shell = launch_info.GetShell();
-        const char *shell_str = (shell) ? shell.GetPath().c_str() : "<null>";
+        std::string shell_str = (shell) ? shell.GetPath() : "<null>";
         log->Printf(
             "Platform::%s GetResumeCountForLaunchInfo() returned %" PRIu32
             ", shell is '%s'",
-            __FUNCTION__, num_resumes, shell_str);
+            __FUNCTION__, num_resumes, shell_str.c_str());
       }
 
       if (!launch_info.ConvertArgumentsForLaunchingInShell(

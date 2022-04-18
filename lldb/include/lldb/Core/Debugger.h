@@ -1,9 +1,8 @@
 //===-- Debugger.h ----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -145,8 +144,8 @@ public:
   lldb::StreamSP GetAsyncErrorStream();
 
   CommandInterpreter &GetCommandInterpreter() {
-    assert(m_command_interpreter_ap.get());
-    return *m_command_interpreter_ap;
+    assert(m_command_interpreter_up.get());
+    return *m_command_interpreter_up;
   }
 
   lldb::ListenerSP GetListener() { return m_listener_sp; }
@@ -382,7 +381,7 @@ protected:
 
   PlatformList m_platform_list;
   lldb::ListenerSP m_listener_sp;
-  std::unique_ptr<SourceManager> m_source_manager_ap; // This is a scratch
+  std::unique_ptr<SourceManager> m_source_manager_up; // This is a scratch
                                                       // source manager that we
                                                       // return if we have no
                                                       // targets.
@@ -391,7 +390,7 @@ protected:
                                                       // this debugger used this
                                                       // shared
                                                       // source file cache.
-  std::unique_ptr<CommandInterpreter> m_command_interpreter_ap;
+  std::unique_ptr<CommandInterpreter> m_command_interpreter_up;
 
   IOHandlerStack m_input_reader_stack;
   llvm::StringMap<std::weak_ptr<llvm::raw_ostream>> m_log_streams;

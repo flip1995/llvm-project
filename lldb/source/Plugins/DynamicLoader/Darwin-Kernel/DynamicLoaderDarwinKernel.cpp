@@ -1,10 +1,9 @@
 //===-- DynamicLoaderDarwinKernel.cpp -----------------------------*- C++
 //-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +30,8 @@
 #include "lldb/Utility/State.h"
 
 #include "DynamicLoaderDarwinKernel.h"
+
+#include <memory>
 
 //#define ENABLE_DEBUG_PRINTF // COMMENT THIS LINE OUT PRIOR TO CHECKIN
 #ifdef ENABLE_DEBUG_PRINTF
@@ -88,7 +89,7 @@ public:
   }
 
   DynamicLoaderDarwinKernelProperties() : Properties() {
-    m_collection_sp.reset(new OptionValueProperties(GetSettingName()));
+    m_collection_sp = std::make_shared<OptionValueProperties>(GetSettingName());
     m_collection_sp->Initialize(g_properties);
   }
 
@@ -113,7 +114,7 @@ typedef std::shared_ptr<DynamicLoaderDarwinKernelProperties>
 static const DynamicLoaderDarwinKernelPropertiesSP &GetGlobalProperties() {
   static DynamicLoaderDarwinKernelPropertiesSP g_settings_sp;
   if (!g_settings_sp)
-    g_settings_sp.reset(new DynamicLoaderDarwinKernelProperties());
+    g_settings_sp = std::make_shared<DynamicLoaderDarwinKernelProperties>();
   return g_settings_sp;
 }
 
@@ -293,6 +294,18 @@ DynamicLoaderDarwinKernel::SearchForKernelNearPC(Process *process) {
     return LLDB_INVALID_ADDRESS;
   addr_t pc = thread->GetRegisterContext()->GetPC(LLDB_INVALID_ADDRESS);
 
+  // The kernel is always loaded in high memory, if the top bit is zero,
+  // this isn't a kernel.
+  if (process->GetTarget().GetArchitecture().GetAddressByteSize() == 8) {
+    if ((pc & (1ULL << 63)) == 0) {
+      return LLDB_INVALID_ADDRESS;
+    }
+  } else {
+    if ((pc & (1ULL << 31)) == 0) {
+      return LLDB_INVALID_ADDRESS;
+    }
+  }
+
   if (pc == LLDB_INVALID_ADDRESS)
     return LLDB_INVALID_ADDRESS;
 
@@ -307,12 +320,13 @@ DynamicLoaderDarwinKernel::SearchForKernelNearPC(Process *process) {
   // Search backwards 32 megabytes, looking for the start of the kernel at each
   // one-megabyte boundary.
   for (int i = 0; i < 32; i++, addr -= 0x100000) {
+    // x86_64 kernels are at offset 0
     if (CheckForKernelImageAtAddress(addr, process).IsValid())
       return addr;
+    // 32-bit arm kernels are at offset 0x1000 (one 4k page)
     if (CheckForKernelImageAtAddress(addr + 0x1000, process).IsValid())
       return addr + 0x1000;
-    if (CheckForKernelImageAtAddress(addr + 0x2000, process).IsValid())
-      return addr + 0x2000;
+    // 64-bit arm kernels are at offset 0x4000 (one 16k page)
     if (CheckForKernelImageAtAddress(addr + 0x4000, process).IsValid())
       return addr + 0x4000;
   }
@@ -351,12 +365,13 @@ lldb::addr_t DynamicLoaderDarwinKernel::SearchForKernelViaExhaustiveSearch(
   addr_t addr = kernel_range_low;
 
   while (addr >= kernel_range_low && addr < kernel_range_high) {
+    // x86_64 kernels are at offset 0
     if (CheckForKernelImageAtAddress(addr, process).IsValid())
       return addr;
+    // 32-bit arm kernels are at offset 0x1000 (one 4k page)
     if (CheckForKernelImageAtAddress(addr + 0x1000, process).IsValid())
       return addr + 0x1000;
-    if (CheckForKernelImageAtAddress(addr + 0x2000, process).IsValid())
-      return addr + 0x2000;
+    // 64-bit arm kernels are at offset 0x4000 (one 16k page)
     if (CheckForKernelImageAtAddress(addr + 0x4000, process).IsValid())
       return addr + 0x4000;
     addr += 0x100000;
@@ -778,8 +793,8 @@ bool DynamicLoaderDarwinKernel::KextImageInfo::LoadImageUsingMemoryModule(
       if (IsKernel()) {
         if (Symbols::DownloadObjectAndSymbolFile(module_spec, true)) {
           if (FileSystem::Instance().Exists(module_spec.GetFileSpec())) {
-            m_module_sp.reset(new Module(module_spec.GetFileSpec(),
-                                         target.GetArchitecture()));
+            m_module_sp = std::make_shared<Module>(module_spec.GetFileSpec(),
+                                                   target.GetArchitecture());
             if (m_module_sp.get() &&
                 m_module_sp->MatchesModuleSpec(module_spec)) {
               ModuleList loaded_module_list;

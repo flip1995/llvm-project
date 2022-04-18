@@ -65,8 +65,8 @@ tools = [
     'llvm-readobj', 'llvm-objdump', 'llvm-dwarfdump', # XXXAR: needed by some CHERI tests
     'c-index-test', 'clang-check', 'clang-diff', 'clang-format', 'clang-tblgen',
     'opt',
-    ToolSubst('%clang_func_map', command=FindTool(
-        'clang-func-mapping'), unresolved='ignore'),
+    ToolSubst('%clang_extdef_map', command=FindTool(
+        'clang-extdef-mapping'), unresolved='ignore'),
 ]
 
 if config.clang_examples:
@@ -192,3 +192,6 @@ lit.util.usePlatformSdkOnDarwin(config, lit_config)
 macOSSDKVersion = lit.util.findPlatformSdkVersionOnMacOS(config, lit_config)
 if macOSSDKVersion is not None:
     config.available_features.add('macos-sdk-' + macOSSDKVersion)
+
+if os.path.exists('/etc/gentoo-release'):
+    config.available_features.add('gentoo')

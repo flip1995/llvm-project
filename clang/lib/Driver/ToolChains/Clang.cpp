@@ -1,9 +1,8 @@
 //===--- LLVM.cpp - Clang+LLVM ToolChain Implementations --------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,12 +18,14 @@
 #include "AMDGPU.h"
 #include "CommonArgs.h"
 #include "Hexagon.h"
+#include "MSP430.h"
 #include "InputInfo.h"
 #include "PS4CPU.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/ObjCRuntime.h"
 #include "clang/Basic/Version.h"
+#include "clang/Driver/Distro.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/SanitizerArgs.h"
@@ -364,6 +365,8 @@ static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
   case llvm::Triple::amdgcn:
     amdgpu::getAMDGPUTargetFeatures(D, Args, Features);
     break;
+  case llvm::Triple::msp430:
+    msp430::getMSP430TargetFeatures(D, Args, Features);
   }
 
   // Find the last of each feature.
@@ -518,6 +521,7 @@ static bool useFramePointerForTargetByDefault(const ArgList &Args,
   case llvm::Triple::xcore:
   case llvm::Triple::wasm32:
   case llvm::Triple::wasm64:
+  case llvm::Triple::msp430:
     // XCore never wants frame pointers, regardless of OS.
     // WebAssembly never wants frame pointers.
     return false;
@@ -1776,6 +1780,14 @@ void Clang::AddMIPSTargetArgs(const ArgList &Args,
             << A->getOption().getName() << Val;
     } else
       D.Diag(diag::warn_target_unsupported_compact_branches) << CPUName;
+  }
+
+  if (Arg *A = Args.getLastArg(options::OPT_mrelax_pic_calls,
+                               options::OPT_mno_relax_pic_calls)) {
+    if (A->getOption().matches(options::OPT_mno_relax_pic_calls)) {
+      CmdArgs.push_back("-mllvm");
+      CmdArgs.push_back("-mips-jalr-reloc=0");
+    }
   }
 
   addCheriFlags(Args, CmdArgs, ABIName);
@@ -3521,13 +3533,25 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       NormalizedTriple = C.getSingleOffloadToolChain<Action::OFK_Host>()
                              ->getTriple()
                              .normalize();
-    else
+    else {
+      // Host-side compilation.
       NormalizedTriple =
           (IsCuda ? C.getSingleOffloadToolChain<Action::OFK_Cuda>()
                   : C.getSingleOffloadToolChain<Action::OFK_HIP>())
               ->getTriple()
               .normalize();
-
+      if (IsCuda) {
+        // We need to figure out which CUDA version we're compiling for, as that
+        // determines how we load and launch GPU kernels.
+        auto *CTC = static_cast<const toolchains::CudaToolChain *>(
+            C.getSingleOffloadToolChain<Action::OFK_Cuda>());
+        assert(CTC && "Expected valid CUDA Toolchain.");
+        if (CTC && CTC->CudaInstallation.version() != CudaVersion::UNKNOWN)
+          CmdArgs.push_back(Args.MakeArgString(
+              Twine("-target-sdk-version=") +
+              CudaVersionToString(CTC->CudaInstallation.version())));
+      }
+    }
     CmdArgs.push_back("-aux-triple");
     CmdArgs.push_back(Args.MakeArgString(NormalizedTriple));
   }
@@ -3854,6 +3878,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-pic-is-pie");
   }
 
+  if (RelocationModel == llvm::Reloc::ROPI ||
+      RelocationModel == llvm::Reloc::ROPI_RWPI)
+    CmdArgs.push_back("-fropi");
+  if (RelocationModel == llvm::Reloc::RWPI ||
+      RelocationModel == llvm::Reloc::ROPI_RWPI)
+    CmdArgs.push_back("-frwpi");
+
   if (Arg *A = Args.getLastArg(options::OPT_meabi)) {
     CmdArgs.push_back("-meabi");
     CmdArgs.push_back(A->getValue());
@@ -3867,7 +3898,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(A->getValue());
   }
   else
-    CmdArgs.push_back(Args.MakeArgString(TC.getThreadModel()));
+    CmdArgs.push_back(Args.MakeArgString(TC.getThreadModel(Args)));
 
   Args.AddLastArg(CmdArgs, options::OPT_fveclib);
 
@@ -4504,6 +4535,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Args.AddAllArgs(CmdArgs, options::OPT_fopenmp_version_EQ);
       Args.AddAllArgs(CmdArgs, options::OPT_fopenmp_cuda_number_of_sm_EQ);
       Args.AddAllArgs(CmdArgs, options::OPT_fopenmp_cuda_blocks_per_sm_EQ);
+      if (Args.hasFlag(options::OPT_fopenmp_optimistic_collapse,
+                       options::OPT_fno_openmp_optimistic_collapse,
+                       /*Default=*/false))
+        CmdArgs.push_back("-fopenmp-optimistic-collapse");
 
       // When in OpenMP offloading mode with NVPTX target, forward
       // cuda-mode flag
@@ -5124,6 +5159,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     A->claim();
   }
 
+  // Forward -fpass-plugin=name.so to -cc1.
+  for (const Arg *A : Args.filtered(options::OPT_fpass_plugin_EQ)) {
+    CmdArgs.push_back(
+        Args.MakeArgString(Twine("-fpass-plugin=") + A->getValue()));
+    A->claim();
+  }
+
   // Setup statistics file output.
   SmallString<128> StatsFile = getStatsFileName(Args, Output, Input, D);
   if (!StatsFile.empty())
@@ -5308,6 +5350,17 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fwhole-program-vtables");
   }
 
+  bool RequiresSplitLTOUnit = WholeProgramVTables || Sanitize.needsLTO();
+  bool SplitLTOUnit =
+      Args.hasFlag(options::OPT_fsplit_lto_unit,
+                   options::OPT_fno_split_lto_unit, RequiresSplitLTOUnit);
+  if (RequiresSplitLTOUnit && !SplitLTOUnit)
+    D.Diag(diag::err_drv_argument_not_allowed_with)
+        << "-fno-split-lto-unit"
+        << (WholeProgramVTables ? "-fwhole-program-vtables" : "-fsanitize=cfi");
+  if (SplitLTOUnit)
+    CmdArgs.push_back("-fsplit-lto-unit");
+
   if (Arg *A = Args.getLastArg(options::OPT_fexperimental_isel,
                                options::OPT_fno_experimental_isel)) {
     CmdArgs.push_back("-mllvm");
@@ -5377,6 +5430,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                     TC.getTriple().isOSBinFormatCOFF()) &&
                       !TC.getTriple().isPS4() &&
                       !TC.getTriple().isOSNetBSD() &&
+                      !Distro(D.getVFS()).IsGentoo() &&
+                      !TC.getTriple().isAndroid() &&
                        TC.useIntegratedAs()))
     CmdArgs.push_back("-faddrsig");
 

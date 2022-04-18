@@ -1,9 +1,8 @@
 //===------- ItaniumCXXABI.cpp - Emit LLVM Code from ASTs for a Module ----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -29,7 +28,6 @@
 #include "clang/AST/Mangle.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/StmtCXX.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
@@ -336,7 +334,8 @@ public:
                        llvm::GlobalVariable *DeclPtr,
                        bool PerformInit) override;
   void registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
-                          llvm::Constant *dtor, llvm::Constant *addr) override;
+                          llvm::FunctionCallee dtor,
+                          llvm::Constant *addr) override;
 
   llvm::Function *getOrCreateThreadLocalWrapper(const VarDecl *VD,
                                                 llvm::Value *Val);
@@ -1239,7 +1238,7 @@ void ItaniumCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
   llvm::FunctionType *FTy =
     llvm::FunctionType::get(CGM.VoidTy, /*IsVarArgs=*/false);
 
-  llvm::Constant *Fn = CGM.CreateRuntimeFunction(FTy, "__cxa_rethrow");
+  llvm::FunctionCallee Fn = CGM.CreateRuntimeFunction(FTy, "__cxa_rethrow");
 
   if (isNoReturn)
     CGF.EmitNoreturnRuntimeCallOrInvoke(Fn, None);
@@ -1247,7 +1246,7 @@ void ItaniumCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
     CGF.EmitRuntimeCallOrInvoke(Fn);
 }
 
-static llvm::Constant *getAllocateExceptionFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getAllocateExceptionFn(CodeGenModule &CGM) {
   // void *__cxa_allocate_exception(size_t thrown_size);
 
   llvm::FunctionType *FTy =
@@ -1256,7 +1255,7 @@ static llvm::Constant *getAllocateExceptionFn(CodeGenModule &CGM) {
   return CGM.CreateRuntimeFunction(FTy, "__cxa_allocate_exception");
 }
 
-static llvm::Constant *getThrowFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getThrowFn(CodeGenModule &CGM) {
   // void __cxa_throw(void *thrown_exception, std::type_info *tinfo,
   //                  void (*dest) (void *));
 
@@ -1273,7 +1272,7 @@ void ItaniumCXXABI::emitThrow(CodeGenFunction &CGF, const CXXThrowExpr *E) {
   llvm::Type *SizeTy = CGF.ConvertType(getContext().getSizeType());
   uint64_t TypeSize = getContext().getTypeSizeInChars(ThrowType).getQuantity();
 
-  llvm::Constant *AllocExceptionFn = getAllocateExceptionFn(CGM);
+  llvm::FunctionCallee AllocExceptionFn = getAllocateExceptionFn(CGM);
   llvm::CallInst *ExceptionPtr = CGF.EmitNounwindRuntimeCall(
       AllocExceptionFn, llvm::ConstantInt::get(SizeTy, TypeSize), "exception");
 
@@ -1304,7 +1303,7 @@ void ItaniumCXXABI::emitThrow(CodeGenFunction &CGF, const CXXThrowExpr *E) {
   CGF.EmitNoreturnRuntimeCallOrInvoke(getThrowFn(CGM), args);
 }
 
-static llvm::Constant *getItaniumDynamicCastFn(CodeGenFunction &CGF) {
+static llvm::FunctionCallee getItaniumDynamicCastFn(CodeGenFunction &CGF) {
   // void *__dynamic_cast(const void *sub,
   //                      const abi::__class_type_info *src,
   //                      const abi::__class_type_info *dst,
@@ -1327,7 +1326,7 @@ static llvm::Constant *getItaniumDynamicCastFn(CodeGenFunction &CGF) {
   return CGF.CGM.CreateRuntimeFunction(FTy, "__dynamic_cast", Attrs);
 }
 
-static llvm::Constant *getBadCastFn(CodeGenFunction &CGF) {
+static llvm::FunctionCallee getBadCastFn(CodeGenFunction &CGF) {
   // void __cxa_bad_cast();
   llvm::FunctionType *FTy = llvm::FunctionType::get(CGF.VoidTy, false);
   return CGF.CGM.CreateRuntimeFunction(FTy, "__cxa_bad_cast");
@@ -1385,7 +1384,7 @@ static CharUnits computeOffsetHint(ASTContext &Context,
   return Offset;
 }
 
-static llvm::Constant *getBadTypeidFn(CodeGenFunction &CGF) {
+static llvm::FunctionCallee getBadTypeidFn(CodeGenFunction &CGF) {
   // void __cxa_bad_typeid();
   llvm::FunctionType *FTy = llvm::FunctionType::get(CGF.VoidTy, false);
 
@@ -1398,8 +1397,9 @@ bool ItaniumCXXABI::shouldTypeidBeNullChecked(bool IsDeref,
 }
 
 void ItaniumCXXABI::EmitBadTypeidCall(CodeGenFunction &CGF) {
-  llvm::Value *Fn = getBadTypeidFn(CGF);
-  CGF.EmitRuntimeCallOrInvoke(Fn).setDoesNotReturn();
+  llvm::FunctionCallee Fn = getBadTypeidFn(CGF);
+  llvm::CallBase *Call = CGF.EmitRuntimeCallOrInvoke(Fn);
+  Call->setDoesNotReturn();
   CGF.Builder.CreateUnreachable();
 }
 
@@ -1498,8 +1498,9 @@ llvm::Value *ItaniumCXXABI::EmitDynamicCastToVoid(CodeGenFunction &CGF,
 }
 
 bool ItaniumCXXABI::EmitBadCastCall(CodeGenFunction &CGF) {
-  llvm::Value *Fn = getBadCastFn(CGF);
-  CGF.EmitRuntimeCallOrInvoke(Fn).setDoesNotReturn();
+  llvm::FunctionCallee Fn = getBadCastFn(CGF);
+  llvm::CallBase *Call = CGF.EmitRuntimeCallOrInvoke(Fn);
+  Call->setDoesNotReturn();
   CGF.Builder.CreateUnreachable();
   return true;
 }
@@ -1664,9 +1665,8 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
     Callee = CGCallee::forDirect(
         CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type)), GD);
 
-  CGF.EmitCXXMemberOrOperatorCall(DD, Callee, ReturnValueSlot(),
-                                  This.getPointer(), VTT, VTTTy,
-                                  nullptr, nullptr);
+  CGF.EmitCXXDestructorCall(DD, Callee, This.getPointer(), VTT, VTTTy, nullptr,
+                            getFromDtorType(Type));
 }
 
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1865,9 +1865,8 @@ llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
   CGCallee Callee =
       CGCallee::forVirtual(CE, GlobalDecl(Dtor, DtorType), This, Ty);
 
-  CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(),
-                                  This.getPointer(), /*ImplicitParam=*/nullptr,
-                                  QualType(), CE, nullptr);
+  CGF.EmitCXXDestructorCall(Dtor, Callee, This.getPointer(), nullptr,
+                            QualType(), nullptr, getFromDtorType(DtorType));
   return nullptr;
 }
 
@@ -2068,7 +2067,7 @@ Address ItaniumCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
     CGM.getSanitizerMetadata()->disableSanitizerForInstruction(SI);
     llvm::FunctionType *FTy =
         llvm::FunctionType::get(CGM.VoidTy, NumElementsPtr.getType(), false);
-    llvm::Constant *F =
+    llvm::FunctionCallee F =
         CGM.CreateRuntimeFunction(FTy, "__asan_poison_cxx_array_cookie");
     CGF.Builder.CreateCall(F, NumElementsPtr.getPointer());
   }
@@ -2099,7 +2098,7 @@ llvm::Value *ItaniumCXXABI::readArrayCookieImpl(CodeGenFunction &CGF,
   // the metadata may be lost.
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(CGF.SizeTy, CGF.SizeTy->getPointerTo(0), false);
-  llvm::Constant *F =
+  llvm::FunctionCallee F =
       CGM.CreateRuntimeFunction(FTy, "__asan_load_cxx_array_cookie");
   return CGF.Builder.CreateCall(F, numElementsPtr.getPointer());
 }
@@ -2134,7 +2133,7 @@ Address ARMCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
   CGF.Builder.CreateStore(elementSize, cookie);
 
   // The second element is the element count.
-  cookie = CGF.Builder.CreateConstInBoundsGEP(cookie, 1, CGF.getSizeSize());
+  cookie = CGF.Builder.CreateConstInBoundsGEP(cookie, 1);
   CGF.Builder.CreateStore(numElements, cookie);
 
   // Finally, compute a pointer to the actual data buffer by skipping
@@ -2157,8 +2156,8 @@ llvm::Value *ARMCXXABI::readArrayCookieImpl(CodeGenFunction &CGF,
 
 /*********************** Static local initialization **************************/
 
-static llvm::Constant *getGuardAcquireFn(CodeGenModule &CGM,
-                                         llvm::PointerType *GuardPtrTy) {
+static llvm::FunctionCallee getGuardAcquireFn(CodeGenModule &CGM,
+                                              llvm::PointerType *GuardPtrTy) {
   // int __cxa_guard_acquire(__guard *guard_object);
   llvm::FunctionType *FTy =
     llvm::FunctionType::get(CGM.getTypes().ConvertType(CGM.getContext().IntTy),
@@ -2170,8 +2169,8 @@ static llvm::Constant *getGuardAcquireFn(CodeGenModule &CGM,
                                llvm::Attribute::NoUnwind));
 }
 
-static llvm::Constant *getGuardReleaseFn(CodeGenModule &CGM,
-                                         llvm::PointerType *GuardPtrTy) {
+static llvm::FunctionCallee getGuardReleaseFn(CodeGenModule &CGM,
+                                              llvm::PointerType *GuardPtrTy) {
   // void __cxa_guard_release(__guard *guard_object);
   llvm::FunctionType *FTy =
     llvm::FunctionType::get(CGM.VoidTy, GuardPtrTy, /*isVarArg=*/false);
@@ -2182,8 +2181,8 @@ static llvm::Constant *getGuardReleaseFn(CodeGenModule &CGM,
                                llvm::Attribute::NoUnwind));
 }
 
-static llvm::Constant *getGuardAbortFn(CodeGenModule &CGM,
-                                       llvm::PointerType *GuardPtrTy) {
+static llvm::FunctionCallee getGuardAbortFn(CodeGenModule &CGM,
+                                            llvm::PointerType *GuardPtrTy) {
   // void __cxa_guard_abort(__guard *guard_object);
   llvm::FunctionType *FTy =
     llvm::FunctionType::get(CGM.VoidTy, GuardPtrTy, /*isVarArg=*/false);
@@ -2399,9 +2398,8 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
 
 /// Register a global destructor using __cxa_atexit.
 static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
-                                        llvm::Constant *dtor,
-                                        llvm::Constant *addr,
-                                        bool TLS) {
+                                        llvm::FunctionCallee dtor,
+                                        llvm::Constant *addr, bool TLS) {
   const char *Name = "__cxa_atexit";
   if (TLS) {
     const llvm::Triple &T = CGF.getTarget().getTriple();
@@ -2421,8 +2419,8 @@ static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
     llvm::FunctionType::get(CGF.IntTy, paramTys, false);
 
   // Fetch the actual function.
-  llvm::Constant *atexit = CGF.CGM.CreateRuntimeFunction(atexitTy, Name);
-  if (llvm::Function *fn = dyn_cast<llvm::Function>(atexit))
+  llvm::FunctionCallee atexit = CGF.CGM.CreateRuntimeFunction(atexitTy, Name);
+  if (llvm::Function *fn = dyn_cast<llvm::Function>(atexit.getCallee()))
     fn->setDoesNotThrow();
 
   // Create a variable that binds the atexit to this shared object.
@@ -2432,7 +2430,7 @@ static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
   GV->setVisibility(llvm::GlobalValue::HiddenVisibility);
 
   // Convert the destructor pointer to a capability before passing it
-  llvm::Value *dtorV = dtor;
+  llvm::Value *dtorV = dtor.getCallee();
   auto &TI = CGF.getContext().getTargetInfo();
   if (TI.areAllPointersCapabilities()) {
     if (dtorV->getType()->getPointerAddressSpace() != AS) {
@@ -2449,11 +2447,10 @@ static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
     // function.
     addr = llvm::Constant::getNullValue(CGF.Int8PtrTy);
 
-  llvm::Value *args[] = {
-    dtorV,
-    llvm::ConstantExpr::getBitCast(addr, CGF.Int8PtrTy),
-    handle // FIXME-cheri-c++: should this be a capability in the pure ABI?
-  };
+  // FIXME-cheri-c++: should handle be a capability in the pure ABI?
+  llvm::Value *args[] = {dtorV,
+                         llvm::ConstantExpr::getBitCast(addr, CGF.Int8PtrTy),
+                         handle};
   CGF.EmitNounwindRuntimeCall(atexit, args);
 }
 
@@ -2502,9 +2499,8 @@ void CodeGenModule::registerGlobalDtorsWithAtExit() {
 }
 
 /// Register a global destructor as best as we know how.
-void ItaniumCXXABI::registerGlobalDtor(CodeGenFunction &CGF,
-                                       const VarDecl &D,
-                                       llvm::Constant *dtor,
+void ItaniumCXXABI::registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
+                                       llvm::FunctionCallee dtor,
                                        llvm::Constant *addr) {
   if (D.isNoDestroy(CGM.getContext()))
     return;
@@ -2588,10 +2584,12 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
     CGM.SetLLVMFunctionAttributesForDefinition(nullptr, Wrapper);
 
   // Always resolve references to the wrapper at link time.
-  if (!Wrapper->hasLocalLinkage() && !(isThreadWrapperReplaceable(VD, CGM) &&
-      !llvm::GlobalVariable::isLinkOnceLinkage(Wrapper->getLinkage()) &&
-      !llvm::GlobalVariable::isWeakODRLinkage(Wrapper->getLinkage())))
-    Wrapper->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  if (!Wrapper->hasLocalLinkage())
+    if (!isThreadWrapperReplaceable(VD, CGM) ||
+        llvm::GlobalVariable::isLinkOnceLinkage(Wrapper->getLinkage()) ||
+        llvm::GlobalVariable::isWeakODRLinkage(Wrapper->getLinkage()) ||
+        VD->getVisibility() == HiddenVisibility)
+      Wrapper->setVisibility(llvm::GlobalValue::HiddenVisibility);
 
   if (isThreadWrapperReplaceable(VD, CGM)) {
     Wrapper->setCallingConv(llvm::CallingConv::CXX_FAST_TLS);
@@ -2670,6 +2668,8 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       getMangleContext().mangleItaniumThreadLocalInit(VD, Out);
     }
 
+    llvm::FunctionType *InitFnTy = llvm::FunctionType::get(CGM.VoidTy, false);
+
     // If we have a definition for the variable, emit the initialization
     // function as an alias to the global Init function (if any). Otherwise,
     // produce a declaration of the initialization function.
@@ -2688,8 +2688,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       // This function will not exist if the TU defining the thread_local
       // variable in question does not need any dynamic initialization for
       // its thread_local variables.
-      llvm::FunctionType *FnTy = llvm::FunctionType::get(CGM.VoidTy, false);
-      Init = llvm::Function::Create(FnTy,
+      Init = llvm::Function::Create(InitFnTy,
                                     llvm::GlobalVariable::ExternalWeakLinkage,
                                     InitFnName.str(), &CGM.getModule());
       const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
@@ -2707,7 +2706,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     CGBuilderTy Builder(CGM, Entry);
     if (InitIsInitFunc) {
       if (Init) {
-        llvm::CallInst *CallVal = Builder.CreateCall(Init);
+        llvm::CallInst *CallVal = Builder.CreateCall(InitFnTy, Init);
         if (isThreadWrapperReplaceable(VD, CGM)) {
           CallVal->setCallingConv(llvm::CallingConv::CXX_FAST_TLS);
           llvm::Function *Fn =
@@ -2723,7 +2722,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Builder.CreateCondBr(Have, InitBB, ExitBB);
 
       Builder.SetInsertPoint(InitBB);
-      Builder.CreateCall(Init);
+      Builder.CreateCall(InitFnTy, Init);
       Builder.CreateBr(ExitBB);
 
       Builder.SetInsertPoint(ExitBB);
@@ -4057,7 +4056,7 @@ void ItaniumCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
   }
 }
 
-static llvm::Constant *getBeginCatchFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getBeginCatchFn(CodeGenModule &CGM) {
   // void *__cxa_begin_catch(void*);
   llvm::FunctionType *FTy = llvm::FunctionType::get(
       CGM.Int8PtrTy, CGM.Int8PtrTy, /*IsVarArgs=*/false);
@@ -4065,7 +4064,7 @@ static llvm::Constant *getBeginCatchFn(CodeGenModule &CGM) {
   return CGM.CreateRuntimeFunction(FTy, "__cxa_begin_catch");
 }
 
-static llvm::Constant *getEndCatchFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getEndCatchFn(CodeGenModule &CGM) {
   // void __cxa_end_catch();
   llvm::FunctionType *FTy =
       llvm::FunctionType::get(CGM.VoidTy, /*IsVarArgs=*/false);
@@ -4073,7 +4072,7 @@ static llvm::Constant *getEndCatchFn(CodeGenModule &CGM) {
   return CGM.CreateRuntimeFunction(FTy, "__cxa_end_catch");
 }
 
-static llvm::Constant *getGetExceptionPtrFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getGetExceptionPtrFn(CodeGenModule &CGM) {
   // void *__cxa_get_exception_ptr(void*);
   llvm::FunctionType *FTy = llvm::FunctionType::get(
       CGM.Int8PtrTy, CGM.Int8PtrTy, /*IsVarArgs=*/false);
@@ -4350,14 +4349,14 @@ void ItaniumCXXABI::emitBeginCatch(CodeGenFunction &CGF,
 /// Get or define the following function:
 ///   void @__clang_call_terminate(i8* %exn) nounwind noreturn
 /// This code is used only in C++.
-static llvm::Constant *getClangCallTerminateFn(CodeGenModule &CGM) {
+static llvm::FunctionCallee getClangCallTerminateFn(CodeGenModule &CGM) {
   llvm::FunctionType *fnTy =
     llvm::FunctionType::get(CGM.VoidTy, CGM.Int8PtrTy, /*IsVarArgs=*/false);
-  llvm::Constant *fnRef = CGM.CreateRuntimeFunction(
-      fnTy, "__clang_call_terminate", llvm::AttributeList(), /*Local=*/true);
-
-  llvm::Function *fn = dyn_cast<llvm::Function>(fnRef);
-  if (fn && fn->empty()) {
+  llvm::FunctionCallee fnRef = CGM.CreateRuntimeFunction(
+      fnTy, "__clang_call_terminate", llvm::AttributeList(), /*IsLocal=*/true);
+  llvm::Function *fn =
+      cast<llvm::Function>(fnRef.getCallee()->stripPointerCasts());
+  if (fn->empty()) {
     fn->setDoesNotThrow();
     fn->setDoesNotReturn();
 
@@ -4375,7 +4374,7 @@ static llvm::Constant *getClangCallTerminateFn(CodeGenModule &CGM) {
 
     // Set up the function.
     llvm::BasicBlock *entry =
-      llvm::BasicBlock::Create(CGM.getLLVMContext(), "", fn);
+        llvm::BasicBlock::Create(CGM.getLLVMContext(), "", fn);
     CGBuilderTy builder(CGM, entry);
 
     // Pull the exception pointer out of the parameter list.
@@ -4395,7 +4394,6 @@ static llvm::Constant *getClangCallTerminateFn(CodeGenModule &CGM) {
     // std::terminate cannot return.
     builder.CreateUnreachable();
   }
-
   return fnRef;
 }
 

@@ -1,9 +1,8 @@
 //===- IRBuilder.cpp - Builder for LLVM Instrs ----------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -90,7 +89,7 @@ Value *IRBuilderBase::getCastedInt8PtrValue(Value *Ptr) {
   return BCI;
 }
 
-static CallInst *createCallHelper(Value *Callee, ArrayRef<Value *> Ops,
+static CallInst *createCallHelper(Function *Callee, ArrayRef<Value *> Ops,
                                   IRBuilderBase *Builder,
                                   const Twine &Name = "",
                                   Instruction *FMFSource = nullptr) {
@@ -102,7 +101,7 @@ static CallInst *createCallHelper(Value *Callee, ArrayRef<Value *> Ops,
   return CI;
 }
 
-static InvokeInst *createInvokeHelper(Value *Invokee, BasicBlock *NormalDest,
+static InvokeInst *createInvokeHelper(Function *Invokee, BasicBlock *NormalDest,
                                       BasicBlock *UnwindDest,
                                       ArrayRef<Value *> Ops,
                                       IRBuilderBase *Builder,
@@ -123,7 +122,7 @@ CreateMemSet(Value *Ptr, Value *Val, Value *Size, unsigned Align,
   Value *Ops[] = {Ptr, Val, Size, getInt1(isVolatile)};
   Type *Tys[] = { Ptr->getType(), Size->getType() };
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memset, Tys);
+  Function *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memset, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
 
@@ -153,7 +152,7 @@ CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemSet(
   Value *Ops[] = {Ptr, Val, Size, getInt32(ElementSize)};
   Type *Tys[] = {Ptr->getType(), Size->getType()};
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(
+  Function *TheFn = Intrinsic::getDeclaration(
       M, Intrinsic::memset_element_unordered_atomic, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
@@ -185,7 +184,7 @@ CreateMemCpy(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
   Value *Ops[] = {Dst, Src, Size, getInt1(isVolatile)};
   Type *Tys[] = { Dst->getType(), Src->getType(), Size->getType() };
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memcpy, Tys);
+  Function *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memcpy, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
 
@@ -226,7 +225,7 @@ CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemCpy(
   Value *Ops[] = {Dst, Src, Size, getInt32(ElementSize)};
   Type *Tys[] = {Dst->getType(), Src->getType(), Size->getType()};
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(
+  Function *TheFn = Intrinsic::getDeclaration(
       M, Intrinsic::memcpy_element_unordered_atomic, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
@@ -265,7 +264,7 @@ CreateMemMove(Value *Dst, unsigned DstAlign, Value *Src, unsigned SrcAlign,
   Value *Ops[] = {Dst, Src, Size, getInt1(isVolatile)};
   Type *Tys[] = { Dst->getType(), Src->getType(), Size->getType() };
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memmove, Tys);
+  Function *TheFn = Intrinsic::getDeclaration(M, Intrinsic::memmove, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
 
@@ -302,7 +301,7 @@ CallInst *IRBuilderBase::CreateElementUnorderedAtomicMemMove(
   Value *Ops[] = {Dst, Src, Size, getInt32(ElementSize)};
   Type *Tys[] = {Dst->getType(), Src->getType(), Size->getType()};
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(
+  Function *TheFn = Intrinsic::getDeclaration(
       M, Intrinsic::memmove_element_unordered_atomic, Tys);
 
   CallInst *CI = createCallHelper(TheFn, Ops, this);
@@ -427,8 +426,8 @@ CallInst *IRBuilderBase::CreateLifetimeStart(Value *Ptr, ConstantInt *Size) {
            "lifetime.start requires the size to be an i64");
   Value *Ops[] = { Size, Ptr };
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::lifetime_start,
-                                           { Ptr->getType() });
+  Function *TheFn =
+      Intrinsic::getDeclaration(M, Intrinsic::lifetime_start, {Ptr->getType()});
   return createCallHelper(TheFn, Ops, this);
 }
 
@@ -443,8 +442,8 @@ CallInst *IRBuilderBase::CreateLifetimeEnd(Value *Ptr, ConstantInt *Size) {
            "lifetime.end requires the size to be an i64");
   Value *Ops[] = { Size, Ptr };
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Intrinsic::lifetime_end,
-                                           { Ptr->getType() });
+  Function *TheFn =
+      Intrinsic::getDeclaration(M, Intrinsic::lifetime_end, {Ptr->getType()});
   return createCallHelper(TheFn, Ops, this);
 }
 
@@ -463,7 +462,7 @@ CallInst *IRBuilderBase::CreateInvariantStart(Value *Ptr, ConstantInt *Size) {
   // Fill in the single overloaded type: memory object type.
   Type *ObjectPtr[1] = {Ptr->getType()};
   Module *M = BB->getParent()->getParent();
-  Value *TheFn =
+  Function *TheFn =
       Intrinsic::getDeclaration(M, Intrinsic::invariant_start, ObjectPtr);
   return createCallHelper(TheFn, Ops, this);
 }
@@ -474,7 +473,7 @@ CallInst *IRBuilderBase::CreateAssumption(Value *Cond) {
 
   Value *Ops[] = { Cond };
   Module *M = BB->getParent()->getParent();
-  Value *FnAssume = Intrinsic::getDeclaration(M, Intrinsic::assume);
+  Function *FnAssume = Intrinsic::getDeclaration(M, Intrinsic::assume);
   return createCallHelper(FnAssume, Ops, this);
 }
 
@@ -526,7 +525,7 @@ CallInst *IRBuilderBase::CreateMaskedIntrinsic(Intrinsic::ID Id,
                                                ArrayRef<Type *> OverloadedTypes,
                                                const Twine &Name) {
   Module *M = BB->getParent()->getParent();
-  Value *TheFn = Intrinsic::getDeclaration(M, Id, OverloadedTypes);
+  Function *TheFn = Intrinsic::getDeclaration(M, Id, OverloadedTypes);
   return createCallHelper(TheFn, Ops, this, Name);
 }
 
@@ -727,7 +726,7 @@ CallInst *IRBuilderBase::CreateGCResult(Instruction *Statepoint,
  Intrinsic::ID ID = Intrinsic::experimental_gc_result;
  Module *M = BB->getParent()->getParent();
  Type *Types[] = {ResultType};
- Value *FnGCResult = Intrinsic::getDeclaration(M, ID, Types);
+ Function *FnGCResult = Intrinsic::getDeclaration(M, ID, Types);
 
  Value *Args[] = {Statepoint};
  return createCallHelper(FnGCResult, Args, this, Name);
@@ -740,8 +739,8 @@ CallInst *IRBuilderBase::CreateGCRelocate(Instruction *Statepoint,
                                          const Twine &Name) {
  Module *M = BB->getParent()->getParent();
  Type *Types[] = {ResultType};
- Value *FnGCRelocate =
-   Intrinsic::getDeclaration(M, Intrinsic::experimental_gc_relocate, Types);
+ Function *FnGCRelocate =
+     Intrinsic::getDeclaration(M, Intrinsic::experimental_gc_relocate, Types);
 
  Value *Args[] = {Statepoint,
                   getInt32(BaseOffset),

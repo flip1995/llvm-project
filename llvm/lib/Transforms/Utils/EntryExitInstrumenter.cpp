@@ -1,9 +1,8 @@
 //===- EntryExitInstrumenter.cpp - Function Entry/Exit Instrumentation ----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,7 +30,7 @@ static void insertCall(Function &CurFn, StringRef Func,
       Func == "__mcount" ||
       Func == "_mcount" ||
       Func == "__cyg_profile_func_enter_bare") {
-    Constant *Fn = M.getOrInsertFunction(Func, Type::getVoidTy(C));
+    FunctionCallee Fn = M.getOrInsertFunction(Func, Type::getVoidTy(C));
     CallInst *Call = CallInst::Create(Fn, "", InsertionPt);
     Call->setDebugLoc(DL);
     return;
@@ -42,7 +41,7 @@ static void insertCall(Function &CurFn, StringRef Func,
         Type::getInt8PtrTy(C, M.getDataLayout().getProgramAddressSpace());
     Type *ArgTypes[] = {ProgASPtr, ProgASPtr};
 
-    Constant *Fn = M.getOrInsertFunction(
+    FunctionCallee Fn = M.getOrInsertFunction(
         Func, FunctionType::get(Type::getVoidTy(C), ArgTypes, false));
 
     Instruction *RetAddr = CallInst::Create(
