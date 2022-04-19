@@ -1804,10 +1804,10 @@ void InnerLoopVectorizer::createVectorIntOrFpInductionPHI(
   // FIXME: If the step is non-constant, we create the vector splat with
   //        IRBuilder. IRBuilder can constant-fold the multiply, but it doesn't
   //        handle a constant vector splat.
-  Value *SplatVF =
-      isa<Constant>(Mul)
-          ? ConstantVector::getSplat({VF, false}, cast<Constant>(Mul))
-          : Builder.CreateVectorSplat(VF, Mul);
+  Value *SplatVF = isa<Constant>(Mul)
+                       ? ConstantVector::getSplat(ElementCount::getFixed(VF),
+                                                  cast<Constant>(Mul))
+                       : Builder.CreateVectorSplat(VF, Mul);
   Builder.restoreIP(CurrIP);
 
   // We may need to add the step a number of times, depending on the unroll
@@ -2822,7 +2822,8 @@ void InnerLoopVectorizer::emitSCEVChecks(Loop *L, BasicBlock *Bypass) {
       return;
 
   assert(!(SCEVCheckBlock->getParent()->hasOptSize() ||
-           OptForSizeBasedOnProfile) &&
+           (OptForSizeBasedOnProfile &&
+            Cost->Hints->getForce() != LoopVectorizeHints::FK_Enabled)) &&
          "Cannot SCEV check stride or overflow when optimizing for size");
 
   SCEVCheckBlock->setName("vector.scevcheck");
@@ -3399,7 +3400,8 @@ unsigned LoopVectorizationCostModel::getVectorCallCost(CallInst *CI,
   // If we can't emit a vector call for this function, then the currently found
   // cost is the cost we need to return.
   NeedToScalarize = true;
-  VFShape Shape = VFShape::get(*CI, {VF, false}, false /*HasGlobalPred*/);
+  VFShape Shape =
+      VFShape::get(*CI, ElementCount::getFixed(VF), false /*HasGlobalPred*/);
   Function *VecFunc = VFDatabase(*CI).getVectorizedFunction(Shape);
 
   if (!TLI || CI->isNoBuiltin() || !VecFunc)
@@ -3860,7 +3862,7 @@ void InnerLoopVectorizer::fixReduction(PHINode *Phi) {
       // incoming scalar reduction.
       VectorStart = ReductionStartValue;
     } else {
-      Identity = ConstantVector::getSplat({VF, false}, Iden);
+      Identity = ConstantVector::getSplat(ElementCount::getFixed(VF), Iden);
 
       // This vector is the Identity vector where the first element is the
       // incoming scalar reduction.
@@ -4541,8 +4543,8 @@ void InnerLoopVectorizer::widenCallInstruction(CallInst &I, VPUser &ArgOperands,
       assert(VectorF && "Can't retrieve vector intrinsic.");
     } else {
       // Use vector version of the function call.
-      const VFShape Shape =
-          VFShape::get(*CI, {VF, false} /*EC*/, false /*HasGlobalPred*/);
+      const VFShape Shape = VFShape::get(*CI, ElementCount::getFixed(VF),
+                                         false /*HasGlobalPred*/);
 #ifndef NDEBUG
       assert(VFDatabase(*CI).getVectorizedFunction(Shape) != nullptr &&
              "Can't create vector function.");
@@ -7913,12 +7915,17 @@ static ScalarEpilogueLowering getScalarEpilogueLowering(
     BlockFrequencyInfo *BFI, TargetTransformInfo *TTI, TargetLibraryInfo *TLI,
     AssumptionCache *AC, LoopInfo *LI, ScalarEvolution *SE, DominatorTree *DT,
     LoopVectorizationLegality &LVL) {
-  bool OptSize =
-      F->hasOptSize() || llvm::shouldOptimizeForSize(L->getHeader(), PSI, BFI,
-                                                     PGSOQueryType::IRPass);
   // 1) OptSize takes precedence over all other options, i.e. if this is set,
   // don't look at hints or options, and don't request a scalar epilogue.
-  if (OptSize)
+  // (For PGSO, as shouldOptimizeForSize isn't currently accessible from
+  // LoopAccessInfo (due to code dependency and not being able to reliably get
+  // PSI/BFI from a loop analysis under NPM), we cannot suppress the collection
+  // of strides in LoopAccessInfo::analyzeLoop() and vectorize without
+  // versioning when the vectorization is forced, unlike hasOptSize. So revert
+  // back to the old way and vectorize with versioning when forced. See D81345.)
+  if (F->hasOptSize() || (llvm::shouldOptimizeForSize(L->getHeader(), PSI, BFI,
+                                                      PGSOQueryType::IRPass) &&
+                          Hints.getForce() != LoopVectorizeHints::FK_Enabled))
     return CM_ScalarEpilogueNotAllowedOptSize;
 
   bool PredicateOptDisabled = PreferPredicateOverEpilog.getNumOccurrences() &&

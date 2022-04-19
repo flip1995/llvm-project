@@ -901,13 +901,15 @@ bool Attributor::checkForAllInstructions(function_ref<bool(Instruction &)> Pred,
 
   // TODO: use the function scope once we have call site AAReturnedValues.
   const IRPosition &QueryIRP = IRPosition::function(*AssociatedFunction);
-  const auto &LivenessAA =
-      getAAFor<AAIsDead>(QueryingAA, QueryIRP, /* TrackDependence */ false);
+  const auto *LivenessAA =
+      CheckBBLivenessOnly ? nullptr
+                          : &(getAAFor<AAIsDead>(QueryingAA, QueryIRP,
+                                                 /* TrackDependence */ false));
 
   auto &OpcodeInstMap =
       InfoCache.getOpcodeInstMapForFunction(*AssociatedFunction);
   if (!checkForAllInstructionsImpl(this, OpcodeInstMap, Pred, &QueryingAA,
-                                   &LivenessAA, Opcodes, CheckBBLivenessOnly))
+                                   LivenessAA, Opcodes, CheckBBLivenessOnly))
     return false;
 
   return true;
@@ -1948,6 +1950,9 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
       // Every function with pointer return type might be marked
       // dereferenceable.
       getOrCreateAAFor<AADereferenceable>(RetPos);
+
+      // Every function with pointer return type might be marked noundef.
+      getOrCreateAAFor<AANoUndef>(RetPos);
     }
   }
 
@@ -1985,6 +1990,9 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
 
       // Every argument with pointer type might be privatizable (or promotable)
       getOrCreateAAFor<AAPrivatizablePtr>(ArgPos);
+
+      // Every argument with pointer type might be marked noundef.
+      getOrCreateAAFor<AANoUndef>(ArgPos);
     }
   }
 
@@ -2051,6 +2059,9 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
 
       // Call site argument attribute "nofree".
       getOrCreateAAFor<AANoFree>(CBArgPos);
+
+      // Call site argument attribute "noundef".
+      getOrCreateAAFor<AANoUndef>(CBArgPos);
     }
     return true;
   };
@@ -2324,7 +2335,9 @@ PreservedAnalyses AttributorCGSCCPass::run(LazyCallGraph::SCC &C,
   InformationCache InfoCache(M, AG, Allocator, /* CGSCC */ &Functions);
   if (runAttributorOnFunctions(InfoCache, Functions, AG, CGUpdater)) {
     // FIXME: Think about passes we will preserve and add them here.
-    return PreservedAnalyses::none();
+    PreservedAnalyses PA;
+    PA.preserve<FunctionAnalysisManagerCGSCCProxy>();
+    return PA;
   }
   return PreservedAnalyses::all();
 }
