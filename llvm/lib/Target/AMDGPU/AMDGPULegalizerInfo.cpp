@@ -64,6 +64,14 @@ static LegalityPredicate isSmallOddVector(unsigned TypeIdx) {
   };
 }
 
+static LegalityPredicate isWideVec16(unsigned TypeIdx) {
+  return [=](const LegalityQuery &Query) {
+    const LLT Ty = Query.Types[TypeIdx];
+    const LLT EltTy = Ty.getScalarType();
+    return EltTy.getSizeInBits() == 16 && Ty.getNumElements() > 2;
+  };
+}
+
 static LegalizeMutation oneMoreElement(unsigned TypeIdx) {
   return [=](const LegalityQuery &Query) {
     const LLT Ty = Query.Types[TypeIdx];
@@ -279,11 +287,14 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
     .widenScalarToNextPow2(0)
     .scalarize(0);
 
-  getActionDefinitionsBuilder({G_UADDO, G_SADDO, G_USUBO, G_SSUBO,
+  getActionDefinitionsBuilder({G_UADDO, G_USUBO,
                                G_UADDE, G_SADDE, G_USUBE, G_SSUBE})
     .legalFor({{S32, S1}})
     .clampScalar(0, S32, S32)
     .scalarize(0); // TODO: Implement.
+
+  getActionDefinitionsBuilder({G_SADDO, G_SSUBO})
+    .lower();
 
   getActionDefinitionsBuilder(G_BITCAST)
     // Don't worry about the size constraint.
@@ -945,7 +956,8 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
     .legalForCartesianProduct(AllS32Vectors, {S32})
     .legalForCartesianProduct(AllS64Vectors, {S64})
     .clampNumElements(0, V16S32, V32S32)
-    .clampNumElements(0, V2S64, V16S64);
+    .clampNumElements(0, V2S64, V16S64)
+    .fewerElementsIf(isWideVec16(0), changeTo(0, V2S16));
 
   if (ST.hasScalarPackInsts())
     BuildVector.legalFor({V2S16, S32});

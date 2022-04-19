@@ -1305,6 +1305,11 @@ public:
   /// \param D Requires declaration
   void EmitOMPRequiresDecl(const OMPRequiresDecl *D);
 
+  /// Emits the definition of \p OldGD function with body from \p NewGD.
+  /// Required for proper handling of declare variant directive on the GPU.
+  void emitOpenMPDeviceFunctionRedefinition(GlobalDecl OldGD, GlobalDecl NewGD,
+                                            llvm::GlobalValue *GV);
+
   /// Returns whether the given record has hidden LTO visibility and therefore
   /// may participate in (single-module) CFI and whole-program vtable
   /// optimization.
@@ -1378,6 +1383,11 @@ public:
   llvm::Constant *getNullPointer(llvm::PointerType *T, QualType QT);
 
   llvm::PointerType* getPointerInDefaultAS(llvm::Type* T);
+
+  /// Set section attributes requested by "#pragma clang section"
+  ///  \param D is the declaration to read semantic attributes from.
+  ///  \param GO is the global object to set section attributes.
+  void setPragmaSectionAttributes(const Decl *D, llvm::GlobalObject *GO);
 
 private:
   llvm::Constant *GetOrCreateLLVMFunction(

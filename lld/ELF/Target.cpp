@@ -105,6 +105,9 @@ TargetInfo *getTarget() {
 }
 
 template <class ELFT> static ErrorPlace getErrPlace(const uint8_t *loc) {
+  if (!Out::bufferStart)
+    return {};
+
   for (InputSectionBase *d : inputSections) {
     auto *isec = cast<InputSection>(d);
     if (!isec->getParent())

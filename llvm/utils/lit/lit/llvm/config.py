@@ -93,12 +93,12 @@ class LLVMConfig(object):
                         'ASAN_OPTIONS', 'detect_leaks=1', append_path=True)
             if re.match(r'^x86_64.*-linux', target_triple):
                 features.add('x86_64-linux')
-            if re.match(r'.*-windows-msvc$', target_triple):
-                features.add('target-windows')
             if re.match(r'^i.86.*', target_triple):
                 features.add('target-x86')
             elif re.match(r'^x86_64.*', target_triple):
                 features.add('target-x86_64')
+            elif re.match(r'^aarch64.*', target_triple):
+                features.add('target-aarch64')
 
         use_gmalloc = lit_config.params.get('use_gmalloc', None)
         if lit.util.pythonize_bool(use_gmalloc):
@@ -496,7 +496,7 @@ class LLVMConfig(object):
             ToolSubst('%plain_clang_cheri_triple_allowed', command=self.config.clang, extra_args=additional_flags),
 
             ToolSubst('%clang', command=self.config.clang, extra_args=additional_flags),
-            ToolSubst('%clang_analyze_cc1', command='%clang_cc1', extra_args=['-analyze', '%analyze']+additional_flags),
+            ToolSubst('%clang_analyze_cc1', command='%clang_cc1', extra_args=['-analyze', '%analyze', '-setup-static-analyzer']+additional_flags),
             ToolSubst('%clang_cc1', command=self.config.clang, extra_args=clang_cc1_args+additional_flags),
             ToolSubst('%clang_cpp', command=self.config.clang, extra_args=['--driver-mode=cpp']+additional_flags),
             ToolSubst('%clang_cl', command=self.config.clang, extra_args=['--driver-mode=cl']+additional_flags),

@@ -578,6 +578,7 @@ lldb::TypeSystemSP ClangASTContext::CreateInstance(lldb::LanguageType language,
           fixed_arch.GetTriple().getOS() == llvm::Triple::UnknownOS) {
         if (fixed_arch.GetTriple().getArch() == llvm::Triple::arm ||
             fixed_arch.GetTriple().getArch() == llvm::Triple::aarch64 ||
+            fixed_arch.GetTriple().getArch() == llvm::Triple::aarch64_32 ||
             fixed_arch.GetTriple().getArch() == llvm::Triple::thumb) {
           fixed_arch.GetTriple().setOS(llvm::Triple::IOS);
         } else {
@@ -8971,6 +8972,39 @@ ClangASTContext::dump(lldb::opaque_compiler_type_t type) const {
 void ClangASTContext::Dump(Stream &s) {
   Decl *tu = Decl::castFromDeclContext(GetTranslationUnitDecl());
   tu->dump(s.AsRawOstream());
+}
+
+void ClangASTContext::DumpFromSymbolFile(Stream &s,
+                                         llvm::StringRef symbol_name) {
+  SymbolFile *symfile = GetSymbolFile();
+
+  if (!symfile)
+    return;
+
+  lldb_private::TypeList type_list;
+  symfile->GetTypes(nullptr, eTypeClassAny, type_list);
+  size_t ntypes = type_list.GetSize();
+
+  for (size_t i = 0; i < ntypes; ++i) {
+    TypeSP type = type_list.GetTypeAtIndex(i);
+
+    if (!symbol_name.empty())
+      if (symbol_name.compare(type->GetName().GetStringRef()) != 0)
+        continue;
+
+    s << type->GetName().AsCString() << "\n";
+
+    if (clang::TagDecl *tag_decl =
+                 GetAsTagDecl(type->GetFullCompilerType()))
+      tag_decl->dump(s.AsRawOstream());
+    else if (clang::TypedefNameDecl *typedef_decl =
+                 GetAsTypedefDecl(type->GetFullCompilerType()))
+      typedef_decl->dump(s.AsRawOstream());
+    else {
+      GetCanonicalQualType(type->GetFullCompilerType().GetOpaqueQualType())
+          .dump(s.AsRawOstream());
+    }
+  }
 }
 
 void ClangASTContext::DumpValue(
