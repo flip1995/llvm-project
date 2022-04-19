@@ -14,7 +14,6 @@
 #ifndef LLVM_SUPPORT_MACHINEVALUETYPE_H
 #define LLVM_SUPPORT_MACHINEVALUETYPE_H
 
-#include "llvm/Config/config.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"

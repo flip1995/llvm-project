@@ -2450,6 +2450,23 @@ SDValue DAGCombiner::visitADDLike(SDNode *N) {
   if (!reassociationCanBreakAddressingModePattern(ISD::ADD, DL, N0, N1)) {
     if (SDValue RADD = reassociateOps(ISD::ADD, DL, N0, N1, N->getFlags()))
       return RADD;
+
+    // Reassociate (add (or x, c), y) -> (add add(x, y), c)) if (or x, c) is
+    // equivalent to (add x, c).
+    auto ReassociateAddOr = [&](SDValue N0, SDValue N1) {
+      if (N0.getOpcode() == ISD::OR && N0.hasOneUse() &&
+          isConstantOrConstantVector(N0.getOperand(1), /* NoOpaque */ true) &&
+          DAG.haveNoCommonBitsSet(N0.getOperand(0), N0.getOperand(1))) {
+        return DAG.getNode(ISD::ADD, DL, VT,
+                           DAG.getNode(ISD::ADD, DL, VT, N1, N0.getOperand(0)),
+                           N0.getOperand(1));
+      }
+      return SDValue();
+    };
+    if (SDValue Add = ReassociateAddOr(N0, N1))
+      return Add;
+    if (SDValue Add = ReassociateAddOr(N1, N0))
+      return Add;
   }
   // fold ((0-A) + B) -> B-A
   if (N0.getOpcode() == ISD::SUB && isNullOrNullSplat(N0.getOperand(0)))
@@ -3304,7 +3321,7 @@ SDValue DAGCombiner::foldSubToUSubSat(EVT DstVT, SDNode *N) {
 
   // Try to find umax(a,b) - b or a - umin(a,b) patterns
   // they may be converted to usubsat(a,b).
-  if (Op0.getOpcode() == ISD::UMAX) {
+  if (Op0.getOpcode() == ISD::UMAX && Op0.hasOneUse()) {
     SDValue MaxLHS = Op0.getOperand(0);
     SDValue MaxRHS = Op0.getOperand(1);
     if (MaxLHS == Op1)
@@ -3313,7 +3330,7 @@ SDValue DAGCombiner::foldSubToUSubSat(EVT DstVT, SDNode *N) {
       return getTruncatedUSUBSAT(DstVT, SubVT, MaxLHS, Op1, DAG, SDLoc(N));
   }
 
-  if (Op1.getOpcode() == ISD::UMIN) {
+  if (Op1.getOpcode() == ISD::UMIN && Op1.hasOneUse()) {
     SDValue MinLHS = Op1.getOperand(0);
     SDValue MinRHS = Op1.getOperand(1);
     if (MinLHS == Op0)
@@ -3324,7 +3341,8 @@ SDValue DAGCombiner::foldSubToUSubSat(EVT DstVT, SDNode *N) {
 
   // sub(a,trunc(umin(zext(a),b))) -> usubsat(a,trunc(umin(b,SatLimit)))
   if (Op1.getOpcode() == ISD::TRUNCATE &&
-      Op1.getOperand(0).getOpcode() == ISD::UMIN) {
+      Op1.getOperand(0).getOpcode() == ISD::UMIN &&
+      Op1.getOperand(0).hasOneUse()) {
     SDValue MinLHS = Op1.getOperand(0).getOperand(0);
     SDValue MinRHS = Op1.getOperand(0).getOperand(1);
     if (MinLHS.getOpcode() == ISD::ZERO_EXTEND && MinLHS.getOperand(0) == Op0)
@@ -18265,10 +18283,11 @@ SDValue DAGCombiner::visitSTORE(SDNode *N) {
 
   // If this is an FP_ROUND or TRUNC followed by a store, fold this into a
   // truncating store.  We can do this even if this is already a truncstore.
-  if ((Value.getOpcode() == ISD::FP_ROUND || Value.getOpcode() == ISD::TRUNCATE)
-      && Value.getNode()->hasOneUse() && ST->isUnindexed() &&
-      TLI.isTruncStoreLegal(Value.getOperand(0).getValueType(),
-                            ST->getMemoryVT())) {
+  if ((Value.getOpcode() == ISD::FP_ROUND ||
+       Value.getOpcode() == ISD::TRUNCATE) &&
+      Value.getNode()->hasOneUse() && ST->isUnindexed() &&
+      TLI.canCombineTruncStore(Value.getOperand(0).getValueType(),
+                               ST->getMemoryVT(), LegalOperations)) {
     return DAG.getTruncStore(Chain, SDLoc(N), Value.getOperand(0),
                              Ptr, ST->getMemoryVT(), ST->getMemOperand());
   }

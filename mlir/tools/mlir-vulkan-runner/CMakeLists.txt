@@ -61,8 +61,10 @@ if (MLIR_ENABLE_VULKAN_RUNNER)
     MLIRIR
     MLIRJitRunner
     MLIRLLVMIR
+    MLIRLLVMCommonConversion
     MLIRLLVMToLLVMIRTranslation
     MLIRMemRef
+    MLIRMemRefToLLVM
     MLIRParser
     MLIRSPIRV
     MLIRSPIRVTransforms

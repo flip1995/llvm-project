@@ -4401,8 +4401,10 @@ static bool getUniformBase(const Value *Ptr, SDValue &Base, SDValue &Index,
 
     Base = SDB->getValue(C);
 
-    unsigned NumElts = cast<FixedVectorType>(Ptr->getType())->getNumElements();
-    EVT VT = EVT::getVectorVT(*DAG.getContext(), TLI.getPointerTy(DL, DL.getGlobalsAddressSpace()), NumElts);
+    ElementCount NumElts = cast<VectorType>(Ptr->getType())->getElementCount();
+    EVT VT = EVT::getVectorVT(*DAG.getContext(),
+                              TLI.getPointerTy(DL, DL.getGlobalsAddressSpace()),
+                              NumElts);
     Index = DAG.getConstant(0, SDB->getCurSDLoc(), VT);
     IndexType = ISD::SIGNED_SCALED;
     Scale = DAG.getTargetConstant(
@@ -5540,6 +5542,35 @@ bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
   if (!Arg)
     return false;
 
+  MachineFunction &MF = DAG.getMachineFunction();
+  const TargetInstrInfo *TII = DAG.getSubtarget().getInstrInfo();
+
+  // Helper to create DBG_INSTR_REFs or DBG_VALUEs, depending on what kind
+  // we've been asked to pursue.
+  auto MakeVRegDbgValue = [&](Register Reg, DIExpression *FragExpr,
+                              bool Indirect) {
+    if (Reg.isVirtual() && TM.Options.ValueTrackingVariableLocations) {
+      // For VRegs, in instruction referencing mode, create a DBG_INSTR_REF
+      // pointing at the VReg, which will be patched up later.
+      auto &Inst = TII->get(TargetOpcode::DBG_INSTR_REF);
+      auto MIB = BuildMI(MF, DL, Inst);
+      MIB.addReg(Reg, RegState::Debug);
+      MIB.addImm(0);
+      MIB.addMetadata(Variable);
+      auto *NewDIExpr = FragExpr;
+      // We don't have an "Indirect" field in DBG_INSTR_REF, fold that into
+      // the DIExpression.
+      if (Indirect)
+        NewDIExpr = DIExpression::prepend(FragExpr, DIExpression::DerefBefore);
+      MIB.addMetadata(NewDIExpr);
+      return MIB;
+    } else {
+      // Create a completely standard DBG_VALUE.
+      auto &Inst = TII->get(TargetOpcode::DBG_VALUE);
+      return BuildMI(MF, DL, Inst, Indirect, Reg, Variable, FragExpr);
+    }
+  };
+
   if (!IsDbgDeclare) {
     // ArgDbgValues are hoisted to the beginning of the entry block. So we
     // should only emit as ArgDbgValue if the dbg.value intrinsic is found in
@@ -5604,9 +5635,6 @@ bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
       FuncInfo.DescribedArgs.set(ArgNo);
     }
   }
-
-  MachineFunction &MF = DAG.getMachineFunction();
-  const TargetInstrInfo *TII = DAG.getSubtarget().getInstrInfo();
 
   bool IsIndirect = false;
   Optional<MachineOperand> Op;
@@ -5677,9 +5705,9 @@ bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
           DAG.AddDbgValue(SDV, false);
           continue;
         }
-        FuncInfo.ArgDbgValues.push_back(
-          BuildMI(MF, DL, TII->get(TargetOpcode::DBG_VALUE), IsDbgDeclare,
-                  RegAndSize.first, Variable, *FragmentExpr));
+        MachineInstr *NewMI =
+            MakeVRegDbgValue(RegAndSize.first, *FragmentExpr, IsDbgDeclare);
+        FuncInfo.ArgDbgValues.push_back(NewMI);
       }
     };
 
@@ -5710,11 +5738,15 @@ bool SelectionDAGBuilder::EmitFuncArgumentDbgValue(
 
   assert(Variable->isValidLocationForIntrinsic(DL) &&
          "Expected inlined-at fields to agree");
-  IsIndirect = (Op->isReg()) ? IsIndirect : true;
-  FuncInfo.ArgDbgValues.push_back(
-      BuildMI(MF, DL, TII->get(TargetOpcode::DBG_VALUE), IsIndirect,
-              *Op, Variable, Expr));
+  MachineInstr *NewMI = nullptr;
 
+  if (Op->isReg())
+    NewMI = MakeVRegDbgValue(Op->getReg(), Expr, IsIndirect);
+  else
+    NewMI = BuildMI(MF, DL, TII->get(TargetOpcode::DBG_VALUE), true, *Op,
+                    Variable, Expr);
+
+  FuncInfo.ArgDbgValues.push_back(NewMI);
   return true;
 }
 
@@ -9617,7 +9649,7 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
     // FIXME: Split arguments if CLI.IsPostTypeLegalization
     Type *FinalType = Args[i].Ty;
     if (Args[i].IsByVal)
-      FinalType = cast<PointerType>(Args[i].Ty)->getElementType();
+      FinalType = Args[i].IndirectType;
     bool NeedsRegBlock = functionArgumentNeedsConsecutiveRegisters(
         FinalType, CLI.CallConv, CLI.IsVarArg, DL);
     for (unsigned Value = 0, NumValues = ValueVTs.size(); Value != NumValues;
@@ -9690,18 +9722,14 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
       }
       Align MemAlign;
       if (Args[i].IsByVal || Args[i].IsInAlloca || Args[i].IsPreallocated) {
-        PointerType *Ty = cast<PointerType>(Args[i].Ty);
-        Type *ElementTy = Ty->getElementType();
-
-        unsigned FrameSize = DL.getTypeAllocSize(
-            Args[i].ByValType ? Args[i].ByValType : ElementTy);
+        unsigned FrameSize = DL.getTypeAllocSize(Args[i].IndirectType);
         Flags.setByValSize(FrameSize);
 
         // info is not there but there are cases it cannot get right.
         if (auto MA = Args[i].Alignment)
           MemAlign = *MA;
         else
-          MemAlign = Align(getByValTypeAlignment(ElementTy, DL));
+          MemAlign = Align(getByValTypeAlignment(Args[i].IndirectType, DL));
       } else if (auto MA = Args[i].Alignment) {
         MemAlign = *MA;
       } else {

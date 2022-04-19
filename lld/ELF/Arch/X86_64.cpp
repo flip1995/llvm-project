@@ -32,6 +32,7 @@ public:
   RelType getDynRel(RelType type) const override;
   void writeGotPltHeader(uint8_t *buf) const override;
   void writeGotPlt(uint8_t *buf, const Symbol &s) const override;
+  void writeIgotPlt(uint8_t *buf, const Symbol &s) const override;
   void writePltHeader(uint8_t *buf) const override;
   void writePlt(uint8_t *buf, const Symbol &sym,
                 uint64_t pltEntryAddr) const override;
@@ -380,6 +381,12 @@ void X86_64::writeGotPlt(uint8_t *buf, const Symbol &s) const {
   write64le(buf, s.getPltVA() + 6);
 }
 
+void X86_64::writeIgotPlt(uint8_t *buf, const Symbol &s) const {
+  // An x86 entry is the address of the ifunc resolver function (for -z rel).
+  if (config->writeAddends)
+    write64le(buf, s.getVA());
+}
+
 void X86_64::writePltHeader(uint8_t *buf) const {
   const uint8_t pltData[] = {
       0xff, 0x35, 0, 0, 0, 0, // pushq GOTPLT+8(%rip)
@@ -702,7 +709,9 @@ int64_t X86_64::getImplicitAddend(const uint8_t *buf, RelType type) const {
   case R_X86_64_SIZE32:
     return SignExtend64<32>(read32le(buf));
   case R_X86_64_64:
+  case R_X86_64_TPOFF64:
   case R_X86_64_DTPOFF64:
+  case R_X86_64_DTPMOD64:
   case R_X86_64_PC64:
   case R_X86_64_SIZE64:
   case R_X86_64_GLOB_DAT:
@@ -714,9 +723,11 @@ int64_t X86_64::getImplicitAddend(const uint8_t *buf, RelType type) const {
     return read64le(buf);
   case R_X86_64_JUMP_SLOT:
   case R_X86_64_NONE:
-    return 0; // The stored value at this location is not the addend.
+    // These relocations are defined as not having an implicit addend.
+    return 0;
   default:
-    errorOrWarn(toString(type) + " not handled in getImplicitAddend");
+    internalLinkerError(getErrorLocation(buf),
+                        "cannot read addend for relocation " + toString(type));
     return 0;
   }
 }

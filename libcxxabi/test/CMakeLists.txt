@@ -1,4 +1,4 @@
-include(AddLLVM) # for configure_lit_site_cfg and add_lit_target
+include(AddLLVM) # for configure_lit_site_cfg and add_lit_testsuite
 macro(pythonize_bool var)
   if (${var})
     set(${var} True)
@@ -86,8 +86,8 @@ if (LLVM_USE_SANITIZER)
   serialize_lit_param(use_sanitizer "\"${LLVM_USE_SANITIZER}\"")
 endif()
 
-if (TARGET_TRIPLE)
-  serialize_lit_param(target_triple "\"${TARGET_TRIPLE}\"")
+if (LIBCXXABI_TARGET_TRIPLE)
+  serialize_lit_param(target_triple "\"${LIBCXXABI_TARGET_TRIPLE}\"")
 endif()
 
 if (LIBCXXABI_BUILD_32_BITS)

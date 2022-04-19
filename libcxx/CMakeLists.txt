@@ -254,7 +254,7 @@ option(LIBCXXABI_USE_LLVM_UNWINDER "Build and use the LLVM unwinder." OFF)
 
 # Target options --------------------------------------------------------------
 option(LIBCXX_BUILD_32_BITS "Build 32 bit libc++." ${LLVM_BUILD_32_BITS})
-set(LIBCXX_TARGET_TRIPLE "" CACHE STRING "Use alternate target triple.")
+set(LIBCXX_TARGET_TRIPLE "${TARGET_TRIPLE}" CACHE STRING "Use alternate target triple.")
 set(LIBCXX_SYSROOT "" CACHE STRING "Use alternate sysroot.")
 set(LIBCXX_GCC_TOOLCHAIN "" CACHE STRING "Use alternate GCC toolchain.")
 
@@ -410,9 +410,12 @@ if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR AND NOT APPLE)
   set(LIBCXX_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR}/${LLVM_DEFAULT_TARGET_TRIPLE})
   set(LIBCXX_GENERATED_INCLUDE_DIR "${LLVM_BINARY_DIR}/include/c++/v1")
   set(LIBCXX_GENERATED_INCLUDE_TARGET_DIR "${LLVM_BINARY_DIR}/include/${LLVM_DEFAULT_TARGET_TRIPLE}/c++/v1")
-  set(LIBCXX_INSTALL_LIBRARY_DIR lib${LLVM_LIBDIR_SUFFIX}/${LLVM_DEFAULT_TARGET_TRIPLE})
-  set(LIBCXX_INSTALL_INCLUDE_DIR "include/c++/v1")
-  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "include/${LLVM_DEFAULT_TARGET_TRIPLE}/c++/v1")
+  set(LIBCXX_INSTALL_LIBRARY_DIR lib${LLVM_LIBDIR_SUFFIX}/${LLVM_DEFAULT_TARGET_TRIPLE} CACHE PATH
+      "Path where built libc++ libraries should be installed.")
+  set(LIBCXX_INSTALL_INCLUDE_DIR "include/c++/v1" CACHE PATH
+      "Path where target-agnostic libc++ headers should be installed.")
+  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "include/${LLVM_DEFAULT_TARGET_TRIPLE}/c++/v1" CACHE PATH
+      "Path where target-specific libc++ headers should be installed.")
   if(LIBCXX_LIBDIR_SUBDIR)
     string(APPEND LIBCXX_LIBRARY_DIR /${LIBCXX_LIBDIR_SUBDIR})
     string(APPEND LIBCXX_INSTALL_LIBRARY_DIR /${LIBCXX_LIBDIR_SUBDIR})
@@ -421,16 +424,22 @@ elseif(LLVM_LIBRARY_OUTPUT_INTDIR)
   set(LIBCXX_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
   set(LIBCXX_GENERATED_INCLUDE_DIR "${LLVM_BINARY_DIR}/include/c++/v1")
   set(LIBCXX_GENERATED_INCLUDE_TARGET_DIR "${LIBCXX_GENERATED_INCLUDE_DIR}")
-  set(LIBCXX_INSTALL_LIBRARY_DIR lib${LIBCXX_LIBDIR_SUFFIX})
-  set(LIBCXX_INSTALL_INCLUDE_DIR "include/c++/v1")
-  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "${LIBCXX_INSTALL_INCLUDE_DIR}")
+  set(LIBCXX_INSTALL_LIBRARY_DIR lib${LIBCXX_LIBDIR_SUFFIX} CACHE PATH
+      "Path where built libc++ libraries should be installed.")
+  set(LIBCXX_INSTALL_INCLUDE_DIR "include/c++/v1" CACHE PATH
+      "Path where target-agnostic libc++ headers should be installed.")
+  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "${LIBCXX_INSTALL_INCLUDE_DIR}" CACHE PATH
+      "Path where target-specific libc++ headers should be installed.")
 else()
   set(LIBCXX_LIBRARY_DIR ${CMAKE_BINARY_DIR}/lib${LIBCXX_LIBDIR_SUFFIX})
   set(LIBCXX_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/include/c++/v1")
   set(LIBCXX_GENERATED_INCLUDE_TARGET_DIR "${LIBCXX_GENERATED_INCLUDE_DIR}")
-  set(LIBCXX_INSTALL_LIBRARY_DIR lib${LIBCXX_LIBDIR_SUFFIX})
-  set(LIBCXX_INSTALL_INCLUDE_DIR "include/c++/v1")
-  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "${LIBCXX_INSTALL_INCLUDE_DIR}")
+  set(LIBCXX_INSTALL_LIBRARY_DIR lib${LIBCXX_LIBDIR_SUFFIX} CACHE PATH
+      "Path where built libc++ libraries should be installed.")
+  set(LIBCXX_INSTALL_INCLUDE_DIR "include/c++/v1" CACHE PATH
+      "Path where target-agnostic libc++ headers should be installed.")
+  set(LIBCXX_INSTALL_INCLUDE_TARGET_DIR "${LIBCXX_INSTALL_INCLUDE_DIR}" CACHE PATH
+      "Path where target-specific libc++ headers should be installed.")
 endif()
 
 file(MAKE_DIRECTORY "${LIBCXX_BINARY_INCLUDE_DIR}")
@@ -472,10 +481,6 @@ if(LIBCXX_GCC_TOOLCHAIN)
   add_target_flags("--gcc-toolchain=${LIBCXX_GCC_TOOLCHAIN}")
 elseif(CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN)
   set(LIBCXX_GCC_TOOLCHAIN "${CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN}")
-endif()
-
-if(LIBCXX_TARGET_TRIPLE)
-  set(TARGET_TRIPLE "${LIBCXX_TARGET_TRIPLE}")
 endif()
 
 # Configure compiler.

@@ -995,6 +995,46 @@ static llvm::Value *EmitBitTestIntrinsic(CodeGenFunction &CGF,
       ShiftedByte, llvm::ConstantInt::get(CGF.Int8Ty, 1), "bittest.res");
 }
 
+static llvm::Value *emitPPCLoadReserveIntrinsic(CodeGenFunction &CGF,
+                                                unsigned BuiltinID,
+                                                const CallExpr *E) {
+  Value *Addr = CGF.EmitScalarExpr(E->getArg(0));
+
+  SmallString<64> Asm;
+  raw_svector_ostream AsmOS(Asm);
+  llvm::IntegerType *RetType = CGF.Int32Ty;
+
+  switch (BuiltinID) {
+  case clang::PPC::BI__builtin_ppc_ldarx:
+    AsmOS << "ldarx ";
+    RetType = CGF.Int64Ty;
+    break;
+  case clang::PPC::BI__builtin_ppc_lwarx:
+    AsmOS << "lwarx ";
+    RetType = CGF.Int32Ty;
+    break;
+  default:
+    llvm_unreachable("Expected only PowerPC load reserve intrinsics");
+  }
+
+  AsmOS << "$0, ${1:y}";
+
+  std::string Constraints = "=r,*Z,~{memory}";
+  std::string MachineClobbers = CGF.getTarget().getClobbers();
+  if (!MachineClobbers.empty()) {
+    Constraints += ',';
+    Constraints += MachineClobbers;
+  }
+
+  llvm::Type *IntPtrType = RetType->getPointerTo();
+  llvm::FunctionType *FTy =
+      llvm::FunctionType::get(RetType, {IntPtrType}, false);
+
+  llvm::InlineAsm *IA =
+      llvm::InlineAsm::get(FTy, Asm, Constraints, /*hasSideEffects=*/true);
+  return CGF.Builder.CreateCall(IA, {Addr});
+}
+
 namespace {
 enum class MSVCSetJmpKind {
   _setjmpex,
@@ -15866,6 +15906,9 @@ Value *CodeGenFunction::EmitPPCBuiltinExpr(unsigned BuiltinID,
     return MakeBinaryAtomicValue(*this, AtomicRMWInst::Xchg, E,
                                  llvm::AtomicOrdering::Monotonic);
   }
+  case PPC::BI__builtin_ppc_ldarx:
+  case PPC::BI__builtin_ppc_lwarx:
+    return emitPPCLoadReserveIntrinsic(*this, BuiltinID, E);
   }
 }
 
@@ -18079,16 +18122,6 @@ Value *CodeGenFunction::EmitWebAssemblyBuiltinExpr(unsigned BuiltinID,
         llvm::ConstantVector::get({Builder.getInt32(0), Builder.getInt32(1),
                                    Builder.getInt32(2), Builder.getInt32(3)});
     return Builder.CreateShuffleVector(Trunc, Splat, ConcatMask);
-  }
-  case WebAssembly::BI__builtin_wasm_demote_zero_f64x2_f32x4: {
-    Value *Vec = EmitScalarExpr(E->getArg(0));
-    Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_demote_zero);
-    return Builder.CreateCall(Callee, Vec);
-  }
-  case WebAssembly::BI__builtin_wasm_promote_low_f32x4_f64x2: {
-    Value *Vec = EmitScalarExpr(E->getArg(0));
-    Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_promote_low);
-    return Builder.CreateCall(Callee, Vec);
   }
   case WebAssembly::BI__builtin_wasm_load32_zero: {
     Value *Ptr = EmitScalarExpr(E->getArg(0));
