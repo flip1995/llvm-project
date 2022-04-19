@@ -955,16 +955,11 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
         << Args.getLastArg(OPT_mthread_model)->getAsString(Args)
         << Opts.ThreadModel;
   Opts.TrapFuncName = Args.getLastArgValue(OPT_ftrap_function_EQ);
+  Opts.UseInitArray = !Args.hasArg(OPT_fno_use_init_array);
   const bool IsPurecapFreeBSD =
       Triple.isOSFreeBSD() && TargetOpts.ABI == "purecap";
   // CheriBSD purecap RTLD does not support .ctors for shared libraries/pie
-  // binaries so we default to .init_array
-  // TODO: we should proabbly do that for MIPS as well (which is what the clang
-  // frontend does but cc1 doesn't yet). Shouldn't really matter since we always
-  // compile with clang and not clang -cc1
-  bool UseInitArrayDefault = IsPurecapFreeBSD;
-  Opts.UseInitArray = Args.hasFlag(OPT_fuse_init_array, OPT_fno_use_init_array,
-                                   UseInitArrayDefault);
+  // binaries so we report a warning when not using .init_array
   if (!Opts.UseInitArray && IsPurecapFreeBSD)
     Diags.Report(diag::warn_cheri_purecap_init_array_required);
 
@@ -3082,6 +3077,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
       Opts.OpenMP && !Args.hasArg(options::OPT_fnoopenmp_use_tls);
   Opts.OpenMPIsDevice =
       Opts.OpenMP && Args.hasArg(options::OPT_fopenmp_is_device);
+  Opts.OpenMPIRBuilder =
+      Opts.OpenMP && Args.hasArg(options::OPT_fopenmp_enable_irbuilder);
   bool IsTargetSpecified =
       Opts.OpenMPIsDevice || Args.hasArg(options::OPT_fopenmp_targets_EQ);
 

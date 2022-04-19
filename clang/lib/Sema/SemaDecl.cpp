@@ -868,6 +868,9 @@ Sema::NameClassification Sema::ClassifyName(Scope *S, CXXScopeSpec &SS,
   LookupResult Result(*this, Name, NameLoc, LookupOrdinaryName);
   LookupParsedName(Result, S, &SS, !CurMethod);
 
+  if (SS.isInvalid())
+    return NameClassification::Error();
+
   // For unqualified lookup in a class template in MSVC mode, look into
   // dependent base classes where the primary class template is known.
   if (Result.empty() && SS.isEmpty() && getLangOpts().MSVCCompat) {
@@ -880,7 +883,7 @@ Sema::NameClassification Sema::ClassifyName(Scope *S, CXXScopeSpec &SS,
   // synthesized instance variables), if we're in an Objective-C method.
   // FIXME: This lookup really, really needs to be folded in to the normal
   // unqualified lookup mechanism.
-  if (!SS.isSet() && CurMethod && !isResultTypeOrTemplate(Result, NextToken)) {
+  if (SS.isEmpty() && CurMethod && !isResultTypeOrTemplate(Result, NextToken)) {
     DeclResult Ivar = LookupIvarInObjCMethod(Result, S, Name);
     if (Ivar.isInvalid())
       return NameClassification::Error();
@@ -900,7 +903,7 @@ Corrected:
   case LookupResult::NotFound:
     // If an unqualified-id is followed by a '(', then we have a function
     // call.
-    if (!SS.isSet() && NextToken.is(tok::l_paren)) {
+    if (SS.isEmpty() && NextToken.is(tok::l_paren)) {
       // In C++, this is an ADL-only call.
       // FIXME: Reference?
       if (getLangOpts().CPlusPlus)
@@ -922,7 +925,7 @@ Corrected:
         return NameClassification::NonType(D);
     }
 
-    if (getLangOpts().CPlusPlus2a && !SS.isSet() && NextToken.is(tok::less)) {
+    if (getLangOpts().CPlusPlus2a && SS.isEmpty() && NextToken.is(tok::less)) {
       // In C++20 onwards, this could be an ADL-only call to a function
       // template, and we're required to assume that this is a template name.
       //
@@ -1064,7 +1067,7 @@ Corrected:
        hasAnyAcceptableTemplateNames(
            Result, /*AllowFunctionTemplates=*/true,
            /*AllowDependent=*/false,
-           /*AllowNonTemplateFunctions*/ !SS.isSet() &&
+           /*AllowNonTemplateFunctions*/ SS.isEmpty() &&
                getLangOpts().CPlusPlus2a))) {
     // C++ [temp.names]p3:
     //   After name lookup (3.4) finds that a name is a template-name or that
@@ -1093,7 +1096,7 @@ Corrected:
       IsFunctionTemplate = isa<FunctionTemplateDecl>(TD);
       IsVarTemplate = isa<VarTemplateDecl>(TD);
 
-      if (SS.isSet() && !SS.isInvalid())
+      if (SS.isNotEmpty())
         Template =
             Context.getQualifiedTemplateName(SS.getScopeRep(),
                                              /*TemplateKeyword=*/false, TD);
@@ -1803,6 +1806,13 @@ static bool ShouldDiagnoseUnusedDecl(const NamedDecl *D) {
                 (VD->getInit()->isValueDependent() || !VD->evaluateValue()))
               return false;
           }
+
+          // Suppress the warning if we don't know how this is constructed, and
+          // it could possibly be non-trivial constructor.
+          if (Init->isTypeDependent())
+            for (const CXXConstructorDecl *Ctor : RD->ctors())
+              if (!Ctor->isTrivial())
+                return false;
         }
       }
     }
@@ -9840,7 +9850,7 @@ bool Sema::shouldLinkDependentDeclWithPrevious(Decl *D, Decl *PrevDecl) {
 static bool CheckMultiVersionValue(Sema &S, const FunctionDecl *FD) {
   const auto *TA = FD->getAttr<TargetAttr>();
   assert(TA && "MultiVersion Candidate requires a target attribute");
-  TargetAttr::ParsedTargetAttr ParseInfo = TA->parse();
+  ParsedTargetAttr ParseInfo = TA->parse();
   const TargetInfo &TargetInfo = S.Context.getTargetInfo();
   enum ErrType { Feature = 0, Architecture = 1 };
 
@@ -9917,13 +9927,15 @@ bool Sema::areMultiversionVariantFunctionsCompatible(
     Linkage = 5,
   };
 
-  if (OldFD && !OldFD->getType()->getAs<FunctionProtoType>()) {
+  if (NoProtoDiagID.getDiagID() != 0 && OldFD &&
+      !OldFD->getType()->getAs<FunctionProtoType>()) {
     Diag(OldFD->getLocation(), NoProtoDiagID);
     Diag(NoteCausedDiagIDAt.first, NoteCausedDiagIDAt.second);
     return true;
   }
 
-  if (!NewFD->getType()->getAs<FunctionProtoType>())
+  if (NoProtoDiagID.getDiagID() != 0 &&
+      !NewFD->getType()->getAs<FunctionProtoType>())
     return Diag(NewFD->getLocation(), NoProtoDiagID);
 
   if (!TemplatesSupported &&
@@ -10091,7 +10103,7 @@ static bool CheckTargetCausesMultiVersioning(
     bool &Redeclaration, NamedDecl *&OldDecl, bool &MergeTypeWithPrevious,
     LookupResult &Previous) {
   const auto *OldTA = OldFD->getAttr<TargetAttr>();
-  TargetAttr::ParsedTargetAttr NewParsed = NewTA->parse();
+  ParsedTargetAttr NewParsed = NewTA->parse();
   // Sort order doesn't matter, it just needs to be consistent.
   llvm::sort(NewParsed.Features);
 
@@ -10135,8 +10147,7 @@ static bool CheckTargetCausesMultiVersioning(
     return true;
   }
 
-  TargetAttr::ParsedTargetAttr OldParsed =
-      OldTA->parse(std::less<std::string>());
+  ParsedTargetAttr OldParsed = OldTA->parse(std::less<std::string>());
 
   if (OldParsed == NewParsed) {
     S.Diag(NewFD->getLocation(), diag::err_multiversion_duplicate);
@@ -10189,7 +10200,7 @@ static bool CheckMultiVersionAdditionalDecl(
     return true;
   }
 
-  TargetAttr::ParsedTargetAttr NewParsed;
+  ParsedTargetAttr NewParsed;
   if (NewTA) {
     NewParsed = NewTA->parse();
     llvm::sort(NewParsed.Features);
@@ -10216,8 +10227,7 @@ static bool CheckMultiVersionAdditionalDecl(
         return false;
       }
 
-      TargetAttr::ParsedTargetAttr CurParsed =
-          CurTA->parse(std::less<std::string>());
+      ParsedTargetAttr CurParsed = CurTA->parse(std::less<std::string>());
       if (CurParsed == NewParsed) {
         S.Diag(NewFD->getLocation(), diag::err_multiversion_duplicate);
         S.Diag(CurFD->getLocation(), diag::note_previous_declaration);
@@ -12300,6 +12310,10 @@ void Sema::ActOnUninitializedDecl(Decl *RealDecl) {
         Diag(Var->getLocation(), diag::warn_private_extern);
         Diag(Var->getLocation(), diag::note_private_extern);
       }
+
+      if (Context.getTargetInfo().allowDebugInfoForExternalVar() &&
+          !Var->isInvalidDecl() && !getLangOpts().CPlusPlus)
+        ExternalDeclarations.push_back(Var);
 
       return;
 

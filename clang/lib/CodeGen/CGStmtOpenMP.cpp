@@ -16,12 +16,14 @@
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
+#include "clang/AST/DeclOpenMP.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtOpenMP.h"
-#include "clang/AST/DeclOpenMP.h"
 #include "clang/Basic/PrettyStackTrace.h"
 using namespace clang;
 using namespace CodeGen;
+using namespace llvm::omp;
 
 namespace {
 /// Lexical scope for OpenMP executable constructs, that handles correct codegen
@@ -4621,7 +4623,8 @@ void CodeGenFunction::EmitOMPTeamsDistributeParallelForSimdDirective(
         CGF, OMPD_distribute, CodeGenDistribute, /*HasCancel=*/false);
     CGF.EmitOMPReductionClauseFinal(S, /*ReductionKind=*/OMPD_teams);
   };
-  emitCommonOMPTeamsDirective(*this, S, OMPD_distribute_parallel_for, CodeGen);
+  emitCommonOMPTeamsDirective(*this, S, OMPD_distribute_parallel_for_simd,
+                              CodeGen);
   emitPostUpdateForReductionClause(*this, S,
                                    [](CodeGenFunction &) { return nullptr; });
 }

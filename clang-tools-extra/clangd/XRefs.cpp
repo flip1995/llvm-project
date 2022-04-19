@@ -166,6 +166,26 @@ llvm::Optional<Location> makeLocation(ASTContext &AST, SourceLocation TokLoc,
 
 } // namespace
 
+std::vector<DocumentLink> getDocumentLinks(ParsedAST &AST) {
+  const auto &SM = AST.getSourceManager();
+  auto MainFilePath =
+      getCanonicalPath(SM.getFileEntryForID(SM.getMainFileID()), SM);
+  if (!MainFilePath) {
+    elog("Failed to get a path for the main file, so no links");
+    return {};
+  }
+
+  std::vector<DocumentLink> Result;
+  for (auto &Inc : AST.getIncludeStructure().MainFileIncludes) {
+    if (!Inc.Resolved.empty()) {
+      Result.push_back(DocumentLink(
+          {Inc.R, URIForFile::canonicalize(Inc.Resolved, *MainFilePath)}));
+    }
+  }
+
+  return Result;
+}
+
 std::vector<LocatedSymbol> locateSymbolAt(ParsedAST &AST, Position Pos,
                                           const SymbolIndex *Index) {
   const auto &SM = AST.getSourceManager();
@@ -246,8 +266,7 @@ std::vector<LocatedSymbol> locateSymbolAt(ParsedAST &AST, Position Pos,
       }
     }
 
-    auto Loc = makeLocation(AST.getASTContext(),
-                            spellingLocIfSpelled(findName(Preferred), SM),
+    auto Loc = makeLocation(AST.getASTContext(), nameLocation(*Preferred, SM),
                             *MainFilePath);
     if (!Loc)
       continue;
@@ -535,8 +554,7 @@ static llvm::Optional<TypeHierarchyItem>
 declToTypeHierarchyItem(ASTContext &Ctx, const NamedDecl &ND) {
   auto &SM = Ctx.getSourceManager();
 
-  SourceLocation NameLoc =
-      spellingLocIfSpelled(findName(&ND), Ctx.getSourceManager());
+  SourceLocation NameLoc = nameLocation(ND, Ctx.getSourceManager());
   // getFileLoc is a good choice for us, but we also need to make sure
   // sourceLocToPosition won't switch files, so we call getSpellingLoc on top of
   // that to make sure it does not switch files.
