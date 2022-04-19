@@ -15,12 +15,17 @@ else:
 ##### Common utilities for update_*test_checks.py
 
 
+_verbose = False
+
 def parse_commandline_args(parser):
   parser.add_argument('-v', '--verbose', action='store_true',
                       help='Show verbose output')
   parser.add_argument('-u', '--update-only', action='store_true',
                       help='Only update test if it was already autogened')
-  return parser.parse_args()
+  args = parser.parse_args()
+  global _verbose
+  _verbose = args.verbose
+  return args
 
 def should_add_line_to_output(input_line, prefix_set):
   # Skip any blank comment lines in the IR.
@@ -69,7 +74,7 @@ def invoke_tool(exe, cmd_args, ir, preprocess_cmd=None, verbose=False):
 RUN_LINE_RE = re.compile(r'^\s*(?://|[;#])\s*RUN:\s*(.*)$')
 CHECK_PREFIX_RE = re.compile(r'--?check-prefix(?:es)?[= ](\S+)')
 PREFIX_RE = re.compile('^[a-zA-Z0-9_-]+$')
-CHECK_RE = re.compile(r'^\s*[;#]\s*([^:]+?)(?:-NEXT|-NOT|-DAG|-LABEL|-SAME)?:')
+CHECK_RE = re.compile(r'^\s*(?://|[;#])\s*([^:]+?)(?:-NEXT|-NOT|-DAG|-LABEL|-SAME)?:')
 
 OPT_FUNCTION_RE = re.compile(
     r'^\s*define\s+(?:internal\s+)?[^@]*@(?P<func>[\w-]+?)\s*'
@@ -118,7 +123,7 @@ def find_run_lines(test, lines):
   run_lines = [raw_lines[0]] if len(raw_lines) > 0 else []
   for l in raw_lines[1:]:
     if run_lines[-1].endswith('\\'):
-      run_lines[-1] = run_lines[-1].rstrip('\\' + ' ' + l)
+      run_lines[-1] = run_lines[-1].rstrip('\\') + ' ' + l
     else:
       run_lines.append(l)
   debug('Found {} RUN lines in {}:'.format(len(run_lines), test))

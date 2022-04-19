@@ -19,6 +19,7 @@
 
 extern llvm::cl::opt<bool> EnablePGSO;
 extern llvm::cl::opt<bool> PGSOLargeWorkingSetSizeOnly;
+extern llvm::cl::opt<bool> PGSOIRPassOrTestOnly;
 extern llvm::cl::opt<bool> PGSOColdCodeOnly;
 extern llvm::cl::opt<bool> ForcePGSO;
 extern llvm::cl::opt<int> PgsoCutoffInstrProf;
@@ -31,15 +32,26 @@ class BlockFrequencyInfo;
 class Function;
 class ProfileSummaryInfo;
 
+enum class PGSOQueryType {
+  IRPass, // A query call from an IR-level transform pass.
+  Test,   // A query call from a unit test.
+  Other,  // Others.
+};
+
 template<typename AdapterT, typename FuncT, typename BFIT>
 bool shouldFuncOptimizeForSizeImpl(const FuncT *F, ProfileSummaryInfo *PSI,
-                                   BFIT *BFI) {
+                                   BFIT *BFI, PGSOQueryType QueryType) {
   assert(F);
   if (!PSI || !BFI || !PSI->hasProfileSummary())
     return false;
   if (ForcePGSO)
     return true;
   if (!EnablePGSO)
+    return false;
+  // Temporarily enable size optimizations only for the IR pass or test query
+  // sites for gradual commit/rollout. This is to be removed later.
+  if (PGSOIRPassOrTestOnly && !(QueryType == PGSOQueryType::IRPass ||
+                                QueryType == PGSOQueryType::Test))
     return false;
   if (PGSOColdCodeOnly ||
       (PGSOLargeWorkingSetSizeOnly && !PSI->hasLargeWorkingSetSize())) {
@@ -53,13 +65,18 @@ bool shouldFuncOptimizeForSizeImpl(const FuncT *F, ProfileSummaryInfo *PSI,
 
 template<typename AdapterT, typename BlockT, typename BFIT>
 bool shouldOptimizeForSizeImpl(const BlockT *BB, ProfileSummaryInfo *PSI,
-                               BFIT *BFI) {
+                               BFIT *BFI, PGSOQueryType QueryType) {
   assert(BB);
   if (!PSI || !BFI || !PSI->hasProfileSummary())
     return false;
   if (ForcePGSO)
     return true;
   if (!EnablePGSO)
+    return false;
+  // Temporarily enable size optimizations only for the IR pass or test query
+  // sites for gradual commit/rollout. This is to be removed later.
+  if (PGSOIRPassOrTestOnly && !(QueryType == PGSOQueryType::IRPass ||
+                                QueryType == PGSOQueryType::Test))
     return false;
   if (PGSOColdCodeOnly ||
       (PGSOLargeWorkingSetSizeOnly && !PSI->hasLargeWorkingSetSize())) {
@@ -71,15 +88,17 @@ bool shouldOptimizeForSizeImpl(const BlockT *BB, ProfileSummaryInfo *PSI,
       BB, PSI, BFI);
 }
 
-/// Returns true if function \p F is suggested to be size-optimized base on the
+/// Returns true if function \p F is suggested to be size-optimized based on the
 /// profile.
 bool shouldOptimizeForSize(const Function *F, ProfileSummaryInfo *PSI,
-                           BlockFrequencyInfo *BFI);
+                           BlockFrequencyInfo *BFI,
+                           PGSOQueryType QueryType = PGSOQueryType::Other);
 
-/// Returns true if basic block \p BB is suggested to be size-optimized base
-/// on the profile.
+/// Returns true if basic block \p BB is suggested to be size-optimized based on
+/// the profile.
 bool shouldOptimizeForSize(const BasicBlock *BB, ProfileSummaryInfo *PSI,
-                           BlockFrequencyInfo *BFI);
+                           BlockFrequencyInfo *BFI,
+                           PGSOQueryType QueryType = PGSOQueryType::Other);
 
 } // end namespace llvm
 

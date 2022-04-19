@@ -382,13 +382,23 @@ bool PPCMIPeephole::simplifyCode(void) {
             // If this is a splat or a swap fed by another splat, we
             // can replace it with a copy.
             if (DefOpc == PPC::XXPERMDI) {
-              unsigned FeedImmed = DefMI->getOperand(3).getImm();
-              unsigned FeedReg1 =
-                TRI->lookThruCopyLike(DefMI->getOperand(1).getReg(), MRI);
-              unsigned FeedReg2 =
-                TRI->lookThruCopyLike(DefMI->getOperand(2).getReg(), MRI);
+              unsigned DefReg1 = DefMI->getOperand(1).getReg();
+              unsigned DefReg2 = DefMI->getOperand(2).getReg();
+              unsigned DefImmed = DefMI->getOperand(3).getImm();
 
-              if ((FeedImmed == 0 || FeedImmed == 3) && FeedReg1 == FeedReg2) {
+              // If the two inputs are not the same register, check to see if
+              // they originate from the same virtual register after only
+              // copy-like instructions.
+              if (DefReg1 != DefReg2) {
+                unsigned FeedReg1 = TRI->lookThruCopyLike(DefReg1, MRI);
+                unsigned FeedReg2 = TRI->lookThruCopyLike(DefReg2, MRI);
+
+                if (FeedReg1 != FeedReg2 ||
+                    Register::isPhysicalRegister(FeedReg1))
+                  break;
+              }
+
+              if (DefImmed == 0 || DefImmed == 3) {
                 LLVM_DEBUG(dbgs() << "Optimizing splat/swap or splat/splat "
                                      "to splat/copy: ");
                 LLVM_DEBUG(MI.dump());
@@ -402,19 +412,18 @@ bool PPCMIPeephole::simplifyCode(void) {
               // If this is a splat fed by a swap, we can simplify modify
               // the splat to splat the other value from the swap's input
               // parameter.
-              else if ((Immed == 0 || Immed == 3)
-                       && FeedImmed == 2 && FeedReg1 == FeedReg2) {
+              else if ((Immed == 0 || Immed == 3) && DefImmed == 2) {
                 LLVM_DEBUG(dbgs() << "Optimizing swap/splat => splat: ");
                 LLVM_DEBUG(MI.dump());
-                MI.getOperand(1).setReg(DefMI->getOperand(1).getReg());
-                MI.getOperand(2).setReg(DefMI->getOperand(2).getReg());
+                MI.getOperand(1).setReg(DefReg1);
+                MI.getOperand(2).setReg(DefReg2);
                 MI.getOperand(3).setImm(3 - Immed);
                 Simplified = true;
               }
 
               // If this is a swap fed by a swap, we can replace it
               // with a copy from the first swap's input.
-              else if (Immed == 2 && FeedImmed == 2 && FeedReg1 == FeedReg2) {
+              else if (Immed == 2 && DefImmed == 2) {
                 LLVM_DEBUG(dbgs() << "Optimizing swap/swap => copy: ");
                 LLVM_DEBUG(MI.dump());
                 BuildMI(MBB, &MI, MI.getDebugLoc(), TII->get(PPC::COPY),
@@ -835,9 +844,45 @@ bool PPCMIPeephole::simplifyCode(void) {
         assert((MEMI < 32 && MESrc < 32 && MBMI < 32 && MBSrc < 32) &&
                "Invalid PPC::RLWINM Instruction!");
 
+        // If MBMI is bigger than MEMI, we always can not get run of ones.
+        // RotatedSrcMask non-wrap:
+        //                 0........31|32........63
+        // RotatedSrcMask:   B---E        B---E
+        // MaskMI:         -----------|--E  B------
+        // Result:           -----          ---      (Bad candidate)
+        //
+        // RotatedSrcMask wrap:
+        //                 0........31|32........63
+        // RotatedSrcMask: --E   B----|--E    B----
+        // MaskMI:         -----------|--E  B------
+        // Result:         ---   -----|---    -----  (Bad candidate)
+        //
+        // One special case is RotatedSrcMask is a full set mask.
+        // RotatedSrcMask full:
+        //                 0........31|32........63
+        // RotatedSrcMask: ------EB---|-------EB---
+        // MaskMI:         -----------|--E  B------
+        // Result:         -----------|---  -------  (Good candidate)
+
+        // Mark special case.
+        bool SrcMaskFull = (MBSrc - MESrc == 1) || (MBSrc == 0 && MESrc == 31);
+
+        // For other MBMI > MEMI cases, just return.
+        if ((MBMI > MEMI) && !SrcMaskFull)
+          break;
+
+        // Handle MBMI <= MEMI cases.
+        APInt MaskMI = APInt::getBitsSetWithWrap(32, 32 - MEMI - 1, 32 - MBMI);
+        // In MI, we only need low 32 bits of SrcMI, just consider about low 32
+        // bit of SrcMI mask. Note that in APInt, lowerest bit is at index 0,
+        // while in PowerPC ISA, lowerest bit is at index 63.
         APInt MaskSrc =
             APInt::getBitsSetWithWrap(32, 32 - MESrc - 1, 32 - MBSrc);
-        APInt MaskMI = APInt::getBitsSetWithWrap(32, 32 - MEMI - 1, 32 - MBMI);
+        // Current APInt::getBitsSetWithWrap sets all bits to 0 if loBit is
+        // equal to highBit.
+        // If MBSrc - MESrc == 1, we expect a full set mask instead of Null.
+        if (SrcMaskFull && (MBSrc - MESrc == 1))
+          MaskSrc.setAllBits();
 
         APInt RotatedSrcMask = MaskSrc.rotl(SHMI);
         APInt FinalMask = RotatedSrcMask & MaskMI;
@@ -871,8 +916,7 @@ bool PPCMIPeephole::simplifyCode(void) {
           LLVM_DEBUG(dbgs() << "With: ");
           LLVM_DEBUG(MI.dump());
         } else if (isRunOfOnes((unsigned)(FinalMask.getZExtValue()), NewMB,
-                               NewME)) {
-
+                               NewME) || SrcMaskFull) {
           // If FoldingReg has only one use and it it not RLWINMo and
           // RLWINM8o, safe to delete its def SrcMI. Otherwise keep it.
           if (MRI->hasOneNonDBGUse(FoldingReg) &&
@@ -888,8 +932,11 @@ bool PPCMIPeephole::simplifyCode(void) {
 
           uint16_t NewSH = (SHSrc + SHMI) % 32;
           MI.getOperand(2).setImm(NewSH);
-          MI.getOperand(3).setImm(NewMB);
-          MI.getOperand(4).setImm(NewME);
+          // If SrcMI mask is full, no need to update MBMI and MEMI.
+          if (!SrcMaskFull) {
+            MI.getOperand(3).setImm(NewMB);
+            MI.getOperand(4).setImm(NewME);
+          }
           MI.getOperand(1).setReg(SrcMI->getOperand(1).getReg());
           if (SrcMI->getOperand(1).isKill()) {
             MI.getOperand(1).setIsKill(true);

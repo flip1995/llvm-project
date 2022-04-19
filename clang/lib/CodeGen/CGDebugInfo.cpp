@@ -292,13 +292,6 @@ StringRef CGDebugInfo::getObjCMethodName(const ObjCMethodDecl *OMD) {
     }
   } else if (const auto *OCD = dyn_cast<ObjCCategoryImplDecl>(DC)) {
     OS << OCD->getClassInterface()->getName() << '(' << OCD->getName() << ')';
-  } else if (isa<ObjCProtocolDecl>(DC)) {
-    // We can extract the type of the class from the self pointer.
-    if (ImplicitParamDecl *SelfDecl = OMD->getSelfDecl()) {
-      QualType ClassTy =
-          cast<ObjCObjectPointerType>(SelfDecl->getType())->getPointeeType();
-      ClassTy.print(OS, PrintingPolicy(LangOptions()));
-    }
   }
   OS << ' ' << OMD->getSelector().getAsString() << ']';
 
@@ -1147,10 +1140,11 @@ llvm::DIType *CGDebugInfo::CreateType(const TypedefType *Ty,
   // declared.
   SourceLocation Loc = Ty->getDecl()->getLocation();
 
+  uint32_t Align = getDeclAlignIfRequired(Ty->getDecl(), CGM.getContext());
   // Typedefs are derived from some other type.
   return DBuilder.createTypedef(Underlying, Ty->getDecl()->getName(),
                                 getOrCreateFile(Loc), getLineNumber(Loc),
-                                getDeclContextDescriptor(Ty->getDecl()));
+                                getDeclContextDescriptor(Ty->getDecl()), Align);
 }
 
 static unsigned getDwarfCC(CallingConv CC) {

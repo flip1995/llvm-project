@@ -1021,8 +1021,8 @@ void SelectionDAGLegalize::LegalizeOp(SDNode *Node) {
     // These pseudo-ops are the same as the other STRICT_ ops except
     // they are registered with setOperationAction() using the input type
     // instead of the output type.
-    Action = TLI.getStrictFPOperationAction(Node->getOpcode(),
-                                            Node->getOperand(1).getValueType());
+    Action = TLI.getOperationAction(Node->getOpcode(),
+                                    Node->getOperand(1).getValueType());
     break;
   case ISD::SIGN_EXTEND_INREG: {
     EVT InnerType = cast<VTSDNode>(Node->getOperand(1))->getVT();
@@ -1034,11 +1034,17 @@ void SelectionDAGLegalize::LegalizeOp(SDNode *Node) {
                                     Node->getOperand(2).getValueType());
     break;
   case ISD::SELECT_CC:
+  case ISD::STRICT_FSETCC:
+  case ISD::STRICT_FSETCCS:
   case ISD::SETCC:
   case ISD::BR_CC: {
     unsigned CCOperand = Node->getOpcode() == ISD::SELECT_CC ? 4 :
+                         Node->getOpcode() == ISD::STRICT_FSETCC ? 3 :
+                         Node->getOpcode() == ISD::STRICT_FSETCCS ? 3 :
                          Node->getOpcode() == ISD::SETCC ? 2 : 1;
-    unsigned CompareOperand = Node->getOpcode() == ISD::BR_CC ? 2 : 0;
+    unsigned CompareOperand = Node->getOpcode() == ISD::BR_CC ? 2 :
+                              Node->getOpcode() == ISD::STRICT_FSETCC ? 1 :
+                              Node->getOpcode() == ISD::STRICT_FSETCCS ? 1 : 0;
     MVT OpVT = Node->getOperand(CompareOperand).getSimpleValueType();
     ISD::CondCode CCCode =
         cast<CondCodeSDNode>(Node->getOperand(CCOperand))->get();
@@ -2141,9 +2147,14 @@ void SelectionDAGLegalize::ExpandFPLibCall(SDNode* Node,
   }
 
   if (Node->isStrictFPOpcode()) {
+    EVT RetVT = Node->getValueType(0);
+    SmallVector<SDValue, 4> Ops(Node->op_begin() + 1, Node->op_end());
+    TargetLowering::MakeLibCallOptions CallOptions;
     // FIXME: This doesn't support tail calls.
-    std::pair<SDValue, SDValue> Tmp = TLI.ExpandChainLibCall(DAG, LC, Node,
-                                                             false);
+    std::pair<SDValue, SDValue> Tmp = TLI.makeLibCall(DAG, LC, RetVT,
+                                                      Ops, CallOptions,
+                                                      SDLoc(Node),
+                                                      Node->getOperand(0));
     Results.push_back(Tmp.first);
     Results.push_back(Tmp.second);
   } else {
@@ -2192,9 +2203,14 @@ void SelectionDAGLegalize::ExpandArgFPLibCall(SDNode* Node,
   }
 
   if (Node->isStrictFPOpcode()) {
+    EVT RetVT = Node->getValueType(0);
+    SmallVector<SDValue, 4> Ops(Node->op_begin() + 1, Node->op_end());
+    TargetLowering::MakeLibCallOptions CallOptions;
     // FIXME: This doesn't support tail calls.
-    std::pair<SDValue, SDValue> Tmp = TLI.ExpandChainLibCall(DAG, LC, Node,
-                                                             false);
+    std::pair<SDValue, SDValue> Tmp = TLI.makeLibCall(DAG, LC, RetVT,
+                                                      Ops, CallOptions,
+                                                      SDLoc(Node),
+                                                      Node->getOperand(0));
     Results.push_back(Tmp.first);
     Results.push_back(Tmp.second);
   } else {
@@ -3732,7 +3748,7 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
     }
 
     SDValue Result = DAG.getBuildVector(Node->getValueType(0), dl, Scalars);
-    ReplaceNode(SDValue(Node, 0), Result);
+    Results.push_back(Result);
     break;
   }
   case ISD::VECREDUCE_FADD:
@@ -3760,7 +3776,9 @@ bool SelectionDAGLegalize::ExpandNode(SDNode *Node) {
   case ISD::INTRINSIC_WO_CHAIN:
   case ISD::INTRINSIC_VOID:
     // FIXME: Custom lowering for these operations shouldn't return null!
-    break;
+    // Return true so that we don't call ConvertNodeToLibcall which also won't
+    // do anything.
+    return true;
   }
 
   if (!TLI.isStrictFPEnabled() && Results.empty() && Node->isStrictFPOpcode()) {
@@ -3846,8 +3864,13 @@ void SelectionDAGLegalize::ConvertNodeToLibcall(SDNode *Node) {
     RTLIB::Libcall LC = RTLIB::getSYNC(Opc, VT);
     assert(LC != RTLIB::UNKNOWN_LIBCALL && "Unexpected atomic op or value type!");
 
-    std::pair<SDValue, SDValue> Tmp = TLI.ExpandChainLibCall(DAG, LC, Node,
-                                                             false);
+    EVT RetVT = Node->getValueType(0);
+    SmallVector<SDValue, 4> Ops(Node->op_begin() + 1, Node->op_end());
+    TargetLowering::MakeLibCallOptions CallOptions;
+    std::pair<SDValue, SDValue> Tmp = TLI.makeLibCall(DAG, LC, RetVT,
+                                                      Ops, CallOptions,
+                                                      SDLoc(Node),
+                                                      Node->getOperand(0));
     Results.push_back(Tmp.first);
     Results.push_back(Tmp.second);
     break;
