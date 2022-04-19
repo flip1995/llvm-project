@@ -194,9 +194,9 @@ static cl::opt<bool> EnableStructurizerWorkarounds(
     cl::Hidden);
 
 static cl::opt<bool>
-    DisableLowerModuleLDS("amdgpu-disable-lower-module-lds", cl::Hidden,
-                          cl::desc("Disable lower module lds pass"),
-                          cl::init(false));
+    EnableLowerModuleLDS("amdgpu-enable-lower-module-lds", cl::Hidden,
+                         cl::desc("Enable lower module lds pass"),
+                         cl::init(true));
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTarget() {
   // Register the target
@@ -388,10 +388,6 @@ AMDGPUTargetMachine::AMDGPUTargetMachine(const Target &T, const Triple &TT,
     else if (getMCSubtargetInfo()->checkFeatures("+wavefrontsize32"))
       MRI.reset(llvm::createGCNMCRegisterInfo(AMDGPUDwarfFlavour::Wave32));
   }
-  // Set -fixed-function-abi to true if not provided..
-  if (TT.getOS() == Triple::AMDHSA &&
-      EnableAMDGPUFixedFunctionABIOpt.getNumOccurrences() == 0)
-    EnableFixedFunctionABI = true;
 }
 
 bool AMDGPUTargetMachine::EnableLateStructurizeCFG = false;
@@ -892,7 +888,7 @@ void AMDGPUPassConfig::addIRPasses() {
   addPass(createAMDGPUOpenCLEnqueuedBlockLoweringPass());
 
   // Can increase LDS used by kernel so runs before PromoteAlloca
-  if (!DisableLowerModuleLDS)
+  if (EnableLowerModuleLDS)
     addPass(createAMDGPULowerModuleLDSPass());
 
   if (TM.getOptLevel() > CodeGenOpt::None) {
