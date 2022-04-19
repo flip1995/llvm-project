@@ -209,6 +209,7 @@ WebAssemblyTargetLowering::WebAssemblyTargetLowering(
   setOperationAction(ISD::DYNAMIC_STACKALLOC, MVTPtr, Expand);
 
   setOperationAction(ISD::FrameIndex, MVT::i32, Custom);
+  setOperationAction(ISD::FrameIndex, MVT::i64, Custom);
   setOperationAction(ISD::CopyToReg, MVT::Other, Custom);
 
   // Expand these forms; we pattern-match the forms that we can handle in isel.
@@ -613,7 +614,11 @@ EVT WebAssemblyTargetLowering::getSetCCResultType(const DataLayout &DL,
   if (VT.isVector())
     return VT.changeVectorElementTypeToInteger();
 
-  return TargetLowering::getSetCCResultType(DL, C, VT);
+  // So far, all branch instructions in Wasm take an I32 condition.
+  // The default TargetLowering::getSetCCResultType returns the pointer size,
+  // which would be useful to reduce instruction counts when testing
+  // against 64-bit pointers/values if at some point Wasm supports that.
+  return EVT::getIntegerVT(C, 32);
 }
 
 bool WebAssemblyTargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
@@ -842,7 +847,7 @@ WebAssemblyTargetLowering::LowerCall(CallLoweringInfo &CLI,
       assert(VT != MVT::iPTR && "Legalized args should be concrete");
       Type *Ty = VT.getTypeForEVT(*DAG.getContext());
       Align Alignment =
-          std::max(Align(Out.Flags.getOrigAlign()), Layout.getABITypeAlign(Ty));
+          std::max(Out.Flags.getNonZeroOrigAlign(), Layout.getABITypeAlign(Ty));
       unsigned Offset =
           CCInfo.AllocateStack(Layout.getTypeAllocSize(Ty), Alignment);
       CCInfo.addLoc(CCValAssign::getMem(ArgLocs.size(), VT.getSimpleVT(),
@@ -916,7 +921,7 @@ WebAssemblyTargetLowering::LowerCall(CallLoweringInfo &CLI,
     if (In.Flags.isInConsecutiveRegsLast())
       fail(DL, DAG,
            "WebAssembly hasn't implemented cons regs last return values");
-    // Ignore In.getOrigAlign() because all our arguments are passed in
+    // Ignore In.getNonZeroOrigAlign() because all our arguments are passed in
     // registers.
     InTys.push_back(In.VT);
   }
@@ -1003,7 +1008,7 @@ SDValue WebAssemblyTargetLowering::LowerFormalArguments(
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs arguments");
     if (In.Flags.isInConsecutiveRegsLast())
       fail(DL, DAG, "WebAssembly hasn't implemented cons regs last arguments");
-    // Ignore In.getOrigAlign() because all our arguments are passed in
+    // Ignore In.getNonZeroOrigAlign() because all our arguments are passed in
     // registers.
     InVals.push_back(In.Used ? DAG.getNode(WebAssemblyISD::ARGUMENT, DL, In.VT,
                                            DAG.getTargetConstant(InVals.size(),

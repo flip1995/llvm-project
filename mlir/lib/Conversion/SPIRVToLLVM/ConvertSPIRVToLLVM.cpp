@@ -72,7 +72,8 @@ public:
     auto dstType = this->typeConverter.convertType(operation.getType());
     if (!dstType)
       return failure();
-    rewriter.template replaceOpWithNewOp<LLVMOp>(operation, dstType, operands);
+    rewriter.template replaceOpWithNewOp<LLVMOp>(operation, dstType, operands,
+                                                 operation.getAttrs());
     return success();
   }
 };
@@ -278,6 +279,43 @@ public:
     return success();
   }
 };
+
+//===----------------------------------------------------------------------===//
+// ModuleOp conversion
+//===----------------------------------------------------------------------===//
+
+class ModuleConversionPattern : public SPIRVToLLVMConversion<spirv::ModuleOp> {
+public:
+  using SPIRVToLLVMConversion<spirv::ModuleOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::ModuleOp spvModuleOp, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto newModuleOp = rewriter.create<ModuleOp>(spvModuleOp.getLoc());
+    rewriter.inlineRegionBefore(spvModuleOp.body(), newModuleOp.getBody());
+
+    // Remove the terminator block that was automatically added by builder
+    rewriter.eraseBlock(&newModuleOp.getBodyRegion().back());
+    rewriter.eraseOp(spvModuleOp);
+    return success();
+  }
+};
+
+class ModuleEndConversionPattern
+    : public SPIRVToLLVMConversion<spirv::ModuleEndOp> {
+public:
+  using SPIRVToLLVMConversion<spirv::ModuleEndOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::ModuleEndOp moduleEndOp, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    rewriter.replaceOpWithNewOp<ModuleTerminatorOp>(moduleEndOp);
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -303,6 +341,8 @@ void mlir::populateSPIRVToLLVMConversionPatterns(
       DirectConversionPattern<spirv::UModOp, LLVM::URemOp>,
 
       // Bitwise ops
+      DirectConversionPattern<spirv::BitCountOp, LLVM::CtPopOp>,
+      DirectConversionPattern<spirv::BitReverseOp, LLVM::BitReverseOp>,
       DirectConversionPattern<spirv::BitwiseAndOp, LLVM::AndOp>,
       DirectConversionPattern<spirv::BitwiseOrOp, LLVM::OrOp>,
       DirectConversionPattern<spirv::BitwiseXorOp, LLVM::XOrOp>,
@@ -360,4 +400,11 @@ void mlir::populateSPIRVToLLVMFunctionConversionPatterns(
     MLIRContext *context, LLVMTypeConverter &typeConverter,
     OwningRewritePatternList &patterns) {
   patterns.insert<FuncConversionPattern>(context, typeConverter);
+}
+
+void mlir::populateSPIRVToLLVMModuleConversionPatterns(
+    MLIRContext *context, LLVMTypeConverter &typeConverter,
+    OwningRewritePatternList &patterns) {
+  patterns.insert<ModuleConversionPattern, ModuleEndConversionPattern>(
+      context, typeConverter);
 }

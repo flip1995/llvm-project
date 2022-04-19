@@ -37122,7 +37122,8 @@ bool X86TargetLowering::SimplifyDemandedVectorEltsForTargetNode(
       }
       break;
     }
-      // Target Shuffles.
+      // (Non-Lane Crossing) Target Shuffles.
+    case X86ISD::VPERMILPV:
     case X86ISD::PSHUFB:
     case X86ISD::UNPCKL:
     case X86ISD::UNPCKH:
@@ -37164,7 +37165,25 @@ bool X86TargetLowering::SimplifyDemandedVectorEltsForTargetNode(
       SDValue Insert =
           insertSubVector(UndefVec, ExtOp, 0, TLO.DAG, DL, ExtSizeInBits);
       return TLO.CombineTo(Op, Insert);
-    } 
+    }
+    case X86ISD::VPERMIL2: {
+      SDLoc DL(Op);
+      MVT ExtVT = VT.getSimpleVT();
+      ExtVT = MVT::getVectorVT(ExtVT.getScalarType(),
+                               ExtSizeInBits / ExtVT.getScalarSizeInBits());
+      SDValue Ext0 =
+          extractSubVector(Op.getOperand(0), 0, TLO.DAG, DL, ExtSizeInBits);
+      SDValue Ext1 =
+          extractSubVector(Op.getOperand(1), 0, TLO.DAG, DL, ExtSizeInBits);
+      SDValue Ext2 =
+          extractSubVector(Op.getOperand(2), 0, TLO.DAG, DL, ExtSizeInBits);
+      SDValue ExtOp =
+          TLO.DAG.getNode(Opc, DL, ExtVT, Ext0, Ext1, Ext2, Op.getOperand(3));
+      SDValue UndefVec = TLO.DAG.getUNDEF(VT);
+      SDValue Insert =
+          insertSubVector(UndefVec, ExtOp, 0, TLO.DAG, DL, ExtSizeInBits);
+      return TLO.CombineTo(Op, Insert);
+    }
     }
   }
 
@@ -43443,6 +43462,20 @@ static SDValue combineLoad(SDNode *N, SelectionDAG &DAG,
     }
   }
 
+  // Cast ptr32 and ptr64 pointers to the default address space before a load.
+  unsigned AddrSpace = Ld->getAddressSpace();
+  if (AddrSpace == X86AS::PTR64 || AddrSpace == X86AS::PTR32_SPTR ||
+      AddrSpace == X86AS::PTR32_UPTR) {
+    MVT PtrVT = TLI.getPointerTy(DAG.getDataLayout());
+    if (PtrVT != Ld->getBasePtr().getSimpleValueType()) {
+      SDValue Cast =
+          DAG.getAddrSpaceCast(dl, PtrVT, Ld->getBasePtr(), AddrSpace, 0);
+      return DAG.getLoad(RegVT, dl, Ld->getChain(), Cast, Ld->getPointerInfo(),
+                         Ld->getOriginalAlign(),
+                         Ld->getMemOperand()->getFlags());
+    }
+  }
+
   return SDValue();
 }
 
@@ -43868,6 +43901,20 @@ static SDValue combineStore(SDNode *N, SelectionDAG &DAG,
     }
 
     return SDValue();
+  }
+
+  // Cast ptr32 and ptr64 pointers to the default address space before a store.
+  unsigned AddrSpace = St->getAddressSpace();
+  if (AddrSpace == X86AS::PTR64 || AddrSpace == X86AS::PTR32_SPTR ||
+      AddrSpace == X86AS::PTR32_UPTR) {
+    MVT PtrVT = TLI.getPointerTy(DAG.getDataLayout());
+    if (PtrVT != St->getBasePtr().getSimpleValueType()) {
+      SDValue Cast =
+          DAG.getAddrSpaceCast(dl, PtrVT, St->getBasePtr(), AddrSpace, 0);
+      return DAG.getStore(St->getChain(), dl, StoredVal, Cast,
+                          St->getPointerInfo(), St->getOriginalAlign(),
+                          St->getMemOperand()->getFlags(), St->getAAInfo());
+    }
   }
 
   // Turn load->store of MMX types into GPR load/stores.  This avoids clobbering

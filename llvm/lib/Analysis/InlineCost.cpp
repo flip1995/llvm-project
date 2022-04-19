@@ -110,6 +110,10 @@ static cl::opt<bool> InlineCallerSupersetNoBuiltin(
     cl::desc("Allow inlining when caller has a superset of callee's nobuiltin "
              "attributes."));
 
+static cl::opt<bool> DisableGEPConstOperand(
+    "disable-gep-const-evaluation", cl::Hidden, cl::init(false),
+    cl::desc("Disables evaluation of GetElementPtr with constant operands"));
+
 namespace {
 class InlineCostCallAnalyzer;
 
@@ -853,10 +857,22 @@ bool CallAnalyzer::visitAlloca(AllocaInst &I) {
   if (I.isArrayAllocation()) {
     Constant *Size = SimplifiedValues.lookup(I.getArraySize());
     if (auto *AllocSize = dyn_cast_or_null<ConstantInt>(Size)) {
+      // Sometimes a dynamic alloca could be converted into a static alloca
+      // after this constant prop, and become a huge static alloca on an
+      // unconditional CFG path. Avoid inlining if this is going to happen above
+      // a threshold.
+      // FIXME: If the threshold is removed or lowered too much, we could end up
+      // being too pessimistic and prevent inlining non-problematic code. This
+      // could result in unintended perf regressions. A better overall strategy
+      // is needed to track stack usage during inlining.
       Type *Ty = I.getAllocatedType();
       AllocatedSize = SaturatingMultiplyAdd(
           AllocSize->getLimitedValue(), DL.getTypeAllocSize(Ty).getFixedSize(),
           AllocatedSize);
+      if (AllocatedSize > InlineConstants::MaxSimplifiedDynamicAllocaToInline) {
+        HasDynamicAlloca = true;
+        return false;
+      }
       return Base::visitAlloca(I);
     }
   }
@@ -1006,6 +1022,16 @@ bool CallAnalyzer::visitGetElementPtr(GetElementPtrInst &I) {
         return false;
     return true;
   };
+
+  if (!DisableGEPConstOperand)
+    if (simplifyInstruction(I, [&](SmallVectorImpl<Constant *> &COps) {
+        SmallVector<Constant *, 2> Indices;
+        for (unsigned int Index = 1 ; Index < COps.size() ; ++Index)
+            Indices.push_back(COps[Index]);
+        return ConstantExpr::getGetElementPtr(I.getSourceElementType(), COps[0],
+                                              Indices, I.isInBounds());
+        }))
+      return true;
 
   if ((I.isInBounds() && canFoldInboundsGEP(I)) || IsGEPOffsetConstant(I)) {
     if (SROAArg)
