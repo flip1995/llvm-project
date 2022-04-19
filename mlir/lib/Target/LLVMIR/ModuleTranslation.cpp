@@ -20,6 +20,7 @@
 #include "mlir/IR/Module.h"
 #include "mlir/IR/StandardTypes.h"
 #include "mlir/Support/LLVM.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Frontend/OpenMP/OMPIRBuilder.h"
@@ -306,6 +307,34 @@ ModuleTranslation::ModuleTranslation(Operation *module,
 }
 ModuleTranslation::~ModuleTranslation() {}
 
+/// Given an OpenMP MLIR operation, create the corresponding LLVM IR
+/// (including OpenMP runtime calls).
+LogicalResult
+ModuleTranslation::convertOmpOperation(Operation &opInst,
+                                       llvm::IRBuilder<> &builder) {
+  if (!ompBuilder) {
+    ompBuilder = std::make_unique<llvm::OpenMPIRBuilder>(*llvmModule);
+    ompBuilder->initialize();
+  }
+  return llvm::TypeSwitch<Operation *, LogicalResult>(&opInst)
+      .Case([&](omp::BarrierOp) {
+        ompBuilder->CreateBarrier(builder.saveIP(), llvm::omp::OMPD_barrier);
+        return success();
+      })
+      .Case([&](omp::TaskwaitOp) {
+        ompBuilder->CreateTaskwait(builder.saveIP());
+        return success();
+      })
+      .Case([&](omp::TaskyieldOp) {
+        ompBuilder->CreateTaskyield(builder.saveIP());
+        return success();
+      })
+      .Default([&](Operation *inst) {
+        return inst->emitError("unsupported OpenMP operation: ")
+               << inst->getName();
+      });
+}
+
 /// Given a single MLIR operation, create the corresponding LLVM IR operation
 /// using the `builder`.  LLVM IR Builder does not have a generic interface so
 /// this has to be a long chain of `if`s calling different functions with a
@@ -415,17 +444,7 @@ LogicalResult ModuleTranslation::convertOperation(Operation &opInst,
   }
 
   if (opInst.getDialect() == ompDialect) {
-    if (!ompBuilder) {
-      ompBuilder = std::make_unique<llvm::OpenMPIRBuilder>(*llvmModule);
-      ompBuilder->initialize();
-    }
-
-    if (isa<omp::BarrierOp>(opInst)) {
-      ompBuilder->CreateBarrier(builder.saveIP(), llvm::omp::OMPD_barrier);
-      return success();
-    }
-    return opInst.emitError("unsupported OpenMP operation: ")
-           << opInst.getName();
+    return convertOmpOperation(opInst, builder);
   }
 
   return opInst.emitError("unsupported or non-LLVM operation: ")

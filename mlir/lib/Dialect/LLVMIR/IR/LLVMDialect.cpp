@@ -102,7 +102,8 @@ static ParseResult parseCmpOp(OpAsmParser &parser, OperationState &result) {
     return parser.emitError(trailingTypeLoc, "expected LLVM IR dialect type");
   if (argType.getUnderlyingType()->isVectorTy())
     resultType = LLVMType::getVectorTy(
-        resultType, argType.getUnderlyingType()->getVectorNumElements());
+        resultType, llvm::cast<llvm::VectorType>(argType.getUnderlyingType())
+                        ->getNumElements());
 
   result.addTypes({resultType});
   return success();
@@ -1009,7 +1010,7 @@ static ParseResult parseOptionalLLVMKeyword(OpAsmParser &parser,
   return success();
 }
 
-// operation ::= `llvm.mlir.global` linkage `constant`? `@` identifier
+// operation ::= `llvm.mlir.global` linkage? `constant`? `@` identifier
 //               `(` attribute? `)` attribute-list? (`:` type)? region?
 //
 // The type can be omitted for string attributes, in which case it will be
@@ -1017,7 +1018,9 @@ static ParseResult parseOptionalLLVMKeyword(OpAsmParser &parser,
 static ParseResult parseGlobalOp(OpAsmParser &parser, OperationState &result) {
   if (failed(parseOptionalLLVMKeyword<Linkage>(parser, result,
                                                getLinkageAttrName())))
-    return parser.emitError(parser.getCurrentLocation(), "expected linkage");
+    result.addAttribute(getLinkageAttrName(),
+                        parser.getBuilder().getI64IntegerAttr(
+                            static_cast<int64_t>(LLVM::Linkage::External)));
 
   if (succeeded(parser.parseOptionalKeyword("constant")))
     result.addAttribute("constant", parser.getBuilder().getUnitAttr());
@@ -1772,10 +1775,12 @@ bool LLVMType::isArrayTy() { return getUnderlyingType()->isArrayTy(); }
 
 /// Vector type utilities.
 LLVMType LLVMType::getVectorElementType() {
-  return get(getContext(), getUnderlyingType()->getVectorElementType());
+  return get(
+      getContext(),
+      llvm::cast<llvm::VectorType>(getUnderlyingType())->getElementType());
 }
 unsigned LLVMType::getVectorNumElements() {
-  return getUnderlyingType()->getVectorNumElements();
+  return llvm::cast<llvm::VectorType>(getUnderlyingType())->getNumElements();
 }
 bool LLVMType::isVectorTy() { return getUnderlyingType()->isVectorTy(); }
 
