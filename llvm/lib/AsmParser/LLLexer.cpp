@@ -596,6 +596,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(arm_aapcscc);
   KEYWORD(arm_aapcs_vfpcc);
   KEYWORD(aarch64_vector_pcs);
+  KEYWORD(aarch64_sve_vector_pcs);
   KEYWORD(msp430_intrcc);
   KEYWORD(avr_intrcc);
   KEYWORD(avr_signalcc);
@@ -753,6 +754,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(noRecurse);
   KEYWORD(returnDoesNotAlias);
   KEYWORD(noInline);
+  KEYWORD(alwaysInline);
   KEYWORD(calls);
   KEYWORD(callee);
   KEYWORD(hotness);
@@ -840,7 +842,6 @@ lltok::Kind LLLexer::LexIdentifier() {
   } while (false)
 
   INSTKEYWORD(fneg,  FNeg);
-  INSTKEYWORD(freeze, Freeze);
 
   INSTKEYWORD(add,   Add);  INSTKEYWORD(fadd,   FAdd);
   INSTKEYWORD(sub,   Sub);  INSTKEYWORD(fsub,   FSub);
@@ -896,6 +897,8 @@ lltok::Kind LLLexer::LexIdentifier() {
   INSTKEYWORD(catchswitch,  CatchSwitch);
   INSTKEYWORD(catchpad,     CatchPad);
   INSTKEYWORD(cleanuppad,   CleanupPad);
+
+  INSTKEYWORD(freeze,       Freeze);
 
 #undef INSTKEYWORD
 

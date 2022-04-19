@@ -1943,6 +1943,7 @@ void LLParser::ParseOptionalDLLStorageClass(unsigned &Res) {
 ///   ::= 'arm_aapcscc'
 ///   ::= 'arm_aapcs_vfpcc'
 ///   ::= 'aarch64_vector_pcs'
+///   ::= 'aarch64_sve_vector_pcs'
 ///   ::= 'msp430_intrcc'
 ///   ::= 'avr_intrcc'
 ///   ::= 'avr_signalcc'
@@ -1991,6 +1992,9 @@ bool LLParser::ParseOptionalCallingConv(unsigned &CC) {
   case lltok::kw_arm_aapcscc:    CC = CallingConv::ARM_AAPCS; break;
   case lltok::kw_arm_aapcs_vfpcc:CC = CallingConv::ARM_AAPCS_VFP; break;
   case lltok::kw_aarch64_vector_pcs:CC = CallingConv::AArch64_VectorCall; break;
+  case lltok::kw_aarch64_sve_vector_pcs:
+    CC = CallingConv::AArch64_SVE_VectorCall;
+    break;
   case lltok::kw_msp430_intrcc:  CC = CallingConv::MSP430_INTR; break;
   case lltok::kw_avr_intrcc:     CC = CallingConv::AVR_INTR; break;
   case lltok::kw_avr_signalcc:   CC = CallingConv::AVR_SIGNAL; break;
@@ -3428,8 +3432,7 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
   }
 
   // Unary Operators.
-  case lltok::kw_fneg:
-  case lltok::kw_freeze: {
+  case lltok::kw_fneg: {
     unsigned Opc = Lex.getUIntVal();
     Constant *Val;
     Lex.Lex();
@@ -3443,8 +3446,6 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
     case Instruction::FNeg:
       if (!Val->getType()->isFPOrFPVectorTy())
         return Error(ID.Loc, "constexpr requires fp operands");
-      break;
-    case Instruction::Freeze:
       break;
     default: llvm_unreachable("Unknown unary operator!");
     }
@@ -5741,7 +5742,6 @@ int LLParser::ParseInstruction(Instruction *&Inst, BasicBlock *BB,
       Inst->setFastMathFlags(FMF);
     return false;
   }
-  case lltok::kw_freeze: return ParseUnaryOp(Inst, PFS, KeywordVal, false);
   // Binary Operators.
   case lltok::kw_add:
   case lltok::kw_sub:
@@ -5845,6 +5845,7 @@ int LLParser::ParseInstruction(Instruction *&Inst, BasicBlock *BB,
     return 0;
   }
   case lltok::kw_landingpad:     return ParseLandingPad(Inst, PFS);
+  case lltok::kw_freeze:         return ParseFreeze(Inst, PFS);
   // Call.
   case lltok::kw_call:     return ParseCall(Inst, PFS, CallInst::TCK_None);
   case lltok::kw_tail:     return ParseCall(Inst, PFS, CallInst::TCK_Tail);
@@ -6345,14 +6346,16 @@ bool LLParser::ParseCleanupPad(Instruction *&Inst, PerFunctionState &PFS) {
 /// ParseUnaryOp
 ///  ::= UnaryOp TypeAndValue ',' Value
 ///
-/// If IsFP is true, then fp operand is only allowed.
+/// If IsFP is false, then any integer operand is allowed, if it is true, any fp
+/// operand is allowed.
 bool LLParser::ParseUnaryOp(Instruction *&Inst, PerFunctionState &PFS,
                             unsigned Opc, bool IsFP) {
   LocTy Loc; Value *LHS;
   if (ParseTypeAndValue(LHS, Loc, PFS))
     return true;
 
-  bool Valid = !IsFP || LHS->getType()->isFPOrFPVectorTy();
+  bool Valid = IsFP ? LHS->getType()->isFPOrFPVectorTy()
+                    : LHS->getType()->isIntOrIntVectorTy();
 
   if (!Valid)
     return Error(Loc, "invalid operand type for instruction");
@@ -6763,6 +6766,18 @@ bool LLParser::ParseLandingPad(Instruction *&Inst, PerFunctionState &PFS) {
   }
 
   Inst = LP.release();
+  return false;
+}
+
+/// ParseFreeze
+///   ::= 'freeze' Type Value
+bool LLParser::ParseFreeze(Instruction *&Inst, PerFunctionState &PFS) {
+  LocTy Loc;
+  Value *Op;
+  if (ParseTypeAndValue(Op, Loc, PFS))
+    return true;
+
+  Inst = new FreezeInst(Op);
   return false;
 }
 
@@ -8267,6 +8282,8 @@ bool LLParser::ParseFlag(unsigned &Val) {
 ///        [',' 'readOnly' ':' Flag]? [',' 'noRecurse' ':' Flag]?
 ///        [',' 'returnDoesNotAlias' ':' Flag]? ')'
 ///        [',' 'noInline' ':' Flag]? ')'
+///        [',' 'alwaysInline' ':' Flag]? ')'
+
 bool LLParser::ParseOptionalFFlags(FunctionSummary::FFlags &FFlags) {
   assert(Lex.getKind() == lltok::kw_funcFlags);
   Lex.Lex();
@@ -8307,6 +8324,12 @@ bool LLParser::ParseOptionalFFlags(FunctionSummary::FFlags &FFlags) {
       if (ParseToken(lltok::colon, "expected ':'") || ParseFlag(Val))
         return true;
       FFlags.NoInline = Val;
+      break;
+    case lltok::kw_alwaysInline:
+      Lex.Lex();
+      if (ParseToken(lltok::colon, "expected ':'") || ParseFlag(Val))
+        return true;
+      FFlags.AlwaysInline = Val;
       break;
     default:
       return Error(Lex.getLoc(), "expected function flag type");

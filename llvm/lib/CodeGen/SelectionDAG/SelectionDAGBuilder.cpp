@@ -7095,8 +7095,7 @@ void SelectionDAGBuilder::visitConstrainedFPIntrinsic(
   SDVTList VTs = DAG.getVTList(ValueVTs);
   SDValue Result = DAG.getNode(Opcode, sdl, VTs, Opers);
 
-  if (FPI.getExceptionBehavior() !=
-      ConstrainedFPIntrinsic::ExceptionBehavior::ebIgnore) {
+  if (FPI.getExceptionBehavior() != fp::ExceptionBehavior::ebIgnore) {
     SDNodeFlags Flags;
     Flags.setFPExcept(true);
     Result->setFlags(Flags);
@@ -10691,7 +10690,7 @@ void SelectionDAGBuilder::visitSwitch(const SwitchInst &SI) {
   }
 }
 
-void SelectionDAGBuilder::visitFreeze(const User &I) {
+void SelectionDAGBuilder::visitFreeze(const FreezeInst &I) {
   SDValue N = getValue(I.getOperand(0));
   setValue(&I, N);
 }
