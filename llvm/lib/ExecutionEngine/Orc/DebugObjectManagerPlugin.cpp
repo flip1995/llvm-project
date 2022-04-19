@@ -18,6 +18,7 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Errc.h"
+#include "llvm/Support/MSVCErrorWorkarounds.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
@@ -123,6 +124,7 @@ enum class Requirement {
 class DebugObject {
 public:
   DebugObject(JITLinkContext &Ctx) : Ctx(Ctx) {}
+  virtual ~DebugObject() = default;
 
   void set(Requirement Req) { Reqs.insert(Req); }
   bool has(Requirement Req) const { return Reqs.count(Req) > 0; }
@@ -130,9 +132,14 @@ public:
   using FinalizeContinuation = std::function<void(Expected<sys::MemoryBlock>)>;
   void finalizeAsync(FinalizeContinuation OnFinalize);
 
+  Error deallocate() {
+    if (Alloc)
+      return Alloc->deallocate();
+    return Error::success();
+  }
+
   virtual void reportSectionTargetMemoryRange(StringRef Name,
                                               SectionRange TargetMem) {}
-  virtual ~DebugObject() {}
 
 protected:
   using Allocation = JITLinkMemoryManager::Allocation;
@@ -392,7 +399,18 @@ DebugObjectManagerPlugin::DebugObjectManagerPlugin(
     ExecutionSession &ES, std::unique_ptr<DebugObjectRegistrar> Target)
     : ES(ES), Target(std::move(Target)) {}
 
-DebugObjectManagerPlugin::~DebugObjectManagerPlugin() {}
+DebugObjectManagerPlugin::~DebugObjectManagerPlugin() {
+  for (auto &KV : PendingObjs) {
+    std::unique_ptr<DebugObject> &DebugObj = KV.second;
+    if (Error Err = DebugObj->deallocate())
+      ES.reportError(std::move(Err));
+  }
+  for (auto &KV : RegisteredObjs) {
+    for (std::unique_ptr<DebugObject> &DebugObj : KV.second)
+      if (Error Err = DebugObj->deallocate())
+        ES.reportError(std::move(Err));
+  }
+}
 
 void DebugObjectManagerPlugin::notifyMaterializing(
     MaterializationResponsibility &MR, LinkGraph &G, JITLinkContext &Ctx,
@@ -414,7 +432,7 @@ void DebugObjectManagerPlugin::notifyMaterializing(
 }
 
 void DebugObjectManagerPlugin::modifyPassConfig(
-    MaterializationResponsibility &MR, const Triple &TT,
+    MaterializationResponsibility &MR, LinkGraph &G,
     PassConfiguration &PassConfig) {
   // Not all link artifacts have associated debug objects.
   std::lock_guard<std::mutex> Lock(PendingObjsLock);
@@ -446,26 +464,38 @@ Error DebugObjectManagerPlugin::notifyEmitted(
   DebugObject *UnownedDebugObj = It->second.release();
   PendingObjs.erase(It);
 
+  // During finalization the debug object is registered with the target.
+  // Materialization must wait for this process to finish. Otherwise we might
+  // start running code before the debugger processed the corresponding debug
+  // info.
+  std::promise<MSVCPError> FinalizePromise;
+  std::future<MSVCPError> FinalizeErr = FinalizePromise.get_future();
+
   // FIXME: We released ownership of the DebugObject, so we can easily capture
   // the raw pointer in the continuation function, which re-owns it immediately.
   if (UnownedDebugObj)
     UnownedDebugObj->finalizeAsync(
-        [this, Key, UnownedDebugObj](Expected<sys::MemoryBlock> TargetMem) {
+        [this, Key, UnownedDebugObj,
+         &FinalizePromise](Expected<sys::MemoryBlock> TargetMem) {
           std::unique_ptr<DebugObject> ReownedDebugObj(UnownedDebugObj);
           if (!TargetMem) {
-            ES.reportError(TargetMem.takeError());
+            FinalizePromise.set_value(TargetMem.takeError());
             return;
           }
           if (Error Err = Target->registerDebugObject(*TargetMem)) {
-            ES.reportError(std::move(Err));
+            FinalizePromise.set_value(std::move(Err));
             return;
           }
+
+          // Registration successful, notifyEmitted() can return now and
+          // materialization can finish.
+          FinalizePromise.set_value(Error::success());
 
           std::lock_guard<std::mutex> Lock(RegisteredObjsLock);
           RegisteredObjs[Key].push_back(std::move(ReownedDebugObj));
         });
 
-  return Error::success();
+  return FinalizeErr.get();
 }
 
 Error DebugObjectManagerPlugin::notifyFailed(
