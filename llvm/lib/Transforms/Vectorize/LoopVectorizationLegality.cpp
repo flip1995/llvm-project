@@ -944,6 +944,12 @@ bool LoopVectorizationLegality::blockCanBePredicated(
       continue;
     }
 
+    // Do not let llvm.experimental.noalias.scope.decl block the vectorization.
+    // TODO: there might be cases that it should block the vectorization. Let's
+    // ignore those for now.
+    if (isa<NoAliasScopeDeclInst>(&I))
+      continue;
+
     // We might be able to hoist the load.
     if (I.mayReadFromMemory()) {
       auto *LI = dyn_cast<LoadInst>(&I);

@@ -565,6 +565,8 @@ Value *LibCallSimplifier::optimizeStrCpy(CallInst *CI, IRBuilderBase &B) {
                            Dst->getType()->getPointerAddressSpace()),
           Len));
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return Dst;
 }
 
@@ -592,6 +594,8 @@ Value *LibCallSimplifier::optimizeStpCpy(CallInst *CI, IRBuilderBase &B) {
   // copy for us.  Make a memcpy to copy the nul byte with align = 1.
   CallInst *NewCI = B.CreateMemCpy(Dst, Align(1), Src, Align(1), LenV);
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return DstEnd;
 }
 
@@ -651,6 +655,8 @@ Value *LibCallSimplifier::optimizeStrNCpy(CallInst *CI, IRBuilderBase &B) {
   CallInst *NewCI = B.CreateMemCpy(Dst, Align(1), Src, Align(1),
                                    ConstantInt::get(DL.getIntPtrType(PT), Len));
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return Dst;
 }
 
@@ -1132,6 +1138,8 @@ Value *LibCallSimplifier::optimizeMemCpy(CallInst *CI, IRBuilderBase &B) {
   CallInst *NewCI = B.CreateMemCpy(CI->getArgOperand(0), Align(1),
                                    CI->getArgOperand(1), Align(1), Size);
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return CI->getArgOperand(0);
 }
 
@@ -1180,7 +1188,12 @@ Value *LibCallSimplifier::optimizeMemPCpy(CallInst *CI, IRBuilderBase &B) {
   // mempcpy(x, y, n) -> llvm.memcpy(align 1 x, align 1 y, n), x + n
   CallInst *NewCI =
       B.CreateMemCpy(Dst, Align(1), CI->getArgOperand(1), Align(1), N);
+  // Propagate attributes, but memcpy has no return value, so make sure that
+  // any return attributes are compliant.
+  // TODO: Attach return value attributes to the 1st operand to preserve them?
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return B.CreateInBoundsGEP(B.getInt8Ty(), Dst, N);
 }
 
@@ -1194,6 +1207,8 @@ Value *LibCallSimplifier::optimizeMemMove(CallInst *CI, IRBuilderBase &B) {
   CallInst *NewCI = B.CreateMemMove(CI->getArgOperand(0), Align(1),
                                     CI->getArgOperand(1), Align(1), Size);
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return CI->getArgOperand(0);
 }
 
@@ -1256,6 +1271,8 @@ Value *LibCallSimplifier::optimizeMemSet(CallInst *CI, IRBuilderBase &B) {
   Value *Val = B.CreateIntCast(CI->getArgOperand(1), B.getInt8Ty(), false);
   CallInst *NewCI = B.CreateMemSet(CI->getArgOperand(0), Val, Size, Align(1));
   NewCI->setAttributes(CI->getAttributes());
+  NewCI->removeAttributes(AttributeList::ReturnIndex,
+                          AttributeFuncs::typeIncompatible(NewCI->getType()));
   return CI->getArgOperand(0);
 }
 
@@ -2214,7 +2231,7 @@ Value *LibCallSimplifier::optimizeSinCosPi(CallInst *CI, IRBuilderBase &B) {
     classifyArgUse(U, F, IsFloat, SinCalls, CosCalls, SinCosCalls);
 
   // It's only worthwhile if both sinpi and cospi are actually used.
-  if (SinCosCalls.empty() && (SinCalls.empty() || CosCalls.empty()))
+  if (SinCalls.empty() || CosCalls.empty())
     return nullptr;
 
   Value *Sin, *Cos, *SinCos;
@@ -2240,7 +2257,7 @@ void LibCallSimplifier::classifyArgUse(
     SmallVectorImpl<CallInst *> &SinCosCalls) {
   CallInst *CI = dyn_cast<CallInst>(Val);
 
-  if (!CI)
+  if (!CI || CI->use_empty())
     return;
 
   // Don't consider calls in other functions.
@@ -3309,6 +3326,8 @@ Value *FortifiedLibCallSimplifier::optimizeMemCpyChk(CallInst *CI,
         B.CreateMemCpy(CI->getArgOperand(0), Align(1), CI->getArgOperand(1),
                        Align(1), CI->getArgOperand(2));
     NewCI->setAttributes(CI->getAttributes());
+    NewCI->removeAttributes(AttributeList::ReturnIndex,
+                            AttributeFuncs::typeIncompatible(NewCI->getType()));
     return CI->getArgOperand(0);
   }
   return nullptr;
@@ -3321,6 +3340,8 @@ Value *FortifiedLibCallSimplifier::optimizeMemMoveChk(CallInst *CI,
         B.CreateMemMove(CI->getArgOperand(0), Align(1), CI->getArgOperand(1),
                         Align(1), CI->getArgOperand(2));
     NewCI->setAttributes(CI->getAttributes());
+    NewCI->removeAttributes(AttributeList::ReturnIndex,
+                            AttributeFuncs::typeIncompatible(NewCI->getType()));
     return CI->getArgOperand(0);
   }
   return nullptr;
@@ -3335,6 +3356,8 @@ Value *FortifiedLibCallSimplifier::optimizeMemSetChk(CallInst *CI,
     CallInst *NewCI = B.CreateMemSet(CI->getArgOperand(0), Val,
                                      CI->getArgOperand(2), Align(1));
     NewCI->setAttributes(CI->getAttributes());
+    NewCI->removeAttributes(AttributeList::ReturnIndex,
+                            AttributeFuncs::typeIncompatible(NewCI->getType()));
     return CI->getArgOperand(0);
   }
   return nullptr;
@@ -3348,6 +3371,9 @@ Value *FortifiedLibCallSimplifier::optimizeMemPCpyChk(CallInst *CI,
                                   CI->getArgOperand(2), B, DL, TLI)) {
       CallInst *NewCI = cast<CallInst>(Call);
       NewCI->setAttributes(CI->getAttributes());
+      NewCI->removeAttributes(
+          AttributeList::ReturnIndex,
+          AttributeFuncs::typeIncompatible(NewCI->getType()));
       return NewCI;
     }
   return nullptr;

@@ -332,6 +332,19 @@ def ImmSub32 : SDNodeXForm<imm, [{
                                    N->getValueType(0));
 }]>;
 
+// Return an immediate subtracted from XLen.
+def ImmSubFromXLen : SDNodeXForm<imm, [{
+  uint64_t XLen = Subtarget->getXLen();
+  return CurDAG->getTargetConstant(XLen - N->getZExtValue(), SDLoc(N),
+                                   N->getValueType(0));
+}]>;
+
+// Return an immediate subtracted from 32.
+def ImmSubFrom32 : SDNodeXForm<imm, [{
+  return CurDAG->getTargetConstant(32 - N->getZExtValue(), SDLoc(N),
+                                   N->getValueType(0));
+}]>;
+
 //===----------------------------------------------------------------------===//
 // Instruction Formats
 //===----------------------------------------------------------------------===//
@@ -850,13 +863,13 @@ def IsOrAdd: PatFrag<(ops node:$A, node:$B), (or node:$A, node:$B), [{
   return isOrEquivalentToAdd(N);
 }]>;
 def assertsexti32 : PatFrag<(ops node:$src), (assertsext node:$src), [{
-  return cast<VTSDNode>(N->getOperand(1))->getVT() == MVT::i32;
+  return cast<VTSDNode>(N->getOperand(1))->getVT().bitsLE(MVT::i32);
 }]>;
 def sexti32 : PatFrags<(ops node:$src),
                        [(sext_inreg node:$src, i32),
                         (assertsexti32 node:$src)]>;
 def assertzexti32 : PatFrag<(ops node:$src), (assertzext node:$src), [{
-  return cast<VTSDNode>(N->getOperand(1))->getVT() == MVT::i32;
+  return cast<VTSDNode>(N->getOperand(1))->getVT().bitsLE(MVT::i32);
 }]>;
 def zexti32 : PatFrags<(ops node:$src),
                        [(and node:$src, 0xffffffff),
@@ -865,6 +878,13 @@ def zexti32 : PatFrags<(ops node:$src),
 def SRLIWPat : PatFrag<(ops node:$A, node:$B),
                        (srl (and node:$A, imm), node:$B), [{
   return MatchSRLIW(N);
+}]>;
+
+// Check that it is a SLLIUW (Shift Logical Left Immediate Unsigned i32
+// on RV64). Also used to optimize the same sequence without SLLIUW.
+def SLLIUWPat : PatFrag<(ops node:$A, node:$B),
+                        (and (shl node:$A, node:$B), imm), [{
+  return MatchSLLIUW(N);
 }]>;
 
 /// Immediates
@@ -897,6 +917,10 @@ class shiftop<SDPatternOperator operator>
     : PatFrags<(ops node:$val, node:$count),
                [(operator node:$val, node:$count),
                 (operator node:$val, (and node:$count, immbottomxlenset))]>;
+class shiftopw<SDPatternOperator operator>
+    : PatFrags<(ops node:$val, node:$count),
+               [(operator node:$val, node:$count),
+                (operator node:$val, (and node:$count, (XLenVT 31)))]>;
 
 def : PatGprGpr<shiftop<shl>, SLL>;
 def : PatGprGpr<shiftop<srl>, SRL>;
@@ -1098,19 +1122,19 @@ def PseudoLA_TLS_GD : Pseudo<(outs GPR:$dst), (ins bare_symbol:$src), [],
 
 // There are single-instruction versions of these in Zbb, so disable these
 // Pseudos if that extension is present.
-let Predicates = [NotHasStdExtZbb], hasSideEffects = 0, mayLoad = 0,
+let hasSideEffects = 0, mayLoad = 0,
     mayStore = 0, isCodeGenOnly = 0, isAsmParserOnly = 1 in {
 def PseudoSEXT_B : Pseudo<(outs GPR:$rd), (ins GPR:$rs), [], "sext.b", "$rd, $rs">;
 def PseudoSEXT_H : Pseudo<(outs GPR:$rd), (ins GPR:$rs), [], "sext.h", "$rd, $rs">;
 // rv64's sext.w is defined above, using InstAlias<"sext.w ...
 // zext.b is defined above, using InstAlias<"zext.b ...
 def PseudoZEXT_H : Pseudo<(outs GPR:$rd), (ins GPR:$rs), [], "zext.h", "$rd, $rs">;
-} // Predicates = [NotHasStdExtZbb], ...
+} // hasSideEffects = 0, ...
 
-let Predicates = [NotHasStdExtZbb, IsRV64], hasSideEffects = 0, mayLoad = 0, mayStore = 0,
+let Predicates = [IsRV64], hasSideEffects = 0, mayLoad = 0, mayStore = 0,
   isCodeGenOnly = 0, isAsmParserOnly = 1 in {
 def PseudoZEXT_W : Pseudo<(outs GPR:$rd), (ins GPR:$rs), [], "zext.w", "$rd, $rs">;
-} // Predicates = [NotHasStdExtZbb, IsRV64], ...
+} // Predicates = [IsRV64], ...
 
 /// Loads
 
@@ -1184,8 +1208,17 @@ def ADJCALLSTACKUP   : Pseudo<(outs), (ins i32imm:$amt1, i32imm:$amt2),
 
 /// RV64 patterns
 
-let Predicates = [IsRV64, NotHasStdExtZbbOrZbp] in
+let Predicates = [IsRV64, NotHasStdExtZba] in {
 def : Pat<(and GPR:$rs1, 0xffffffff), (SRLI (SLLI GPR:$rs1, 32), 32)>;
+
+// If we're shifting a 32-bit zero extended value left by 0-31 bits, use 2
+// shifts instead of 3. This can occur when unsigned is used to index an array.
+def : Pat<(shl (and GPR:$rs1, 0xffffffff), uimm5:$shamt),
+          (SRLI (SLLI GPR:$rs1, 32), (ImmSubFrom32 uimm5:$shamt))>;
+// shl/and can appear in the other order too.
+def : Pat<(SLLIUWPat GPR:$rs1, uimm5:$shamt),
+          (SRLI (SLLI GPR:$rs1, 32), (ImmSubFrom32 uimm5:$shamt))>;
+}
 
 let Predicates = [IsRV64] in {
 
@@ -1212,9 +1245,9 @@ def : Pat<(sra (sext_inreg GPR:$rs1, i32), uimm5:$shamt),
 def : Pat<(sra (shl GPR:$rs1, (i64 32)), uimm6gt32:$shamt),
           (SRAIW GPR:$rs1, (ImmSub32 uimm6gt32:$shamt))>;
 
-def : PatGprGpr<riscv_sllw, SLLW>;
-def : PatGprGpr<riscv_srlw, SRLW>;
-def : PatGprGpr<riscv_sraw, SRAW>;
+def : PatGprGpr<shiftopw<riscv_sllw>, SLLW>;
+def : PatGprGpr<shiftopw<riscv_srlw>, SRLW>;
+def : PatGprGpr<shiftopw<riscv_sraw>, SRAW>;
 } // Predicates = [IsRV64]
 
 let Predicates = [IsRV64, NotCapMode] in {

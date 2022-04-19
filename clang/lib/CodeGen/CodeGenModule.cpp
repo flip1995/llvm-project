@@ -138,6 +138,8 @@ CodeGenModule::CodeGenModule(ASTContext &C, const HeaderSearchOptions &HSO,
     C.toCharUnitsFromBits(Target.getTypeWidth(Target.getSizeType())).getQuantity();
   IntAlignInBytes =
     C.toCharUnitsFromBits(Target.getIntAlign()).getQuantity();
+  CharTy =
+      llvm::IntegerType::get(LLVMContext, C.getTargetInfo().getCharWidth());
   IntTy = llvm::IntegerType::get(LLVMContext, Target.getIntWidth());
   // XXXAR it seems like the codegen uses this type as an integer which can fit
   // the pointer range and not as an integer with the same width as a pointer
@@ -2662,6 +2664,34 @@ bool CodeGenModule::imbueXRayAttrs(llvm::Function *Fn, SourceLocation Loc,
   return true;
 }
 
+bool CodeGenModule::isProfileInstrExcluded(llvm::Function *Fn,
+                                           SourceLocation Loc) const {
+  const auto &ProfileList = getContext().getProfileList();
+  // If the profile list is empty, then instrument everything.
+  if (ProfileList.isEmpty())
+    return false;
+  CodeGenOptions::ProfileInstrKind Kind = getCodeGenOpts().getProfileInstr();
+  // First, check the function name.
+  Optional<bool> V = ProfileList.isFunctionExcluded(Fn->getName(), Kind);
+  if (V.hasValue())
+    return *V;
+  // Next, check the source location.
+  if (Loc.isValid()) {
+    Optional<bool> V = ProfileList.isLocationExcluded(Loc, Kind);
+    if (V.hasValue())
+      return *V;
+  }
+  // If location is unknown, this may be a compiler-generated function. Assume
+  // it's located in the main file.
+  auto &SM = Context.getSourceManager();
+  if (const auto *MainFile = SM.getFileEntryForID(SM.getMainFileID())) {
+    Optional<bool> V = ProfileList.isFileExcluded(MainFile->getName(), Kind);
+    if (V.hasValue())
+      return *V;
+  }
+  return ProfileList.getDefault();
+}
+
 bool CodeGenModule::MustBeEmitted(const ValueDecl *Global) {
   // Never defer when EmitAllDecls is specified.
   if (LangOpts.EmitAllDecls)
@@ -4282,13 +4312,14 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
   // Shadows of initialized device-side global variables are also left
   // undefined.
   bool IsCUDAShadowVar =
-      !getLangOpts().CUDAIsDevice &&
+      !getLangOpts().CUDAIsDevice && !D->hasAttr<HIPManagedAttr>() &&
       (D->hasAttr<CUDAConstantAttr>() || D->hasAttr<CUDADeviceAttr>() ||
        D->hasAttr<CUDASharedAttr>());
   bool IsCUDADeviceShadowVar =
       getLangOpts().CUDAIsDevice &&
       (D->getType()->isCUDADeviceBuiltinSurfaceType() ||
-       D->getType()->isCUDADeviceBuiltinTextureType());
+       D->getType()->isCUDADeviceBuiltinTextureType() ||
+       D->hasAttr<HIPManagedAttr>());
   // HIP pinned shadow of initialized host-side global variables are also
   // left undefined.
   if (getLangOpts().CUDA &&
