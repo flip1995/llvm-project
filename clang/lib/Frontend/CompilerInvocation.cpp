@@ -1059,7 +1059,6 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ControlFlowGuardNoChecks = Args.hasArg(OPT_cfguard_no_checks);
   Opts.ControlFlowGuard = Args.hasArg(OPT_cfguard);
 
-  Opts.DisableGCov = Args.hasArg(OPT_test_coverage);
   Opts.EmitGcovArcs = Args.hasArg(OPT_femit_coverage_data);
   Opts.EmitGcovNotes = Args.hasArg(OPT_femit_coverage_notes);
   if (Opts.EmitGcovArcs || Opts.EmitGcovNotes) {
@@ -2661,6 +2660,9 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   if (Args.hasArg(OPT_fno_cuda_host_device_constexpr))
     Opts.CUDAHostDeviceConstexpr = 0;
 
+  if (Args.hasArg(OPT_fgpu_defer_diag))
+    Opts.GPUDeferDiag = 1;
+
   if (Opts.CUDAIsDevice && Args.hasArg(OPT_fcuda_approx_transcendentals))
     Opts.CUDADeviceApproxTranscendentals = 1;
 
@@ -3530,6 +3532,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
         Opts.setClangABICompat(LangOptions::ClangABI::Ver7);
       else if (Major <= 9)
         Opts.setClangABICompat(LangOptions::ClangABI::Ver9);
+      else if (Major <= 11)
+        Opts.setClangABICompat(LangOptions::ClangABI::Ver11);
     } else if (Ver != "latest") {
       Diags.Report(diag::err_drv_invalid_value)
           << A->getAsString(Args) << A->getValue();

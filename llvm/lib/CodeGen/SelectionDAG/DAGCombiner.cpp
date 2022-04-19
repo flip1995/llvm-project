@@ -4378,7 +4378,8 @@ SDValue DAGCombiner::visitMULHS(SDNode *N) {
 
   // If the type twice as wide is legal, transform the mulhs to a wider multiply
   // plus a shift.
-  if (!TLI.isMulhCheaperThanMulShift(VT) && VT.isSimple() && !VT.isVector()) {
+  if (!TLI.isOperationLegalOrCustom(ISD::MULHS, VT) && VT.isSimple() &&
+      !VT.isVector()) {
     MVT Simple = VT.getSimpleVT();
     unsigned SimpleSize = Simple.getSizeInBits();
     EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), SimpleSize*2);
@@ -4434,7 +4435,8 @@ SDValue DAGCombiner::visitMULHU(SDNode *N) {
 
   // If the type twice as wide is legal, transform the mulhu to a wider multiply
   // plus a shift.
-  if (!TLI.isMulhCheaperThanMulShift(VT) && VT.isSimple() && !VT.isVector()) {
+  if (!TLI.isOperationLegalOrCustom(ISD::MULHU, VT) && VT.isSimple() &&
+      !VT.isVector()) {
     MVT Simple = VT.getSimpleVT();
     unsigned SimpleSize = Simple.getSizeInBits();
     EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), SimpleSize*2);
@@ -8289,12 +8291,6 @@ static SDValue combineShiftToMULH(SDNode *N, SelectionDAG &DAG,
   if (NarrowVT !=  RightOp.getOperand(0).getValueType())
     return SDValue();
 
-  // Only transform into mulh if mulh for the narrow type is cheaper than
-  // a multiply followed by a shift. This should also check if mulh is
-  // legal for NarrowVT on the target.
-  if (!TLI.isMulhCheaperThanMulShift(NarrowVT))
-      return SDValue();
-
   // Proceed with the transformation if the wide type is twice as large
   // as the narrow type.
   unsigned NarrowVTSize = NarrowVT.getScalarSizeInBits();
@@ -8311,6 +8307,10 @@ static SDValue combineShiftToMULH(SDNode *N, SelectionDAG &DAG,
   // If the operation feeding into the MUL is a sign extend (sext),
   // we use mulhs. Othewise, zero extends (zext) use mulhu.
   unsigned MulhOpcode = IsSignExt ? ISD::MULHS : ISD::MULHU;
+
+  // Combine to mulh if mulh is legal/custom for the narrow type on the target.
+  if (!TLI.isOperationLegalOrCustom(MulhOpcode, NarrowVT))
+    return SDValue();
 
   SDValue Result = DAG.getNode(MulhOpcode, DL, NarrowVT, LeftOp.getOperand(0),
                                RightOp.getOperand(0));
@@ -13310,10 +13310,11 @@ SDValue DAGCombiner::visitFMA(SDNode *N) {
   EVT VT = N->getValueType(0);
   SDLoc DL(N);
   const TargetOptions &Options = DAG.getTarget().Options;
+  // FMA nodes have flags that propagate to the created nodes.
   SelectionDAG::FlagInserter FlagsInserter(DAG, N);
 
-  // FMA nodes have flags that propagate to the created nodes.
-  bool UnsafeFPMath = Options.UnsafeFPMath || isContractable(N);
+  bool UnsafeFPMath =
+      Options.UnsafeFPMath || N->getFlags().hasAllowReassociation();
 
   // Constant fold FMA.
   if (isa<ConstantFPSDNode>(N0) &&

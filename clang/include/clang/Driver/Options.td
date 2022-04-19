@@ -724,6 +724,9 @@ defm hip_new_launch_api : OptInFFlag<"hip-new-launch-api",
   "Use", "Don't use", " new kernel launching API for HIP">;
 defm gpu_allow_device_init : OptInFFlag<"gpu-allow-device-init",
   "Allow", "Don't allow", " device side init function in HIP">;
+defm gpu_defer_diag : OptInFFlag<"gpu-defer-diag",
+  "Defer", "Don't defer", " host/device related diagnostic messages"
+  " for CUDA/HIP">;
 def gpu_max_threads_per_block_EQ : Joined<["--"], "gpu-max-threads-per-block=">,
   Flags<[CC1Option]>,
   HelpText<"Default max threads per block for kernel launch bounds for HIP">;
@@ -3859,8 +3862,6 @@ def coverage_notes_file_EQ : Joined<["-"], "coverage-notes-file=">,
   Alias<coverage_notes_file>;
 def coverage_version_EQ : Joined<["-"], "coverage-version=">,
   HelpText<"Four-byte version string for gcov files.">;
-def test_coverage : Flag<["-"], "test-coverage">,
-  HelpText<"Do not generate coverage files or remove coverage changes from IR">;
 def dump_coverage_mapping : Flag<["-"], "dump-coverage-mapping">,
   HelpText<"Dump the coverage mapping records, for testing">;
 def fuse_register_sized_bitfield_access: Flag<["-"], "fuse-register-sized-bitfield-access">,
