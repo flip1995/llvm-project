@@ -382,7 +382,7 @@ public:
            TLI->isOperationLegalOrCustom(ISD::BRIND, MVT::Other);
   }
 
-  bool shouldBuildRelLookupTables() {
+  bool shouldBuildRelLookupTables() const {
     const TargetMachine &TM = getTLI()->getTargetMachine();
     // If non-PIC mode, do not generate a relative lookup table.
     if (!TM.isPositionIndependent())
@@ -2089,7 +2089,7 @@ public:
     return RedCost + MulCost + ExtCost;
   }
 
-  unsigned getVectorSplitCost() { return 1; }
+  InstructionCost getVectorSplitCost() { return 1; }
 
   /// @}
 };

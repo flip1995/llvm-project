@@ -202,6 +202,10 @@ MaybeAlign Argument::getParamAlign() const {
   return getParent()->getParamAlign(getArgNo());
 }
 
+MaybeAlign Argument::getParamStackAlign() const {
+  return getParent()->getParamStackAlign(getArgNo());
+}
+
 Type *Argument::getParamByValType() const {
   assert(getType()->isPointerTy() && "Only pointers have byval types");
   return getParent()->getParamByValType(getArgNo());
@@ -339,6 +343,29 @@ Function *Function::CreateBefore(Function &InsertBefore, FunctionType *Ty,
   Function *F = Create(Ty, Linkage, AddrSpace, N);
 
   M.getFunctionList().insert(InsertBefore.getIterator(), F);
+  return F;
+}
+
+Function *Function::createWithDefaultAttr(FunctionType *Ty,
+                                          LinkageTypes Linkage,
+                                          unsigned AddrSpace, const Twine &N,
+                                          Module *M) {
+  auto *F = new Function(Ty, Linkage, AddrSpace, N, M);
+  AttrBuilder B;
+  if (M->getUwtable())
+    B.addAttribute(Attribute::UWTable);
+  switch (M->getFramePointer()) {
+  case FramePointerKind::None:
+    // 0 ("none") is the default.
+    break;
+  case FramePointerKind::NonLeaf:
+    B.addAttribute("frame-pointer", "non-leaf");
+    break;
+  case FramePointerKind::All:
+    B.addAttribute("frame-pointer", "all");
+    break;
+  }
+  F->addAttributes(AttributeList::FunctionIndex, B);
   return F;
 }
 

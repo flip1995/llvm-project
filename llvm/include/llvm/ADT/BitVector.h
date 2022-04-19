@@ -79,7 +79,7 @@ class BitVector {
   static_assert(BITWORD_SIZE == 64 || BITWORD_SIZE == 32,
                 "Unsupported word size");
 
-  using Storage = std::vector<BitWord>;
+  using Storage = SmallVector<BitWord>;
 
   Storage Bits;  // Actual bits.
   unsigned Size; // Size of bitvector in bits.
@@ -323,7 +323,7 @@ public:
     return find_last_unset_in(0, PriorTo);
   }
 
-  /// clear - Removes all bits from the bitvector. Does not change capacity.
+  /// clear - Removes all bits from the bitvector.
   void clear() {
     Size = 0;
     Bits.clear();
@@ -347,6 +347,7 @@ public:
   }
 
   BitVector &set(unsigned Idx) {
+    assert(Idx < Size && "access in bound");
     Bits[Idx / BITWORD_SIZE] |= BitWord(1) << (Idx % BITWORD_SIZE);
     return *this;
   }

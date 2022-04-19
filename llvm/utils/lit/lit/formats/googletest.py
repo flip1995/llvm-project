@@ -33,13 +33,6 @@ class GoogleTest(TestFormat):
           litConfig: LitConfig instance
           localConfig: TestingConfig instance"""
 
-        # Could also skip google tests here instead of reporting them as unsupported
-        # if False and litConfig.cheri_test_mode != CheriTestMode.INCLUDE:
-        #     litConfig.note(
-        #         "Skipping gtests because cheri-tests-filter=" +
-        #         litConfig.cheri_test_mode)
-        #     raise StopIteration
-
         list_test_cmd = self.maybeAddPythonToCmd([path, '--gtest_list_tests'])
 
         try:
