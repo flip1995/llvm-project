@@ -4404,10 +4404,10 @@ Value *llvm::SimplifyInsertElementInst(Value *Vec, Value *Val, Value *Idx,
   if (Q.isUndefValue(Idx))
     return PoisonValue::get(Vec->getType());
 
-  // If the scalar is undef, and there is no risk of propagating poison from the
-  // vector value, simplify to the vector value.
-  if (Q.isUndefValue(Val) &&
-      isGuaranteedNotToBeUndefOrPoison(Vec))
+  // If the scalar is poison, or it is undef and there is no risk of
+  // propagating poison from the vector value, simplify to the vector value.
+  if (isa<PoisonValue>(Val) ||
+      (Q.isUndefValue(Val) && isGuaranteedNotToBePoison(Vec)))
     return Vec;
 
   // If we are extracting a value from a vector, then inserting it into the same
@@ -4634,7 +4634,7 @@ static Value *SimplifyShuffleVectorInst(Value *Op0, Value *Op1,
   Indices.assign(Mask.begin(), Mask.end());
 
   // Canonicalization: If mask does not select elements from an input vector,
-  // replace that input vector with undef.
+  // replace that input vector with poison.
   if (!Scalable) {
     bool MaskSelects0 = false, MaskSelects1 = false;
     unsigned InVecNumElts = InVecEltCount.getKnownMinValue();
@@ -4647,9 +4647,9 @@ static Value *SimplifyShuffleVectorInst(Value *Op0, Value *Op1,
         MaskSelects1 = true;
     }
     if (!MaskSelects0)
-      Op0 = UndefValue::get(InVecTy);
+      Op0 = PoisonValue::get(InVecTy);
     if (!MaskSelects1)
-      Op1 = UndefValue::get(InVecTy);
+      Op1 = PoisonValue::get(InVecTy);
   }
 
   auto *Op0Const = dyn_cast<Constant>(Op0);
@@ -5947,11 +5947,11 @@ Value *llvm::SimplifyCall(CallBase *Call, const SimplifyQuery &Q) {
   if (Call->isMustTailCall())
     return nullptr;
 
-  // call undef -> undef
-  // call null -> undef
+  // call undef -> poison
+  // call null -> poison
   Value *Callee = Call->getCalledOperand();
   if (isa<UndefValue>(Callee) || isa<ConstantPointerNull>(Callee))
-    return UndefValue::get(Call->getType());
+    return PoisonValue::get(Call->getType());
 
   if (Value *V = tryConstantFoldCall(Call, Q))
     return V;

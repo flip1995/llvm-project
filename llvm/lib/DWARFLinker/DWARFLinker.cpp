@@ -1217,9 +1217,10 @@ unsigned DWARFLinker::DIECloner::cloneAttribute(
     return cloneScalarAttribute(Die, InputDIE, File, Unit, AttrSpec, Val,
                                 AttrSize, Info);
   default:
-    Linker.reportWarning(
-        "Unsupported attribute form in cloneAttribute. Dropping.", File,
-        &InputDIE);
+    Linker.reportWarning("Unsupported attribute form " +
+                             dwarf::FormEncodingString(AttrSpec.Form) +
+                             " in cloneAttribute. Dropping.",
+                         File, &InputDIE);
   }
 
   return 0;
@@ -1575,7 +1576,7 @@ static void insertLineSequence(std::vector<DWARFDebugLine::Row> &Seq,
     return;
 
   if (!Rows.empty() && Rows.back().Address < Seq.front().Address) {
-    Rows.insert(Rows.end(), Seq.begin(), Seq.end());
+    llvm::append_range(Rows, Seq);
     Seq.clear();
     return;
   }
