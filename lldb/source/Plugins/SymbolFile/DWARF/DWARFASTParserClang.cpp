@@ -22,7 +22,7 @@
 #include "lldb/Core/Value.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Symbol/ClangASTImporter.h"
-#include "lldb/Symbol/ClangExternalASTSourceCommon.h"
+#include "lldb/Symbol/ClangASTMetadata.h"
 #include "lldb/Symbol/ClangUtil.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/Function.h"
@@ -388,6 +388,10 @@ ParsedDWARFTypeAttributes::ParsedDWARFTypeAttributes(const DWARFDIE &die) {
 
     case DW_AT_APPLE_objc_complete_type:
       is_complete_objc_class = form_value.Signed();
+      break;
+
+    case DW_AT_APPLE_objc_direct:
+      is_objc_direct_call = true;
       break;
 
     case DW_AT_APPLE_runtime_class:
@@ -958,7 +962,8 @@ TypeSP DWARFASTParserClang::ParseSubroutine(const DWARFDIE &die,
           clang::ObjCMethodDecl *objc_method_decl =
               m_ast.AddMethodToObjCObjectType(
                   class_opaque_type, attrs.name.GetCString(), clang_type,
-                  attrs.accessibility, attrs.is_artificial, is_variadic);
+                  attrs.accessibility, attrs.is_artificial, is_variadic,
+                  attrs.is_objc_direct_call);
           type_handled = objc_method_decl != NULL;
           if (type_handled) {
             LinkDeclContextToDIE(objc_method_decl, die);
@@ -1715,7 +1720,7 @@ DWARFASTParserClang::ParseStructureLikeDIE(const SymbolContext &sc,
             ClangASTContext::GetAsRecordDecl(clang_type);
 
         if (record_decl) {
-          GetClangASTImporter().InsertRecordDecl(
+          GetClangASTImporter().SetRecordLayout(
               record_decl, ClangASTImporter::LayoutInfo());
         }
       }
@@ -1904,7 +1909,7 @@ bool DWARFASTParserClang::ParseTemplateDIE(
         }
       }
 
-      clang::ASTContext *ast = m_ast.getASTContext();
+      clang::ASTContext &ast = m_ast.getASTContext();
       if (!clang_type)
         clang_type = m_ast.GetBasicType(eBasicTypeVoid);
 
@@ -1924,7 +1929,7 @@ bool DWARFASTParserClang::ParseTemplateDIE(
             return false;
           llvm::APInt apint(*size, uval64, is_signed);
           template_param_infos.args.push_back(
-              clang::TemplateArgument(*ast, llvm::APSInt(apint, !is_signed),
+              clang::TemplateArgument(ast, llvm::APSInt(apint, !is_signed),
                                       ClangUtil::GetQualType(clang_type)));
         } else {
           template_param_infos.args.push_back(
@@ -2129,7 +2134,7 @@ bool DWARFASTParserClang::CompleteRecordType(const DWARFDIE &die,
     clang::CXXRecordDecl *record_decl =
         m_ast.GetAsCXXRecordDecl(clang_type.GetOpaqueQualType());
     if (record_decl)
-      GetClangASTImporter().InsertRecordDecl(record_decl, layout_info);
+      GetClangASTImporter().SetRecordLayout(record_decl, layout_info);
   }
 
   return (bool)clang_type;
@@ -2213,7 +2218,7 @@ CompilerDeclContext
 DWARFASTParserClang::GetDeclContextForUIDFromDWARF(const DWARFDIE &die) {
   clang::DeclContext *clang_decl_ctx = GetClangDeclContextForDIE(die);
   if (clang_decl_ctx)
-    return CompilerDeclContext(&m_ast, clang_decl_ctx);
+    return m_ast.CreateDeclContext(clang_decl_ctx);
   return CompilerDeclContext();
 }
 
@@ -2222,7 +2227,7 @@ DWARFASTParserClang::GetDeclContextContainingUIDFromDWARF(const DWARFDIE &die) {
   clang::DeclContext *clang_decl_ctx =
       GetClangDeclContextContainingDIE(die, nullptr);
   if (clang_decl_ctx)
-    return CompilerDeclContext(&m_ast, clang_decl_ctx);
+    return m_ast.CreateDeclContext(clang_decl_ctx);
   return CompilerDeclContext();
 }
 
@@ -3565,18 +3570,20 @@ DWARFASTParserClang::ResolveNamespaceDIE(const DWARFDIE &die) {
         SymbolFileDWARF *dwarf = die.GetDWARF();
         if (namespace_name) {
           dwarf->GetObjectFile()->GetModule()->LogMessage(
-              log, "ASTContext => %p: 0x%8.8" PRIx64
-                   ": DW_TAG_namespace with DW_AT_name(\"%s\") => "
-                   "clang::NamespaceDecl *%p (original = %p)",
-              static_cast<void *>(m_ast.getASTContext()), die.GetID(),
+              log,
+              "ASTContext => %p: 0x%8.8" PRIx64
+              ": DW_TAG_namespace with DW_AT_name(\"%s\") => "
+              "clang::NamespaceDecl *%p (original = %p)",
+              static_cast<void *>(&m_ast.getASTContext()), die.GetID(),
               namespace_name, static_cast<void *>(namespace_decl),
               static_cast<void *>(namespace_decl->getOriginalNamespace()));
         } else {
           dwarf->GetObjectFile()->GetModule()->LogMessage(
-              log, "ASTContext => %p: 0x%8.8" PRIx64
-                   ": DW_TAG_namespace (anonymous) => clang::NamespaceDecl *%p "
-                   "(original = %p)",
-              static_cast<void *>(m_ast.getASTContext()), die.GetID(),
+              log,
+              "ASTContext => %p: 0x%8.8" PRIx64
+              ": DW_TAG_namespace (anonymous) => clang::NamespaceDecl *%p "
+              "(original = %p)",
+              static_cast<void *>(&m_ast.getASTContext()), die.GetID(),
               static_cast<void *>(namespace_decl),
               static_cast<void *>(namespace_decl->getOriginalNamespace()));
         }

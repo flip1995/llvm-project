@@ -50,15 +50,20 @@ public:
 
   CompilerType CopyType(ClangASTContext &dst, const CompilerType &src_type);
 
-  clang::Decl *CopyDecl(clang::ASTContext *dst_ctx, clang::ASTContext *src_ctx,
-                        clang::Decl *decl);
+  clang::Decl *CopyDecl(clang::ASTContext *dst_ctx, clang::Decl *decl);
 
   CompilerType DeportType(ClangASTContext &dst, const CompilerType &src_type);
 
-  clang::Decl *DeportDecl(clang::ASTContext *dst_ctx,
-                          clang::ASTContext *src_ctx, clang::Decl *decl);
+  clang::Decl *DeportDecl(clang::ASTContext *dst_ctx, clang::Decl *decl);
 
-  void InsertRecordDecl(clang::RecordDecl *decl, const LayoutInfo &layout);
+  /// Sets the layout for the given RecordDecl. The layout will later be
+  /// used by Clang's during code generation. Not calling this function for
+  /// a RecordDecl will cause that Clang's codegen tries to layout the
+  /// record by itself.
+  ///
+  /// \param decl The RecordDecl to set the layout for.
+  /// \param layout The layout for the record.
+  void SetRecordLayout(clang::RecordDecl *decl, const LayoutInfo &layout);
 
   bool LayoutRecordType(
       const clang::RecordDecl *record_decl, uint64_t &bit_size,
@@ -280,9 +285,8 @@ public:
           ASTContextMetadataSP(new ASTContextMetadata(dst_ctx));
       m_metadata_map[dst_ctx] = context_md;
       return context_md;
-    } else {
-      return context_md_iter->second;
     }
+    return context_md_iter->second;
   }
 
   ASTContextMetadataSP MaybeGetContextMetadata(clang::ASTContext *dst_ctx) {
@@ -290,8 +294,7 @@ public:
 
     if (context_md_iter != m_metadata_map.end())
       return context_md_iter->second;
-    else
-      return ASTContextMetadataSP();
+    return ASTContextMetadataSP();
   }
 
   ImporterDelegateSP GetDelegate(clang::ASTContext *dst_ctx,
@@ -306,9 +309,8 @@ public:
           ImporterDelegateSP(new ASTImporterDelegate(*this, dst_ctx, src_ctx));
       delegates[src_ctx] = delegate;
       return delegate;
-    } else {
-      return delegate_iter->second;
     }
+    return delegate_iter->second;
   }
 
 public:

@@ -325,6 +325,7 @@ namespace llvm {
 
       // Vector packed double/float comparison.
       CMPP,
+      STRICT_CMPP,
 
       // Vector integer comparisons.
       PCMPEQ, PCMPGT,
@@ -337,6 +338,7 @@ namespace llvm {
       /// Vector comparison generating mask bits for fp and
       /// integer signed and unsigned data types.
       CMPM,
+      STRICT_CMPM,
       // Vector comparison with SAE for FP values
       CMPM_SAE,
 
@@ -504,6 +506,7 @@ namespace llvm {
 
       // Vector float/double to signed/unsigned integer with truncation.
       CVTTP2SI, CVTTP2UI, CVTTP2SI_SAE, CVTTP2UI_SAE,
+      STRICT_CVTTP2SI, STRICT_CVTTP2UI,
       // Scalar float/double to signed/unsigned integer with truncation.
       CVTTS2SI, CVTTS2UI, CVTTS2SI_SAE, CVTTS2UI_SAE,
 
@@ -1480,12 +1483,6 @@ namespace llvm {
 
     MachineBasicBlock *EmitSjLjDispatchBlock(MachineInstr &MI,
                                              MachineBasicBlock *MBB) const;
-
-    /// Emit nodes that will be selected as "cmp Op0,Op1", or something
-    /// equivalent, for use with the given x86 condition code.
-    SDValue EmitCmp(SDValue Op0, SDValue Op1, unsigned X86CC, const SDLoc &dl,
-                    SelectionDAG &DAG, SDValue Chain = SDValue(),
-                    bool IsSignaling = false) const;
 
     /// Convert a comparison if required by the subtarget.
     SDValue ConvertCmpIfNecessary(SDValue Cmp, SelectionDAG &DAG) const;

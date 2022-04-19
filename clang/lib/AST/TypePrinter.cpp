@@ -1604,6 +1604,9 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
   case attr::MemoryAddress:
     OS << "memory_address";
     break;
+  case attr::AcquireHandle:
+    OS << "acquire_handle";
+    break;
   }
   OS << "))";
 }
@@ -1841,6 +1844,12 @@ std::string Qualifiers::getAddrSpaceAsString(LangAS AS) {
     return "__constant__";
   case LangAS::cuda_shared:
     return "__shared__";
+  case LangAS::ptr32_sptr:
+    return "__sptr __ptr32";
+  case LangAS::ptr32_uptr:
+    return "__uptr __ptr32";
+  case LangAS::ptr64:
+    return "__ptr64";
   default:
     return std::to_string(toTargetAddressSpace(AS));
   }
