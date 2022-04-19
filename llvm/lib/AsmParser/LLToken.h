@@ -228,7 +228,6 @@ enum Kind {
   kw_returns_twice,
   kw_signext,
   kw_speculatable,
-  kw_nossp,
   kw_ssp,
   kw_sspreq,
   kw_sspstrong,
@@ -365,6 +364,7 @@ enum Kind {
   kw_extractvalue,
   kw_insertvalue,
   kw_blockaddress,
+  kw_dso_local_equivalent,
 
   kw_freeze,
 
