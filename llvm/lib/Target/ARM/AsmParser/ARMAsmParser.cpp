@@ -245,12 +245,12 @@ class ARMAsmParser : public MCTargetAsmParser {
     ITInst.setOpcode(ARM::t2IT);
     ITInst.addOperand(MCOperand::createImm(ITState.Cond));
     ITInst.addOperand(MCOperand::createImm(ITState.Mask));
-    Out.EmitInstruction(ITInst, getSTI());
+    Out.emitInstruction(ITInst, getSTI());
 
     // Emit the conditonal instructions
     assert(PendingConditionalInsts.size() <= 4);
     for (const MCInst &Inst : PendingConditionalInsts) {
-      Out.EmitInstruction(Inst, getSTI());
+      Out.emitInstruction(Inst, getSTI());
     }
     PendingConditionalInsts.clear();
 
@@ -628,6 +628,8 @@ public:
 
   // Implementation of the MCTargetAsmParser interface:
   bool ParseRegister(unsigned &RegNo, SMLoc &StartLoc, SMLoc &EndLoc) override;
+  OperandMatchResultTy tryParseRegister(unsigned &RegNo, SMLoc &StartLoc,
+                                        SMLoc &EndLoc) override;
   bool ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override;
   bool ParseDirective(AsmToken DirectiveID) override;
@@ -3883,6 +3885,14 @@ bool ARMAsmParser::ParseRegister(unsigned &RegNo,
   RegNo = tryParseRegister();
 
   return (RegNo == (unsigned)-1);
+}
+
+OperandMatchResultTy ARMAsmParser::tryParseRegister(unsigned &RegNo,
+                                                    SMLoc &StartLoc,
+                                                    SMLoc &EndLoc) {
+  if (ParseRegister(RegNo, StartLoc, EndLoc))
+    return MatchOperand_NoMatch;
+  return MatchOperand_Success;
 }
 
 /// Try to parse a register name.  The token must be an Identifier when called,
@@ -8313,7 +8323,7 @@ bool ARMAsmParser::processInstruction(MCInst &Inst,
       // Reading PC provides the start of the current instruction + 8 and
       // the transform to adr is biased by that.
       MCSymbol *Dot = getContext().createTempSymbol();
-      Out.EmitLabel(Dot);
+      Out.emitLabel(Dot);
       const MCExpr *OpExpr = Inst.getOperand(2).getExpr();
       const MCExpr *InstPC = MCSymbolRefExpr::create(Dot,
                                                      MCSymbolRefExpr::VK_None,
@@ -10511,7 +10521,7 @@ bool ARMAsmParser::MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
       if (isITBlockFull() || isITBlockTerminator(Inst))
         flushPendingInstructions(Out);
     } else {
-      Out.EmitInstruction(Inst, getSTI());
+      Out.emitInstruction(Inst, getSTI());
     }
     return false;
   case Match_NearMisses:
@@ -10622,7 +10632,7 @@ bool ARMAsmParser::parseLiteralValues(unsigned Size, SMLoc L) {
     const MCExpr *Value;
     if (getParser().parseExpression(Value))
       return true;
-    getParser().getStreamer().EmitValue(Value, Size, L);
+    getParser().getStreamer().emitValue(Value, Size, L);
     return false;
   };
   return (parseMany(parseOne));
@@ -10638,7 +10648,7 @@ bool ARMAsmParser::parseDirectiveThumb(SMLoc L) {
   if (!isThumb())
     SwitchMode();
 
-  getParser().getStreamer().EmitAssemblerFlag(MCAF_Code16);
+  getParser().getStreamer().emitAssemblerFlag(MCAF_Code16);
   return false;
 }
 
@@ -10651,7 +10661,7 @@ bool ARMAsmParser::parseDirectiveARM(SMLoc L) {
 
   if (isThumb())
     SwitchMode();
-  getParser().getStreamer().EmitAssemblerFlag(MCAF_Code32);
+  getParser().getStreamer().emitAssemblerFlag(MCAF_Code32);
   return false;
 }
 
@@ -10663,7 +10673,7 @@ void ARMAsmParser::doBeforeLabelEmit(MCSymbol *Symbol) {
 
 void ARMAsmParser::onLabelParsed(MCSymbol *Symbol) {
   if (NextSymbolIsThumb) {
-    getParser().getStreamer().EmitThumbFunc(Symbol);
+    getParser().getStreamer().emitThumbFunc(Symbol);
     NextSymbolIsThumb = false;
   }
 }
@@ -10683,7 +10693,7 @@ bool ARMAsmParser::parseDirectiveThumbFunc(SMLoc L) {
         Parser.getTok().is(AsmToken::String)) {
       MCSymbol *Func = getParser().getContext().getOrCreateSymbol(
           Parser.getTok().getIdentifier());
-      getParser().getStreamer().EmitThumbFunc(Func);
+      getParser().getStreamer().emitThumbFunc(Func);
       Parser.Lex();
       if (parseToken(AsmToken::EndOfStatement,
                      "unexpected token in '.thumb_func' directive"))
@@ -10747,14 +10757,14 @@ bool ARMAsmParser::parseDirectiveCode(SMLoc L) {
 
     if (!isThumb())
       SwitchMode();
-    getParser().getStreamer().EmitAssemblerFlag(MCAF_Code16);
+    getParser().getStreamer().emitAssemblerFlag(MCAF_Code16);
   } else {
     if (!hasARM())
       return Error(L, "target does not support ARM mode");
 
     if (isThumb())
       SwitchMode();
-    getParser().getStreamer().EmitAssemblerFlag(MCAF_Code32);
+    getParser().getStreamer().emitAssemblerFlag(MCAF_Code32);
   }
 
   return false;
@@ -10807,7 +10817,7 @@ void ARMAsmParser::FixModeAfterArchChange(bool WasThumb, SMLoc Loc) {
       SwitchMode();
     } else {
       // Mode switch forced, because the new arch doesn't support the old mode.
-      getParser().getStreamer().EmitAssemblerFlag(isThumb() ? MCAF_Code16
+      getParser().getStreamer().emitAssemblerFlag(isThumb() ? MCAF_Code16
                                                             : MCAF_Code32);
       // Warn about the implcit mode switch. GAS does not switch modes here,
       // but instead stays in the old mode, reporting an error on any following
@@ -11304,9 +11314,9 @@ bool ARMAsmParser::parseDirectiveEven(SMLoc L) {
 
   assert(Section && "must have section to emit alignment");
   if (Section->UseCodeAlign())
-    getStreamer().EmitCodeAlignment(2);
+    getStreamer().emitCodeAlignment(2);
   else
-    getStreamer().EmitValueToAlignment(2);
+    getStreamer().emitValueToAlignment(2);
 
   return false;
 }
@@ -11506,9 +11516,9 @@ bool ARMAsmParser::parseDirectiveAlign(SMLoc L) {
     const MCSection *Section = getStreamer().getCurrentSectionOnly();
     assert(Section && "must have section to emit alignment");
     if (Section->UseCodeAlign())
-      getStreamer().EmitCodeAlignment(4, 0);
+      getStreamer().emitCodeAlignment(4, 0);
     else
-      getStreamer().EmitValueToAlignment(4, 0, 1, 0);
+      getStreamer().emitValueToAlignment(4, 0, 1, 0);
     return false;
   }
   return true;

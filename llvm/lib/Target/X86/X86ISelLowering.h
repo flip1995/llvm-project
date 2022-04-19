@@ -77,7 +77,7 @@ namespace llvm {
       NT_CALL,
 
       /// X86 compare and logical compare instructions.
-      CMP, COMI, UCOMI,
+      CMP, FCMP, COMI, UCOMI,
 
       /// X86 bit-test instructions.
       BT,
@@ -537,6 +537,10 @@ namespace llvm {
       // falls back to heap allocation if not.
       SEG_ALLOCA,
 
+      // For allocating stack space when using stack clash protector.
+      // Allocation is performed by block, and each block is probed.
+      PROBED_ALLOCA,
+
       // Memory barriers.
       MEMBARRIER,
       MFENCE,
@@ -622,6 +626,9 @@ namespace llvm {
 
       // Strict FMA nodes.
       STRICT_FNMADD, STRICT_FMSUB, STRICT_FNMSUB,
+
+      // Conversions between float and half-float.
+      STRICT_CVTPS2PH, STRICT_CVTPH2PS,
 
       // Compare and swap.
       LCMPXCHG_DAG = ISD::FIRST_TARGET_MEMORY_OPCODE,
@@ -801,13 +808,14 @@ namespace llvm {
     /// and some i16 instructions are slow.
     bool IsDesirableToPromoteOp(SDValue Op, EVT &PVT) const override;
 
-    /// Return 1 if we can compute the negated form of the specified expression
-    /// for the same cost as the expression itself, or 2 if we can compute the
-    /// negated form more cheaply than the expression itself. Else return 0.
-    char isNegatibleForFree(SDValue Op, SelectionDAG &DAG, bool LegalOperations,
-                            bool ForCodeSize, unsigned Depth) const override;
+    /// Returns whether computing the negated form of the specified expression
+    /// is more expensive, the same cost or cheaper.
+    NegatibleCost getNegatibleCost(SDValue Op, SelectionDAG &DAG,
+                                   bool LegalOperations, bool ForCodeSize,
+                                   unsigned Depth) const override;
 
-    /// If isNegatibleForFree returns true, return the newly negated expression.
+    /// If getNegatibleCost returns Neutral/Cheaper, return the newly negated
+    /// expression.
     SDValue getNegatedExpression(SDValue Op, SelectionDAG &DAG,
                                  bool LegalOperations, bool ForCodeSize,
                                  unsigned Depth) const override;
@@ -1224,6 +1232,8 @@ namespace llvm {
 
     bool supportSwiftError() const override;
 
+    bool hasStackProbeSymbol(MachineFunction &MF) const override;
+    bool hasInlineStackProbe(MachineFunction &MF) const override;
     StringRef getStackProbeSymbolName(MachineFunction &MF) const override;
 
     unsigned getStackProbeSize(MachineFunction &MF) const;
@@ -1448,6 +1458,9 @@ namespace llvm {
     MachineBasicBlock *EmitLoweredSegAlloca(MachineInstr &MI,
                                             MachineBasicBlock *BB) const;
 
+    MachineBasicBlock *EmitLoweredProbedAlloca(MachineInstr &MI,
+                                               MachineBasicBlock *BB) const;
+
     MachineBasicBlock *EmitLoweredTLSAddr(MachineInstr &MI,
                                           MachineBasicBlock *BB) const;
 
@@ -1479,8 +1492,7 @@ namespace llvm {
     /// corresponding X86 condition code constant in X86CC.
     SDValue emitFlagsForSetcc(SDValue Op0, SDValue Op1, ISD::CondCode CC,
                               const SDLoc &dl, SelectionDAG &DAG,
-                              SDValue &X86CC, SDValue &Chain,
-                              bool IsSignaling) const;
+                              SDValue &X86CC) const;
 
     /// Check if replacement of SQRT with RSQRT should be disabled.
     bool isFsqrtCheap(SDValue Operand, SelectionDAG &DAG) const override;

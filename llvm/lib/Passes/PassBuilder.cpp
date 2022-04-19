@@ -185,6 +185,7 @@
 #include "llvm/Transforms/Vectorize/LoadStoreVectorizer.h"
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
+#include "llvm/Transforms/Vectorize/VectorCombine.h"
 
 using namespace llvm;
 
@@ -748,6 +749,13 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
       MPM.addPass(PGOIndirectCallPromotion(Phase == ThinLTOPhase::PostLink,
                                            true /* SamplePGO */));
   }
+  MPM.addPass(AttributorPass());
+
+  // Lower type metadata and the type.test intrinsic in the ThinLTO
+  // post link pipeline after ICP. This is to enable usage of the type
+  // tests in ICP sequences.
+  if (Phase == ThinLTOPhase::PostLink)
+    MPM.addPass(LowerTypeTestsPass(nullptr, nullptr, true));
 
   // Interprocedural constant propagation now that basic cleanup has occurred
   // and prior to optimizing globals.
@@ -829,6 +837,8 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
       PGOOpt->Action == PGOOptions::SampleUse)
     IP.HotCallSiteThreshold = 0;
   MainCGPipeline.addPass(InlinerPass(IP));
+
+  MainCGPipeline.addPass(AttributorCGSCCPass());
 
   // Now deduce any function attributes based in the current code.
   MainCGPipeline.addPass(PostOrderFunctionAttrsPass());
@@ -953,6 +963,7 @@ ModulePassManager PassBuilder::buildModuleOptimizationPipeline(
   OptimizePM.addPass(LoopLoadEliminationPass());
 
   // Cleanup after the loop optimization passes.
+  OptimizePM.addPass(VectorCombinePass());
   OptimizePM.addPass(InstCombinePass());
 
   // Now that we've formed fast to execute loop structures, we do further
@@ -971,8 +982,10 @@ ModulePassManager PassBuilder::buildModuleOptimizationPipeline(
                                      sinkCommonInsts(true)));
 
   // Optimize parallel scalar instruction chains into SIMD instructions.
-  if (PTO.SLPVectorization)
+  if (PTO.SLPVectorization) {
     OptimizePM.addPass(SLPVectorizerPass());
+    OptimizePM.addPass(VectorCombinePass());
+  }
 
   OptimizePM.addPass(InstCombinePass());
 
@@ -1176,6 +1189,9 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level, bool DebugLogging,
     // metadata and intrinsics.
     MPM.addPass(WholeProgramDevirtPass(ExportSummary, nullptr));
     MPM.addPass(LowerTypeTestsPass(ExportSummary, nullptr));
+    // Run a second time to clean up any type tests left behind by WPD for use
+    // in ICP.
+    MPM.addPass(LowerTypeTestsPass(nullptr, nullptr, true));
     return MPM;
   }
 
@@ -1242,6 +1258,10 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level, bool DebugLogging,
     // The LowerTypeTestsPass needs to run to lower type metadata and the
     // type.test intrinsics. The pass does nothing if CFI is disabled.
     MPM.addPass(LowerTypeTestsPass(ExportSummary, nullptr));
+    // Run a second time to clean up any type tests left behind by WPD for use
+    // in ICP (which is performed earlier than this in the regular LTO
+    // pipeline).
+    MPM.addPass(LowerTypeTestsPass(nullptr, nullptr, true));
     return MPM;
   }
 
@@ -1369,6 +1389,9 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level, bool DebugLogging,
   // to be run at link time if CFI is enabled. This pass does nothing if
   // CFI is disabled.
   MPM.addPass(LowerTypeTestsPass(ExportSummary, nullptr));
+  // Run a second time to clean up any type tests left behind by WPD for use
+  // in ICP (which is performed earlier than this in the regular LTO pipeline).
+  MPM.addPass(LowerTypeTestsPass(nullptr, nullptr, true));
 
   // Enable splitting late in the FullLTO post-link pipeline. This is done in
   // the same stage in the old pass manager (\ref addLateLTOOptimizationPasses).

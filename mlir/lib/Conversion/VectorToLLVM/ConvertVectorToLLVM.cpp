@@ -124,6 +124,7 @@ static SmallVector<int64_t, 4> getI64SubArray(ArrayAttr arrayAttr,
 }
 
 namespace {
+
 class VectorBroadcastOpConversion : public LLVMOpLowering {
 public:
   explicit VectorBroadcastOpConversion(MLIRContext *context,
@@ -269,6 +270,100 @@ private:
           insertOne(rewriter, lowering, loc, result, expand, llvmType, rank, d);
     }
     return result;
+  }
+};
+
+class VectorReductionOpConversion : public LLVMOpLowering {
+public:
+  explicit VectorReductionOpConversion(MLIRContext *context,
+                                       LLVMTypeConverter &typeConverter)
+      : LLVMOpLowering(vector::ReductionOp::getOperationName(), context,
+                       typeConverter) {}
+
+  PatternMatchResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto reductionOp = cast<vector::ReductionOp>(op);
+    auto kind = reductionOp.kind();
+    Type eltType = reductionOp.dest().getType();
+    Type llvmType = lowering.convertType(eltType);
+    if (eltType.isInteger(32) || eltType.isInteger(64)) {
+      // Integer reductions: add/mul/min/max/and/or/xor.
+      if (kind == "add")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_add>(
+            op, llvmType, operands[0]);
+      else if (kind == "mul")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_mul>(
+            op, llvmType, operands[0]);
+      else if (kind == "min")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_smin>(
+            op, llvmType, operands[0]);
+      else if (kind == "max")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_smax>(
+            op, llvmType, operands[0]);
+      else if (kind == "and")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_and>(
+            op, llvmType, operands[0]);
+      else if (kind == "or")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_or>(
+            op, llvmType, operands[0]);
+      else if (kind == "xor")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_xor>(
+            op, llvmType, operands[0]);
+      else
+        return matchFailure();
+      return matchSuccess();
+
+    } else if (eltType.isF32() || eltType.isF64()) {
+      // Floating-point reductions: add/mul/min/max
+      if (kind == "add") {
+        Value zero = rewriter.create<LLVM::ConstantOp>(
+            op->getLoc(), llvmType, rewriter.getZeroAttr(eltType));
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_v2_fadd>(
+            op, llvmType, zero, operands[0]);
+      } else if (kind == "mul") {
+        Value one = rewriter.create<LLVM::ConstantOp>(
+            op->getLoc(), llvmType, rewriter.getFloatAttr(eltType, 1.0));
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_v2_fmul>(
+            op, llvmType, one, operands[0]);
+      } else if (kind == "min")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_fmin>(
+            op, llvmType, operands[0]);
+      else if (kind == "max")
+        rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_fmax>(
+            op, llvmType, operands[0]);
+      else
+        return matchFailure();
+      return matchSuccess();
+    }
+    return matchFailure();
+  }
+};
+
+// TODO(ajcbik): merge Reduction and ReductionV2
+class VectorReductionV2OpConversion : public LLVMOpLowering {
+public:
+  explicit VectorReductionV2OpConversion(MLIRContext *context,
+                                         LLVMTypeConverter &typeConverter)
+      : LLVMOpLowering(vector::ReductionV2Op::getOperationName(), context,
+                       typeConverter) {}
+  PatternMatchResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto reductionOp = cast<vector::ReductionV2Op>(op);
+    auto kind = reductionOp.kind();
+    Type eltType = reductionOp.dest().getType();
+    Type llvmType = lowering.convertType(eltType);
+    if (kind == "add") {
+      rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_v2_fadd>(
+          op, llvmType, operands[1], operands[0]);
+      return matchSuccess();
+    } else if (kind == "mul") {
+      rewriter.replaceOpWithNewOp<LLVM::experimental_vector_reduce_v2_fmul>(
+          op, llvmType, operands[1], operands[0]);
+      return matchSuccess();
+    }
+    return matchFailure();
   }
 };
 
@@ -1056,7 +1151,8 @@ void mlir::populateVectorToLLVMConversionPatterns(
                   VectorInsertStridedSliceOpDifferentRankRewritePattern,
                   VectorInsertStridedSliceOpSameRankRewritePattern,
                   VectorStridedSliceOpConversion>(ctx);
-  patterns.insert<VectorBroadcastOpConversion, VectorShuffleOpConversion,
+  patterns.insert<VectorBroadcastOpConversion, VectorReductionOpConversion,
+                  VectorReductionV2OpConversion, VectorShuffleOpConversion,
                   VectorExtractElementOpConversion, VectorExtractOpConversion,
                   VectorFMAOp1DConversion, VectorInsertElementOpConversion,
                   VectorInsertOpConversion, VectorOuterProductOpConversion,
@@ -1071,11 +1167,12 @@ struct LowerVectorToLLVMPass : public ModulePass<LowerVectorToLLVMPass> {
 } // namespace
 
 void LowerVectorToLLVMPass::runOnModule() {
-  // Perform progressive lowering of operations on "slices".
-  // Folding and DCE get rid of all non-leaking tuple ops.
+  // Perform progressive lowering of operations on "slices" and
+  // all contraction operations. Also applies folding and DCE.
   {
     OwningRewritePatternList patterns;
     populateVectorSlicesLoweringPatterns(patterns, &getContext());
+    populateVectorContractLoweringPatterns(patterns, &getContext());
     applyPatternsGreedily(getModule(), patterns);
   }
 

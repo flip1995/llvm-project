@@ -74,6 +74,8 @@ class RISCVAsmParser : public MCTargetAsmParser {
                                bool MatchingInlineAsm) override;
 
   bool ParseRegister(unsigned &RegNo, SMLoc &StartLoc, SMLoc &EndLoc) override;
+  OperandMatchResultTy tryParseRegister(unsigned &RegNo, SMLoc &StartLoc,
+                                        SMLoc &EndLoc) override;
 
   bool ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override;
@@ -1157,17 +1159,25 @@ static bool matchRegisterNameHelper(bool IsRV32E, Register &RegNo,
 
 bool RISCVAsmParser::ParseRegister(unsigned &RegNo, SMLoc &StartLoc,
                                    SMLoc &EndLoc) {
+  if (tryParseRegister(RegNo, StartLoc, EndLoc) != MatchOperand_Success)
+    return Error(StartLoc, "invalid register name");
+  return false;
+}
+
+OperandMatchResultTy RISCVAsmParser::tryParseRegister(unsigned &RegNo,
+                                                      SMLoc &StartLoc,
+                                                      SMLoc &EndLoc) {
   const AsmToken &Tok = getParser().getTok();
   StartLoc = Tok.getLoc();
   EndLoc = Tok.getEndLoc();
   RegNo = 0;
   StringRef Name = getLexer().getTok().getIdentifier();
 
-  if (matchRegisterNameHelper(isRV32E(), (Register&)RegNo, Name))
-    return Error(StartLoc, "invalid register name");
+  if (matchRegisterNameHelper(isRV32E(), (Register &)RegNo, Name))
+    return MatchOperand_NoMatch;
 
   getParser().Lex(); // Eat identifier token.
-  return false;
+  return MatchOperand_Success;
 }
 
 OperandMatchResultTy RISCVAsmParser::parseRegister(OperandVector &Operands,
@@ -1897,7 +1907,7 @@ void RISCVAsmParser::emitToStreamer(MCStreamer &S, const MCInst &Inst) {
   bool Res = compressInst(CInst, Inst, getSTI(), S.getContext());
   if (Res)
     ++RISCVNumInstrsCompressed;
-  S.EmitInstruction((Res ? CInst : Inst), getSTI());
+  S.emitInstruction((Res ? CInst : Inst), getSTI());
 }
 
 void RISCVAsmParser::emitLoadImm(Register DestReg, int64_t Value,
@@ -1933,7 +1943,7 @@ void RISCVAsmParser::emitAuipcInstPair(MCOperand DestReg, MCOperand TmpReg,
 
   MCSymbol *TmpLabel = Ctx.createTempSymbol(
       "pcrel_hi", /* AlwaysAddSuffix */ true, /* CanBeUnnamed */ false);
-  Out.EmitLabel(TmpLabel);
+  Out.emitLabel(TmpLabel);
 
   const RISCVMCExpr *SymbolHi = RISCVMCExpr::create(Symbol, VKHi, Ctx);
   emitToStreamer(
