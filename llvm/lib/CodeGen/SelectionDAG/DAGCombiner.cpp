@@ -525,7 +525,7 @@ namespace {
     SDValue rebuildSetCC(SDValue N);
 
     bool isSetCCEquivalent(SDValue N, SDValue &LHS, SDValue &RHS,
-                           SDValue &CC) const;
+                           SDValue &CC, bool MatchStrict = false) const;
     bool isOneUseSetCC(SDValue N) const;
     bool isCheaperToUseNegatedFPOps(SDValue X, SDValue Y);
 
@@ -817,11 +817,20 @@ static void zeroExtendToMatch(APInt &LHS, APInt &RHS, unsigned Offset = 0) {
 // the appropriate nodes based on the type of node we are checking. This
 // simplifies life a bit for the callers.
 bool DAGCombiner::isSetCCEquivalent(SDValue N, SDValue &LHS, SDValue &RHS,
-                                    SDValue &CC) const {
+                                    SDValue &CC, bool MatchStrict) const {
   if (N.getOpcode() == ISD::SETCC) {
     LHS = N.getOperand(0);
     RHS = N.getOperand(1);
     CC  = N.getOperand(2);
+    return true;
+  }
+
+  if (MatchStrict &&
+      (N.getOpcode() == ISD::STRICT_FSETCC ||
+       N.getOpcode() == ISD::STRICT_FSETCCS)) {
+    LHS = N.getOperand(1);
+    RHS = N.getOperand(2);
+    CC  = N.getOperand(3);
     return true;
   }
 
@@ -958,10 +967,11 @@ SDValue DAGCombiner::reassociateOpsCommutative(unsigned Opc, const SDLoc &DL,
   if (N0->getFlags().hasVectorReduction())
     return SDValue();
 
-  if (SDNode *C1 = DAG.isConstantIntBuildVectorOrConstantInt(N0.getOperand(1))) {
-    if (SDNode *C2 = DAG.isConstantIntBuildVectorOrConstantInt(N1)) {
+  if (DAG.isConstantIntBuildVectorOrConstantInt(N0.getOperand(1))) {
+    if (DAG.isConstantIntBuildVectorOrConstantInt(N1)) {
       // Reassociate: (op (op x, c1), c2) -> (op x, (op c1, c2))
-      if (SDValue OpNode = DAG.FoldConstantArithmetic(Opc, DL, VT, C1, C2))
+      if (SDValue OpNode =
+              DAG.FoldConstantArithmetic(Opc, DL, VT, {N0.getOperand(1), N1}))
         return DAG.getNode(Opc, DL, VT, N0.getOperand(0), OpNode);
       return SDValue();
     }
@@ -2148,8 +2158,7 @@ SDValue DAGCombiner::visitADDLike(SDNode *N) {
     if (!DAG.isConstantIntBuildVectorOrConstantInt(N1))
       return DAG.getNode(ISD::ADD, DL, VT, N1, N0);
     // fold (add c1, c2) -> c1+c2
-    return DAG.FoldConstantArithmetic(ISD::ADD, DL, VT, N0.getNode(),
-                                      N1.getNode());
+    return DAG.FoldConstantArithmetic(ISD::ADD, DL, VT, {N0, N1});
   }
 
   // fold (add x, 0) -> x
@@ -2160,8 +2169,8 @@ SDValue DAGCombiner::visitADDLike(SDNode *N) {
     // fold ((A-c1)+c2) -> (A+(c2-c1))
     if (N0.getOpcode() == ISD::SUB &&
         isConstantOrConstantVector(N0.getOperand(1), /* NoOpaque */ true)) {
-      SDValue Sub = DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, N1.getNode(),
-                                               N0.getOperand(1).getNode());
+      SDValue Sub =
+          DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, {N1, N0.getOperand(1)});
       assert(Sub && "Constant folding failed");
       return DAG.getNode(ISD::ADD, DL, VT, N0.getOperand(0), Sub);
     }
@@ -2169,8 +2178,8 @@ SDValue DAGCombiner::visitADDLike(SDNode *N) {
     // fold ((c1-A)+c2) -> (c1+c2)-A
     if (N0.getOpcode() == ISD::SUB &&
         isConstantOrConstantVector(N0.getOperand(0), /* NoOpaque */ true)) {
-      SDValue Add = DAG.FoldConstantArithmetic(ISD::ADD, DL, VT, N1.getNode(),
-                                               N0.getOperand(0).getNode());
+      SDValue Add =
+          DAG.FoldConstantArithmetic(ISD::ADD, DL, VT, {N1, N0.getOperand(0)});
       assert(Add && "Constant folding failed");
       return DAG.getNode(ISD::SUB, DL, VT, Add, N0.getOperand(1));
     }
@@ -2386,8 +2395,7 @@ SDValue DAGCombiner::visitADDSAT(SDNode *N) {
     if (!DAG.isConstantIntBuildVectorOrConstantInt(N1))
       return DAG.getNode(Opcode, DL, VT, N1, N0);
     // fold (add_sat c1, c2) -> c3
-    return DAG.FoldConstantArithmetic(Opcode, DL, VT, N0.getNode(),
-                                      N1.getNode());
+    return DAG.FoldConstantArithmetic(Opcode, DL, VT, {N0, N1});
   }
 
   // fold (add_sat x, 0) -> x
@@ -3010,8 +3018,7 @@ SDValue DAGCombiner::visitSUB(SDNode *N) {
   if (DAG.isConstantIntBuildVectorOrConstantInt(N0) &&
       DAG.isConstantIntBuildVectorOrConstantInt(N1)) {
     // fold (sub c1, c2) -> c1-c2
-    return DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, N0.getNode(),
-                                      N1.getNode());
+    return DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, {N0, N1});
   }
 
   if (SDValue NewSel = foldBinOpIntoSelect(N))
@@ -3079,8 +3086,8 @@ SDValue DAGCombiner::visitSUB(SDNode *N) {
   if (N0.getOpcode() == ISD::ADD &&
       isConstantOrConstantVector(N1, /* NoOpaques */ true) &&
       isConstantOrConstantVector(N0.getOperand(1), /* NoOpaques */ true)) {
-    SDValue NewC = DAG.FoldConstantArithmetic(
-        ISD::SUB, DL, VT, N0.getOperand(1).getNode(), N1.getNode());
+    SDValue NewC =
+        DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, {N0.getOperand(1), N1});
     assert(NewC && "Constant folding failed");
     return DAG.getNode(ISD::ADD, DL, VT, N0.getOperand(0), NewC);
   }
@@ -3090,8 +3097,7 @@ SDValue DAGCombiner::visitSUB(SDNode *N) {
     SDValue N11 = N1.getOperand(1);
     if (isConstantOrConstantVector(N0, /* NoOpaques */ true) &&
         isConstantOrConstantVector(N11, /* NoOpaques */ true)) {
-      SDValue NewC = DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, N0.getNode(),
-                                                N11.getNode());
+      SDValue NewC = DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, {N0, N11});
       assert(NewC && "Constant folding failed");
       return DAG.getNode(ISD::SUB, DL, VT, NewC, N1.getOperand(0));
     }
@@ -3101,8 +3107,8 @@ SDValue DAGCombiner::visitSUB(SDNode *N) {
   if (N0.getOpcode() == ISD::SUB &&
       isConstantOrConstantVector(N1, /* NoOpaques */ true) &&
       isConstantOrConstantVector(N0.getOperand(1), /* NoOpaques */ true)) {
-    SDValue NewC = DAG.FoldConstantArithmetic(
-        ISD::ADD, DL, VT, N0.getOperand(1).getNode(), N1.getNode());
+    SDValue NewC =
+        DAG.FoldConstantArithmetic(ISD::ADD, DL, VT, {N0.getOperand(1), N1});
     assert(NewC && "Constant folding failed");
     return DAG.getNode(ISD::SUB, DL, VT, N0.getOperand(0), NewC);
   }
@@ -3111,8 +3117,8 @@ SDValue DAGCombiner::visitSUB(SDNode *N) {
   if (N0.getOpcode() == ISD::SUB &&
       isConstantOrConstantVector(N1, /* NoOpaques */ true) &&
       isConstantOrConstantVector(N0.getOperand(0), /* NoOpaques */ true)) {
-    SDValue NewC = DAG.FoldConstantArithmetic(
-        ISD::SUB, DL, VT, N0.getOperand(0).getNode(), N1.getNode());
+    SDValue NewC =
+        DAG.FoldConstantArithmetic(ISD::SUB, DL, VT, {N0.getOperand(0), N1});
     assert(NewC && "Constant folding failed");
     return DAG.getNode(ISD::SUB, DL, VT, NewC, N0.getOperand(1));
   }
@@ -3336,8 +3342,7 @@ SDValue DAGCombiner::visitSUBSAT(SDNode *N) {
   if (DAG.isConstantIntBuildVectorOrConstantInt(N0) &&
       DAG.isConstantIntBuildVectorOrConstantInt(N1)) {
     // fold (sub_sat c1, c2) -> c3
-    return DAG.FoldConstantArithmetic(N->getOpcode(), DL, VT, N0.getNode(),
-                                      N1.getNode());
+    return DAG.FoldConstantArithmetic(N->getOpcode(), DL, VT, {N0, N1});
   }
 
   // fold (sub_sat x, 0) -> x
@@ -3507,8 +3512,7 @@ SDValue DAGCombiner::visitMUL(SDNode *N) {
 
   // fold (mul c1, c2) -> c1*c2
   if (N0IsConst && N1IsConst && !N0IsOpaqueConst && !N1IsOpaqueConst)
-    return DAG.FoldConstantArithmetic(ISD::MUL, SDLoc(N), VT,
-                                      N0.getNode(), N1.getNode());
+    return DAG.FoldConstantArithmetic(ISD::MUL, SDLoc(N), VT, {N0, N1});
 
   // canonicalize constant to RHS (vector doesn't have to splat)
   if (DAG.isConstantIntBuildVectorOrConstantInt(N0) &&
@@ -5964,8 +5968,8 @@ SDValue DAGCombiner::visitOR(SDNode *N) {
   };
   if (N0.getOpcode() == ISD::AND && N0.getNode()->hasOneUse() &&
       ISD::matchBinaryPredicate(N0.getOperand(1), N1, MatchIntersect, true)) {
-    if (SDValue COR = DAG.FoldConstantArithmetic(
-            ISD::OR, SDLoc(N1), VT, N1.getNode(), N0.getOperand(1).getNode())) {
+    if (SDValue COR = DAG.FoldConstantArithmetic(ISD::OR, SDLoc(N1), VT,
+                                                 {N1, N0.getOperand(1)})) {
       SDValue IOR = DAG.getNode(ISD::OR, SDLoc(N0), VT, N0.getOperand(0), N1);
       AddToWorklist(IOR.getNode());
       return DAG.getNode(ISD::AND, SDLoc(N), VT, COR, IOR);
@@ -7102,7 +7106,8 @@ SDValue DAGCombiner::visitXOR(SDNode *N) {
   // fold !(x cc y) -> (x !cc y)
   unsigned N0Opcode = N0.getOpcode();
   SDValue LHS, RHS, CC;
-  if (TLI.isConstTrueVal(N1.getNode()) && isSetCCEquivalent(N0, LHS, RHS, CC)) {
+  if (TLI.isConstTrueVal(N1.getNode()) &&
+      isSetCCEquivalent(N0, LHS, RHS, CC, /*MatchStrict*/true)) {
     ISD::CondCode NotCC = ISD::getSetCCInverse(cast<CondCodeSDNode>(CC)->get(),
                                                LHS.getValueType());
     if (!LegalOperations ||
@@ -7115,6 +7120,21 @@ SDValue DAGCombiner::visitXOR(SDNode *N) {
       case ISD::SELECT_CC:
         return DAG.getSelectCC(SDLoc(N0), LHS, RHS, N0.getOperand(2),
                                N0.getOperand(3), NotCC);
+      case ISD::STRICT_FSETCC:
+      case ISD::STRICT_FSETCCS: {
+        if (N0.hasOneUse()) {
+          // FIXME Can we handle multiple uses? Could we token factor the chain
+          // results from the new/old setcc?
+          SDValue SetCC = DAG.getSetCC(SDLoc(N0), VT, LHS, RHS, NotCC,
+                                       N0.getOperand(0),
+                                       N0Opcode == ISD::STRICT_FSETCCS);
+          CombineTo(N, SetCC);
+          DAG.ReplaceAllUsesOfValueWith(N0.getValue(1), SetCC.getValue(1));
+          recursivelyDeleteUnusedNodes(N0.getNode());
+          return SDValue(N, 0); // Return N so it doesn't get rechecked!
+        }
+        break;
+      }
       }
     }
   }
@@ -7458,6 +7478,10 @@ SDValue DAGCombiner::visitRotate(SDNode *N) {
     }
   }
 
+  // Simplify the operands using demanded-bits information.
+  if (SimplifyDemandedBits(SDValue(N, 0)))
+    return SDValue(N, 0);
+
   // fold (rot* x, (trunc (and y, c))) -> (rot* x, (and (trunc y), (trunc c))).
   if (N1.getOpcode() == ISD::TRUNCATE &&
       N1.getOperand(0).getOpcode() == ISD::AND) {
@@ -7474,12 +7498,11 @@ SDValue DAGCombiner::visitRotate(SDNode *N) {
       EVT ShiftVT = C1->getValueType(0);
       bool SameSide = (N->getOpcode() == NextOp);
       unsigned CombineOp = SameSide ? ISD::ADD : ISD::SUB;
-      if (SDValue CombinedShift =
-              DAG.FoldConstantArithmetic(CombineOp, dl, ShiftVT, C1, C2)) {
+      if (SDValue CombinedShift = DAG.FoldConstantArithmetic(
+              CombineOp, dl, ShiftVT, {N1, N0.getOperand(1)})) {
         SDValue BitsizeC = DAG.getConstant(Bitsize, dl, ShiftVT);
         SDValue CombinedShiftNorm = DAG.FoldConstantArithmetic(
-            ISD::SREM, dl, ShiftVT, CombinedShift.getNode(),
-            BitsizeC.getNode());
+            ISD::SREM, dl, ShiftVT, {CombinedShift, BitsizeC});
         return DAG.getNode(N->getOpcode(), dl, VT, N0->getOperand(0),
                            CombinedShiftNorm);
       }
@@ -7515,8 +7538,8 @@ SDValue DAGCombiner::visitSHL(SDNode *N) {
         if (N01CV && N01CV->isConstant() && N00.getOpcode() == ISD::SETCC &&
             TLI.getBooleanContents(N00.getOperand(0).getValueType()) ==
                 TargetLowering::ZeroOrNegativeOneBooleanContent) {
-          if (SDValue C = DAG.FoldConstantArithmetic(ISD::SHL, SDLoc(N), VT,
-                                                     N01CV, N1CV))
+          if (SDValue C =
+                  DAG.FoldConstantArithmetic(ISD::SHL, SDLoc(N), VT, {N01, N1}))
             return DAG.getNode(ISD::AND, SDLoc(N), VT, N00, C);
         }
       }
@@ -13581,8 +13604,12 @@ SDValue DAGCombiner::visitBRCOND(SDNode *N) {
   }
 
   if (N1.hasOneUse()) {
+    // rebuildSetCC calls visitXor which may change the Chain when there is a
+    // STRICT_FSETCC/STRICT_FSETCCS involved. Use a handle to track changes.
+    HandleSDNode ChainHandle(Chain);
     if (SDValue NewN1 = rebuildSetCC(N1))
-      return DAG.getNode(ISD::BRCOND, SDLoc(N), MVT::Other, Chain, NewN1, N2);
+      return DAG.getNode(ISD::BRCOND, SDLoc(N), MVT::Other,
+                         ChainHandle.getValue(), NewN1, N2);
   }
 
   return SDValue();
@@ -18694,6 +18721,13 @@ SDValue DAGCombiner::visitEXTRACT_SUBVECTOR(SDNode *N) {
           if (TLI.isOperationLegalOrCustom(ISD::EXTRACT_SUBVECTOR, NewExtVT)) {
             SDValue NewIndex = DAG.getVectorIdxConstant(IndexValScaled, DL);
             SDValue NewExtract = DAG.getNode(ISD::EXTRACT_SUBVECTOR, DL, NewExtVT,
+                                             V.getOperand(0), NewIndex);
+            return DAG.getBitcast(NVT, NewExtract);
+          }
+          if (NewExtNumElts == 1 &&
+              TLI.isOperationLegalOrCustom(ISD::EXTRACT_VECTOR_ELT, ScalarVT)) {
+            SDValue NewIndex = DAG.getVectorIdxConstant(IndexValScaled, DL);
+            SDValue NewExtract = DAG.getNode(ISD::EXTRACT_VECTOR_ELT, DL, ScalarVT,
                                              V.getOperand(0), NewIndex);
             return DAG.getBitcast(NVT, NewExtract);
           }

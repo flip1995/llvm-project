@@ -3780,6 +3780,12 @@ unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, const APInt &DemandedElts,
   }
   case ISD::ROTL:
   case ISD::ROTR:
+    Tmp = ComputeNumSignBits(Op.getOperand(0), DemandedElts, Depth + 1);
+
+    // If we're rotating an 0/-1 value, then it stays an 0/-1 value.
+    if (Tmp == VTBits)
+      return VTBits;
+
     if (ConstantSDNode *C = dyn_cast<ConstantSDNode>(Op.getOperand(1))) {
       unsigned RotAmt = C->getAPIntValue().urem(VTBits);
 
@@ -3789,7 +3795,6 @@ unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, const APInt &DemandedElts,
 
       // If we aren't rotating out all of the known-in sign bits, return the
       // number that are left.  This handles rotl(sext(x), 1) for example.
-      Tmp = ComputeNumSignBits(Op.getOperand(0), Depth+1);
       if (Tmp > (RotAmt + 1)) return (Tmp - RotAmt);
     }
     break;
@@ -4907,15 +4912,24 @@ bool SelectionDAG::isUndef(unsigned Opcode, ArrayRef<SDValue> Ops) {
 }
 
 SDValue SelectionDAG::FoldConstantArithmetic(unsigned Opcode, const SDLoc &DL,
-                                             EVT VT, SDNode *N1, SDNode *N2) {
+                                             EVT VT, ArrayRef<SDValue> Ops) {
   // If the opcode is a target-specific ISD node, there's nothing we can
   // do here and the operand rules may not line up with the below, so
   // bail early.
   if (Opcode >= ISD::BUILTIN_OP_END)
     return SDValue();
 
-  if (isUndef(Opcode, {SDValue(N1, 0), SDValue(N2, 0)}))
+  // For now, the array Ops should only contain two values.
+  // This enforcement will be removed once this function is merged with
+  // FoldConstantVectorArithmetic
+  if (Ops.size() != 2)
+    return SDValue();
+
+  if (isUndef(Opcode, Ops))
     return getUNDEF(VT);
+
+  SDNode *N1 = Ops[0].getNode();
+  SDNode *N2 = Ops[1].getNode();
 
   // Handle the case of two scalars.
   if (auto *C1 = dyn_cast<ConstantSDNode>(N1)) {
@@ -5490,8 +5504,7 @@ SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, EVT VT,
   }
 
   // Perform trivial constant folding.
-  if (SDValue SV =
-          FoldConstantArithmetic(Opcode, DL, VT, N1.getNode(), N2.getNode()))
+  if (SDValue SV = FoldConstantArithmetic(Opcode, DL, VT, {N1, N2}))
     return SV;
 
   if (SDValue V = foldConstantFPMath(Opcode, DL, VT, N1, N2))

@@ -2656,14 +2656,7 @@ X86TargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   CCState CCInfo(CallConv, isVarArg, MF, RVLocs, *DAG.getContext());
   CCInfo.AnalyzeReturn(Outs, RetCC_X86);
 
-  SDValue Flag;
-  SmallVector<SDValue, 6> RetOps;
-  RetOps.push_back(Chain); // Operand #0 = Chain (updated below)
-  // Operand #1 = Bytes To Pop
-  RetOps.push_back(DAG.getTargetConstant(FuncInfo->getBytesToPopOnReturn(), dl,
-                   MVT::i32));
-
-  // Copy the result values into the output registers.
+  SmallVector<std::pair<unsigned, SDValue>, 4> RetVals;
   for (unsigned I = 0, OutsIndex = 0, E = RVLocs.size(); I != E;
        ++I, ++OutsIndex) {
     CCValAssign &VA = RVLocs[I];
@@ -2715,7 +2708,7 @@ X86TargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
       // change the value to the FP stack register class.
       if (isScalarFPTypeInSSEReg(VA.getValVT()))
         ValToCopy = DAG.getNode(ISD::FP_EXTEND, dl, MVT::f80, ValToCopy);
-      RetOps.push_back(ValToCopy);
+      RetVals.push_back(std::make_pair(VA.getLocReg(), ValToCopy));
       // Don't emit a copytoreg.
       continue;
     }
@@ -2736,31 +2729,39 @@ X86TargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
       }
     }
 
-    SmallVector<std::pair<unsigned, SDValue>, 8> RegsToPass;
-
     if (VA.needsCustom()) {
       assert(VA.getValVT() == MVT::v64i1 &&
              "Currently the only custom case is when we split v64i1 to 2 regs");
 
-      Passv64i1ArgInRegs(dl, DAG, ValToCopy, RegsToPass, VA, RVLocs[++I],
+      Passv64i1ArgInRegs(dl, DAG, ValToCopy, RetVals, VA, RVLocs[++I],
                          Subtarget);
-
-      assert(2 == RegsToPass.size() &&
-             "Expecting two registers after Pass64BitArgInRegs");
 
       // Add the second register to the CalleeSaveDisableRegs list.
       if (ShouldDisableCalleeSavedRegister)
         MF.getRegInfo().disableCalleeSavedRegister(RVLocs[I].getLocReg());
     } else {
-      RegsToPass.push_back(std::make_pair(VA.getLocReg(), ValToCopy));
+      RetVals.push_back(std::make_pair(VA.getLocReg(), ValToCopy));
+    }
+  }
+
+  SDValue Flag;
+  SmallVector<SDValue, 6> RetOps;
+  RetOps.push_back(Chain); // Operand #0 = Chain (updated below)
+  // Operand #1 = Bytes To Pop
+  RetOps.push_back(DAG.getTargetConstant(FuncInfo->getBytesToPopOnReturn(), dl,
+                   MVT::i32));
+
+  // Copy the result values into the output registers.
+  for (auto &RetVal : RetVals) {
+    if (RetVal.first == X86::FP0 || RetVal.first == X86::FP1) {
+      RetOps.push_back(RetVal.second);
+      continue; // Don't emit a copytoreg.
     }
 
-    // Add nodes to the DAG and add the values into the RetOps list
-    for (auto &Reg : RegsToPass) {
-      Chain = DAG.getCopyToReg(Chain, dl, Reg.first, Reg.second, Flag);
-      Flag = Chain.getValue(1);
-      RetOps.push_back(DAG.getRegister(Reg.first, Reg.second.getValueType()));
-    }
+    Chain = DAG.getCopyToReg(Chain, dl, RetVal.first, RetVal.second, Flag);
+    Flag = Chain.getValue(1);
+    RetOps.push_back(
+        DAG.getRegister(RetVal.first, RetVal.second.getValueType()));
   }
 
   // Swift calling convention does not require we copy the sret argument
@@ -4973,7 +4974,7 @@ bool X86TargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
       ScalarVT = MVT::i32;
 
     Info.memVT = MVT::getVectorVT(ScalarVT, VT.getVectorNumElements());
-    Info.align = Align::None();
+    Info.align = Align(1);
     Info.flags |= MachineMemOperand::MOStore;
     break;
   }
@@ -4986,7 +4987,7 @@ bool X86TargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     unsigned NumElts = std::min(DataVT.getVectorNumElements(),
                                 IndexVT.getVectorNumElements());
     Info.memVT = MVT::getVectorVT(DataVT.getVectorElementType(), NumElts);
-    Info.align = Align::None();
+    Info.align = Align(1);
     Info.flags |= MachineMemOperand::MOLoad;
     break;
   }
@@ -4998,7 +4999,7 @@ bool X86TargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     unsigned NumElts = std::min(DataVT.getVectorNumElements(),
                                 IndexVT.getVectorNumElements());
     Info.memVT = MVT::getVectorVT(DataVT.getVectorElementType(), NumElts);
-    Info.align = Align::None();
+    Info.align = Align(1);
     Info.flags |= MachineMemOperand::MOStore;
     break;
   }
@@ -13320,8 +13321,7 @@ static SDValue lowerShuffleWithSHUFPS(const SDLoc &DL, MVT VT,
                                       ArrayRef<int> Mask, SDValue V1,
                                       SDValue V2, SelectionDAG &DAG) {
   SDValue LowV = V1, HighV = V2;
-  int NewMask[4] = {Mask[0], Mask[1], Mask[2], Mask[3]};
-
+  SmallVector<int, 4> NewMask(Mask.begin(), Mask.end());
   int NumV2Elements = count_if(Mask, [](int M) { return M >= 4; });
 
   if (NumV2Elements == 1) {
@@ -34585,6 +34585,28 @@ static SDValue combineTargetShuffle(SDValue N, SelectionDAG &DAG,
       }
       SDValue Horiz = DAG.getNode(Opcode0, DL, VT0, Lo, Hi);
       return DAG.getBitcast(VT, Horiz);
+    }
+  }
+
+  // Attempt to commute shufps LHS loads:
+  // permilps(shufps(load(),x)) --> permilps(shufps(x,load()))
+  if (VT == MVT::v4f32 &&
+      (X86ISD::VPERMILPI == Opcode ||
+       (X86ISD::SHUFP == Opcode && N.getOperand(0) == N.getOperand(1)))) {
+    SDValue N0 = N.getOperand(0);
+    unsigned Imm = N.getConstantOperandVal(X86ISD::VPERMILPI == Opcode ? 1 : 2);
+    if (N0.getOpcode() == X86ISD::SHUFP && N->isOnlyUserOf(N0.getNode())) {
+      SDValue N00 = N0.getOperand(0);
+      SDValue N01 = N0.getOperand(1);
+      if (MayFoldLoad(peekThroughOneUseBitcasts(N00)) &&
+          !MayFoldLoad(peekThroughOneUseBitcasts(N01))) {
+        unsigned Imm1 = N0.getConstantOperandVal(2);
+        Imm1 = ((Imm1 & 0x0F) << 4) | ((Imm1 & 0xF0) >> 4);
+        SDValue NewN0 = DAG.getNode(X86ISD::SHUFP, DL, VT, N01, N00,
+                                    DAG.getTargetConstant(Imm1, DL, MVT::i8));
+        return DAG.getNode(X86ISD::SHUFP, DL, VT, NewN0, NewN0,
+                           DAG.getTargetConstant(Imm ^ 0xAA, DL, MVT::i8));
+      }
     }
   }
 
