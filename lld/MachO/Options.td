@@ -202,11 +202,6 @@ def order_file : Separate<["-"], "order_file">,
      MetaVarName<"<file>">,
      HelpText<"Layout functions and data according to specification in <file>">,
      Group<grp_opts>;
-def sectorder : MultiArg<["-"], "sectorder", 3>,
-     MetaVarName<"<segname> <sectname> <orderfile>">,
-     HelpText<"Replaced by more general -order_file option">,
-     Flags<[HelpHidden]>,
-     Group<grp_opts>;
 def no_order_inits : Flag<["-"], "no_order_inits">,
      HelpText<"Disable default reordering of initializer and terminator functions">,
      Flags<[HelpHidden]>,
@@ -396,7 +391,6 @@ def grp_bundle : OptionGroup<"bundle">, HelpText<"CREATING A BUNDLE">;
 def bundle_loader : Separate<["-"], "bundle_loader">,
      MetaVarName<"<executable>">,
      HelpText<"Resolve undefined symbols from <executable>">,
-     Flags<[HelpHidden]>,
      Group<grp_bundle>;
 
 def grp_object : OptionGroup<"object">, HelpText<"CREATING AN OBJECT FILE">;
@@ -448,8 +442,10 @@ def alias_list : Separate<["-"], "alias_list">,
      Flags<[HelpHidden]>,
      Group<grp_resolve>;
 def flat_namespace : Flag<["-"], "flat_namespace">,
-     HelpText<"Resolve symbols from all dylibs, both direct & transitive. Do not record source libraries: dyld must re-search at runtime and use the first definition found">,
-     Flags<[HelpHidden]>,
+     HelpText<"Resolve symbols from all dylibs, both direct and transitive. Do not record source libraries: dyld must re-search at runtime and use the first definition found">,
+     Group<grp_resolve>;
+def twolevel_namespace : Flag<["-"], "twolevel_namespace">,
+     HelpText<"Make dyld look up symbols by (dylib,name) pairs (default)">,
      Group<grp_resolve>;
 def u : Separate<["-"], "u">,
      MetaVarName<"<symbol>">,
@@ -458,7 +454,6 @@ def u : Separate<["-"], "u">,
 def U : Separate<["-"], "U">,
      MetaVarName<"<symbol>">,
      HelpText<"Allow <symbol> to have no definition">,
-     Flags<[HelpHidden]>,
      Group<grp_resolve>;
 def undefined : Separate<["-"], "undefined">,
      MetaVarName<"<treatment>">,
@@ -563,14 +558,13 @@ def bitcode_symbol_map : Separate<["-"], "bitcode_symbol_map">,
 def grp_rare : OptionGroup<"rare">, HelpText<"RARELY USED">;
 
 def v : Flag<["-"], "v">,
-     HelpText<"Print the linker version and search paths and exit">,
+     HelpText<"Print the linker version and search paths in addition to linking">,
      Group<grp_rare>;
 def adhoc_codesign : Flag<["-"], "adhoc_codesign">,
-     HelpText<"Write an ad-hoc code signature to the output file.">,
-     Flags<[HelpHidden]>,
+     HelpText<"Write an ad-hoc code signature to the output file (default for arm64 binaries)">,
      Group<grp_rare>;
 def no_adhoc_codesign : Flag<["-"], "no_adhoc_codesign">,
-     HelpText<"Do not write an ad-hoc code signature to the output file.">,
+     HelpText<"Do not write an ad-hoc code signature to the output file (default for x86_64 binaries)">,
      Group<grp_rare>;
 def version_details : Flag<["-"], "version_details">,
      HelpText<"Print the linker version in JSON form">,
@@ -628,12 +622,10 @@ def move_to_ro_segment : MultiArg<["-"], "move_to_ro_segment", 2>,
 def rename_section : MultiArg<["-"], "rename_section", 4>,
      MetaVarName<"<from_segment> <from_section> <to_segment> <to_section>">,
      HelpText<"Rename <from_segment>/<from_section> as <to_segment>/<to_section>">,
-     Flags<[HelpHidden]>,
      Group<grp_rare>;
 def rename_segment : MultiArg<["-"], "rename_segment", 2>,
      MetaVarName<"<from_segment> <to_segment>">,
      HelpText<"Rename <from_segment> as <to_segment>">,
-     Flags<[HelpHidden]>,
      Group<grp_rare>;
 def trace_symbol_layout : Flag<["-"], "trace_symbol_layout">,
      HelpText<"Show where and why symbols move, as specified by -move_to_ro_segment, -move_to_rw_segment, -rename_section, and -rename_segment">,
@@ -809,10 +801,6 @@ def dylib_file : Separate<["-"], "dylib_file">,
      HelpText<"Specify <current_path> as different from where a dylib normally resides at <install_path>">,
      Flags<[HelpHidden]>,
      Group<grp_rare>;
-def prebind : Flag<["-"], "prebind">,
-     HelpText<"This option is obsolete">,
-     Flags<[HelpHidden]>,
-     Group<grp_rare>;
 def weak_reference_mismatches : Separate<["-"], "weak_reference_mismatches">,
      MetaVarName<"<treatment>">,
      HelpText<"Resolve symbol imports of conflicting weakness according to <treatment> as weak, non-weak, or error (default is non-weak)">,
@@ -852,10 +840,6 @@ def arch_multiple : Flag<["-"], "arch_multiple">,
      HelpText<"Augment error and warning messages with the architecture name">,
      Flags<[HelpHidden]>,
      Group<grp_rare>;
-def twolevel_namespace_hints : Flag<["-"], "twolevel_namespace_hints">,
-     HelpText<"This option is obsolete">,
-     Flags<[HelpHidden]>,
-     Group<grp_rare>;
 def dot : Separate<["-"], "dot">,
      MetaVarName<"<path>">,
      HelpText<"Write a graph of symbol dependencies to <path> as a .dot file viewable with GraphViz">,
@@ -877,10 +861,6 @@ def read_only_stubs : Flag<["-"], "read_only_stubs">,
      HelpText<"On i386, make the __IMPORT segment of a final linked image read-only">,
      Flags<[HelpHidden]>,
      Group<grp_rare>;
-def slow_stubs : Flag<["-"], "slow_stubs">,
-     HelpText<"This option is obsolete">,
-     Flags<[HelpHidden]>,
-     Group<grp_rare>;
 def interposable_list : Separate<["-"], "interposable_list">,
      MetaVarName<"<path>">,
      HelpText<"Access global symbols listed in <path> indirectly">,
@@ -897,10 +877,6 @@ def no_objc_category_merging : Flag<["-"], "no_objc_category_merging">,
 def object_path_lto : Separate<["-"], "object_path_lto">,
      MetaVarName<"<path>">,
      HelpText<"Retain any temporary mach-o file in <path> that would otherwise be deleted during LTO">,
-     Group<grp_rare>;
-def lto_library : Separate<["-"], "lto_library">,
-     MetaVarName<"<path>">,
-     HelpText<"Deprecated & ignored. LLD supports LTO directly, without using an external dylib.">,
      Group<grp_rare>;
 def cache_path_lto : Separate<["-"], "cache_path_lto">,
      MetaVarName<"<path>">,
@@ -969,6 +945,14 @@ def noall_load : Flag<["-"], "noall_load">,
 
 def grp_obsolete : OptionGroup<"obsolete">, HelpText<"OBSOLETE">;
 
+def sectorder : MultiArg<["-"], "sectorder", 3>,
+     MetaVarName<"<segname> <sectname> <orderfile>">,
+     HelpText<"Obsolete. Replaced by more general -order_file option">,
+     Group<grp_obsolete>;
+def lto_library : Separate<["-"], "lto_library">,
+     MetaVarName<"<path>">,
+     HelpText<"Obsolete. LLD supports LTO directly, without using an external dylib.">,
+     Group<grp_obsolete>;
 def y : Joined<["-"], "y">,
      MetaVarName<"<symbol>">,
      HelpText<"This option is obsolete in ld64">,
@@ -1094,6 +1078,18 @@ def fvmlib : Flag<["-"], "fvmlib">,
      Flags<[HelpHidden]>,
      Group<grp_obsolete>;
 def run_init_lazily : Flag<["-"], "run_init_lazily">,
+     HelpText<"This option is obsolete in ld64">,
+     Flags<[HelpHidden]>,
+     Group<grp_obsolete>;
+def prebind : Flag<["-"], "prebind">,
+     HelpText<"This option is obsolete in ld64">,
+     Flags<[HelpHidden]>,
+     Group<grp_obsolete>;
+def twolevel_namespace_hints : Flag<["-"], "twolevel_namespace_hints">,
+     HelpText<"This option is obsolete in ld64">,
+     Flags<[HelpHidden]>,
+     Group<grp_obsolete>;
+def slow_stubs : Flag<["-"], "slow_stubs">,
      HelpText<"This option is obsolete in ld64">,
      Flags<[HelpHidden]>,
      Group<grp_obsolete>;
@@ -1299,10 +1295,6 @@ def text_exec : Flag<["-"], "text_exec">,
      Flags<[HelpHidden]>,
      Group<grp_undocumented>;
 def threaded_starts_section : Flag<["-"], "threaded_starts_section">,
-     HelpText<"This option is undocumented in ld64">,
-     Flags<[HelpHidden]>,
-     Group<grp_undocumented>;
-def twolevel_namespace : Flag<["-"], "twolevel_namespace">,
      HelpText<"This option is undocumented in ld64">,
      Flags<[HelpHidden]>,
      Group<grp_undocumented>;

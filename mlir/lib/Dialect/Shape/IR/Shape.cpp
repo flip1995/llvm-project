@@ -250,7 +250,7 @@ static void print(OpAsmPrinter &p, AssumingOp op) {
   p.printRegion(op.doRegion(),
                 /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/yieldsResults);
-  p.printOptionalAttrDict(op.getAttrs());
+  p.printOptionalAttrDict(op->getAttrs());
 }
 
 namespace {
@@ -358,7 +358,7 @@ OpFoldResult BroadcastOp::fold(ArrayRef<Attribute> operands) {
     return nullptr;
 
   // TODO: Support folding with more than 2 input shapes
-  if (operands.size() > 2 && !operands[2].isa<StringAttr>())
+  if (shapes().size() > 2)
     return nullptr;
 
   auto rhsShape = llvm::to_vector<6>(
@@ -415,7 +415,7 @@ OpFoldResult ConcatOp::fold(ArrayRef<Attribute> operands) {
 
 static void print(OpAsmPrinter &p, ConstShapeOp &op) {
   p << "shape.const_shape ";
-  p.printOptionalAttrDict(op.getAttrs(), /*elidedAttrs=*/{"shape"});
+  p.printOptionalAttrDict(op->getAttrs(), /*elidedAttrs=*/{"shape"});
   p << "[";
   interleaveComma(op.shape().getValues<int64_t>(), p,
                   [&](int64_t i) { p << i; });
@@ -601,19 +601,43 @@ OpFoldResult CstrRequireOp::fold(ArrayRef<Attribute> operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// DivOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult DivOp::fold(ArrayRef<Attribute> operands) {
+  auto lhs = operands[0].dyn_cast_or_null<IntegerAttr>();
+  if (!lhs)
+    return nullptr;
+  auto rhs = operands[1].dyn_cast_or_null<IntegerAttr>();
+  if (!rhs)
+    return nullptr;
+
+  // Division in APInt does not follow floor(lhs, rhs) when the result is
+  // negative. Rather, APInt rounds toward zero.
+  APInt quotient, remainder;
+  APInt::sdivrem(lhs.getValue(), rhs.getValue(), quotient, remainder);
+  if (quotient.isNegative() && !remainder.isNullValue()) {
+    quotient -= 1;
+  }
+
+  Type indexTy = IndexType::get(getContext());
+  return IntegerAttr::get(indexTy, quotient);
+}
+
+//===----------------------------------------------------------------------===//
 // ShapeEqOp
 //===----------------------------------------------------------------------===//
 
 OpFoldResult ShapeEqOp::fold(ArrayRef<Attribute> operands) {
-  if (lhs() == rhs())
-    return BoolAttr::get(getContext(), true);
-  auto lhs = operands[0].dyn_cast_or_null<DenseIntElementsAttr>();
-  if (lhs == nullptr)
+  bool allSame = true;
+  if (!operands.empty() && !operands[0])
     return {};
-  auto rhs = operands[1].dyn_cast_or_null<DenseIntElementsAttr>();
-  if (rhs == nullptr)
-    return {};
-  return BoolAttr::get(getContext(), lhs == rhs);
+  for (Attribute operand : operands.drop_front(1)) {
+    if (!operand)
+      return {};
+    allSame = allSame && operand == operands[0];
+  }
+  return BoolAttr::get(getContext(), allSame);
 }
 
 //===----------------------------------------------------------------------===//
@@ -699,7 +723,7 @@ void print(OpAsmPrinter &p, FunctionLibraryOp op) {
   p << op.getOperationName() << ' ';
   p.printSymbolName(op.getName());
   p.printOptionalAttrDictWithKeyword(
-      op.getAttrs(), {SymbolTable::getSymbolAttrName(), "mapping"});
+      op->getAttrs(), {SymbolTable::getSymbolAttrName(), "mapping"});
   p.printRegion(op.getOperation()->getRegion(0), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
   p << " mapping ";
@@ -1076,7 +1100,7 @@ static void print(OpAsmPrinter &p, ReduceOp op) {
     << ") : " << op.shape().getType();
   p.printOptionalArrowTypeList(op.getResultTypes());
   p.printRegion(op.region());
-  p.printOptionalAttrDict(op.getAttrs());
+  p.printOptionalAttrDict(op->getAttrs());
 }
 
 #define GET_OP_CLASSES

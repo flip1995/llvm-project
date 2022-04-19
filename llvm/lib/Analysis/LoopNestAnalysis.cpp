@@ -24,18 +24,6 @@ using namespace llvm;
 static const char *VerboseDebug = DEBUG_TYPE "-verbose";
 #endif
 
-/// Determine whether the loops structure violates basic requirements for
-/// perfect nesting:
-///  - the inner loop should be the outer loop's only child
-///  - the outer loop header should 'flow' into the inner loop preheader
-///    or jump around the inner loop to the outer loop latch
-///  - if the inner loop latch exits the inner loop, it should 'flow' into
-///    the outer loop latch.
-/// Returns true if the loop structure satisfies the basic requirements and
-/// false otherwise.
-static bool checkLoopsStructure(const Loop &OuterLoop, const Loop &InnerLoop,
-                                ScalarEvolution &SE);
-
 //===----------------------------------------------------------------------===//
 // LoopNest implementation
 //
@@ -210,7 +198,7 @@ const BasicBlock &LoopNest::skipEmptyBlockUntil(const BasicBlock *From,
   assert(From && "Expecting valid From");
   assert(End && "Expecting valid End");
 
-  if (From == End || !From->getSingleSuccessor())
+  if (From == End || !From->getUniqueSuccessor())
     return *From;
 
   auto IsEmpty = [](const BasicBlock *BB) {
@@ -219,19 +207,19 @@ const BasicBlock &LoopNest::skipEmptyBlockUntil(const BasicBlock *From,
 
   // Visited is used to avoid running into an infinite loop.
   SmallPtrSet<const BasicBlock *, 4> Visited;
-  const BasicBlock *BB = From->getSingleSuccessor();
+  const BasicBlock *BB = From->getUniqueSuccessor();
   const BasicBlock *PredBB = BB;
   while (BB && BB != End && IsEmpty(BB) && !Visited.count(BB)) {
     Visited.insert(BB);
     PredBB = BB;
-    BB = BB->getSingleSuccessor();
+    BB = BB->getUniqueSuccessor();
   }
 
   return (BB == End) ? *End : *PredBB;
 }
 
-static bool checkLoopsStructure(const Loop &OuterLoop, const Loop &InnerLoop,
-                                ScalarEvolution &SE) {
+bool LoopNest::checkLoopsStructure(const Loop &OuterLoop, const Loop &InnerLoop,
+                                   ScalarEvolution &SE) {
   // The inner loop must be the only outer loop's child.
   if ((OuterLoop.getSubLoops().size() != 1) ||
       (InnerLoop.getParentLoop() != &OuterLoop))

@@ -75,18 +75,21 @@ static int InitLibrary(DeviceTy &Device) {
    */
   int32_t device_id = Device.DeviceID;
   int rc = OFFLOAD_SUCCESS;
+  bool supportsEmptyImages = Device.RTL->supports_empty_images &&
+                             Device.RTL->supports_empty_images() > 0;
 
   Device.PendingGlobalsMtx.lock();
   PM->TrlTblMtx.lock();
-  for (HostEntriesBeginToTransTableTy::iterator entry_it =
-           PM->HostEntriesBeginToTransTable.begin();
-       entry_it != PM->HostEntriesBeginToTransTable.end(); ++entry_it) {
-    TranslationTable *TransTable = &entry_it->second;
+  for (auto *HostEntriesBegin : PM->HostEntriesBeginRegistrationOrder) {
+    TranslationTable *TransTable =
+        &PM->HostEntriesBeginToTransTable[HostEntriesBegin];
     if (TransTable->HostTable.EntriesBegin ==
-        TransTable->HostTable.EntriesEnd) {
+            TransTable->HostTable.EntriesEnd &&
+        !supportsEmptyImages) {
       // No host entry so no need to proceed
       continue;
     }
+
     if (TransTable->TargetsTable[device_id] != 0) {
       // Library entries have already been processed
       continue;
@@ -202,24 +205,119 @@ static int InitLibrary(DeviceTy &Device) {
   return OFFLOAD_SUCCESS;
 }
 
-// Check whether a device has been initialized, global ctors have been
-// executed and global data has been mapped; do so if not already done.
-int CheckDeviceAndCtors(int64_t device_id) {
+void handleTargetOutcome(bool Success, ident_t *Loc) {
+  switch (PM->TargetOffloadPolicy) {
+  case tgt_disabled:
+    if (Success) {
+      FATAL_MESSAGE0(1, "expected no offloading while offloading is disabled");
+    }
+    break;
+  case tgt_default:
+    FATAL_MESSAGE0(1, "default offloading policy must be switched to "
+                      "mandatory or disabled");
+    break;
+  case tgt_mandatory:
+    if (!Success) {
+      if (getInfoLevel() & OMP_INFOTYPE_DUMP_TABLE)
+        for (auto &Device : PM->Devices)
+          dumpTargetPointerMappings(Loc, Device);
+      else
+        FAILURE_MESSAGE("Run with LIBOMPTARGET_DEBUG=%d to dump host-target "
+                        "pointer mappings.\n",
+                        OMP_INFOTYPE_DUMP_TABLE);
+
+      SourceInfo info(Loc);
+      if (info.isAvailible())
+        fprintf(stderr, "%s:%d:%d: ", info.getFilename(), info.getLine(),
+                info.getColumn());
+      else
+        FAILURE_MESSAGE("Source location information not present. Compile with "
+                        "-g or -gline-tables-only.\n");
+      FATAL_MESSAGE0(
+          1, "failure of target construct while offloading is mandatory");
+    } else {
+      if (getInfoLevel() & OMP_INFOTYPE_DUMP_TABLE)
+        for (auto &Device : PM->Devices)
+          dumpTargetPointerMappings(Loc, Device);
+    }
+    break;
+  }
+}
+
+static void handleDefaultTargetOffload() {
+  PM->TargetOffloadMtx.lock();
+  if (PM->TargetOffloadPolicy == tgt_default) {
+    if (omp_get_num_devices() > 0) {
+      DP("Default TARGET OFFLOAD policy is now mandatory "
+         "(devices were found)\n");
+      PM->TargetOffloadPolicy = tgt_mandatory;
+    } else {
+      DP("Default TARGET OFFLOAD policy is now disabled "
+         "(no devices were found)\n");
+      PM->TargetOffloadPolicy = tgt_disabled;
+    }
+  }
+  PM->TargetOffloadMtx.unlock();
+}
+
+static bool isOffloadDisabled() {
+  if (PM->TargetOffloadPolicy == tgt_default)
+    handleDefaultTargetOffload();
+  return PM->TargetOffloadPolicy == tgt_disabled;
+}
+
+// If offload is enabled, ensure that device DeviceID has been initialized,
+// global ctors have been executed, and global data has been mapped.
+//
+// There are three possible results:
+// - Return OFFLOAD_SUCCESS if the device is ready for offload.
+// - Return OFFLOAD_FAIL without reporting a runtime error if offload is
+//   disabled, perhaps because the initial device was specified.
+// - Report a runtime error and return OFFLOAD_FAIL.
+//
+// If DeviceID == OFFLOAD_DEVICE_DEFAULT, set DeviceID to the default device.
+// This step might be skipped if offload is disabled.
+int checkDeviceAndCtors(int64_t &DeviceID, ident_t *Loc) {
+  if (isOffloadDisabled()) {
+    DP("Offload is disabled\n");
+    return OFFLOAD_FAIL;
+  }
+
+  if (DeviceID == OFFLOAD_DEVICE_DEFAULT) {
+    DeviceID = omp_get_default_device();
+    DP("Use default device id %" PRId64 "\n", DeviceID);
+  }
+
+  // Proposed behavior for OpenMP 5.2 in OpenMP spec github issue 2669.
+  if (omp_get_num_devices() == 0) {
+    DP("omp_get_num_devices() == 0 but offload is manadatory\n");
+    handleTargetOutcome(false, Loc);
+    return OFFLOAD_FAIL;
+  }
+
+  if (DeviceID == omp_get_initial_device()) {
+    DP("Device is host (%" PRId64 "), returning as if offload is disabled\n",
+       DeviceID);
+    return OFFLOAD_FAIL;
+  }
+
   // Is device ready?
-  if (!device_is_ready(device_id)) {
-    REPORT("Device %" PRId64 " is not ready.\n", device_id);
+  if (!device_is_ready(DeviceID)) {
+    REPORT("Device %" PRId64 " is not ready.\n", DeviceID);
+    handleTargetOutcome(false, Loc);
     return OFFLOAD_FAIL;
   }
 
   // Get device info.
-  DeviceTy &Device = PM->Devices[device_id];
+  DeviceTy &Device = PM->Devices[DeviceID];
 
   // Check whether global data has been mapped for this device
   Device.PendingGlobalsMtx.lock();
   bool hasPendingGlobals = Device.HasPendingGlobals;
   Device.PendingGlobalsMtx.unlock();
   if (hasPendingGlobals && InitLibrary(Device) != OFFLOAD_SUCCESS) {
-    REPORT("Failed to init globals on device %" PRId64 "\n", device_id);
+    REPORT("Failed to init globals on device %" PRId64 "\n", DeviceID);
+    handleTargetOutcome(false, Loc);
     return OFFLOAD_FAIL;
   }
 
@@ -266,10 +364,11 @@ int targetDataMapper(ident_t *loc, DeviceTy &Device, void *arg_base, void *arg,
     MapperArgNames[I] = C.Name;
   }
 
-  int rc = target_data_function(
-      loc, Device, MapperComponents.Components.size(), MapperArgsBase.data(),
-      MapperArgs.data(), MapperArgSizes.data(), MapperArgTypes.data(),
-      MapperArgNames.data(), /*arg_mappers*/ nullptr, AsyncInfo);
+  int rc = target_data_function(loc, Device, MapperComponents.Components.size(),
+                                MapperArgsBase.data(), MapperArgs.data(),
+                                MapperArgSizes.data(), MapperArgTypes.data(),
+                                MapperArgNames.data(), /*arg_mappers*/ nullptr,
+                                AsyncInfo, /*FromMapper=*/true);
 
   return rc;
 }
@@ -278,7 +377,8 @@ int targetDataMapper(ident_t *loc, DeviceTy &Device, void *arg_base, void *arg,
 int targetDataBegin(ident_t *loc, DeviceTy &Device, int32_t arg_num,
                     void **args_base, void **args, int64_t *arg_sizes,
                     int64_t *arg_types, map_var_info_t *arg_names,
-                    void **arg_mappers, AsyncInfoTy &AsyncInfo) {
+                    void **arg_mappers, AsyncInfoTy &AsyncInfo,
+                    bool FromMapper) {
   // process each input.
   for (int32_t i = 0; i < arg_num; ++i) {
     // Ignore private variables and arrays - there is no mapping for them.
@@ -376,7 +476,10 @@ int targetDataBegin(ident_t *loc, DeviceTy &Device, int32_t arg_num,
       Pointer_HstPtrBegin = HstPtrBase;
       // modify current entry.
       HstPtrBase = *(void **)HstPtrBase;
-      UpdateRef = true; // subsequently update ref count of pointee
+      // No need to update pointee ref count for the first element of the
+      // subelement that comes from mapper.
+      UpdateRef =
+          (!FromMapper || i != 0); // subsequently update ref count of pointee
     }
 
     void *TgtPtrBegin = Device.getOrAllocTgtPtr(
@@ -480,7 +583,7 @@ struct DeallocTgtPtrInfo {
 int targetDataEnd(ident_t *loc, DeviceTy &Device, int32_t ArgNum,
                   void **ArgBases, void **Args, int64_t *ArgSizes,
                   int64_t *ArgTypes, map_var_info_t *ArgNames,
-                  void **ArgMappers, AsyncInfoTy &AsyncInfo) {
+                  void **ArgMappers, AsyncInfoTy &AsyncInfo, bool FromMapper) {
   int Ret;
   std::vector<DeallocTgtPtrInfo> DeallocTgtPtrs;
   // process each input.
@@ -533,7 +636,8 @@ int targetDataEnd(ident_t *loc, DeviceTy &Device, int32_t ArgNum,
     bool IsLast, IsHostPtr;
     bool IsImplicit = ArgTypes[I] & OMP_TGT_MAPTYPE_IMPLICIT;
     bool UpdateRef = !(ArgTypes[I] & OMP_TGT_MAPTYPE_MEMBER_OF) ||
-                     (ArgTypes[I] & OMP_TGT_MAPTYPE_PTR_AND_OBJ);
+                     (ArgTypes[I] & OMP_TGT_MAPTYPE_PTR_AND_OBJ &&
+                      (!FromMapper || I != ArgNum - 1));
     bool ForceDelete = ArgTypes[I] & OMP_TGT_MAPTYPE_DELETE;
     bool HasCloseModifier = ArgTypes[I] & OMP_TGT_MAPTYPE_CLOSE;
     bool HasPresentModifier = ArgTypes[I] & OMP_TGT_MAPTYPE_PRESENT;
@@ -545,6 +649,13 @@ int targetDataEnd(ident_t *loc, DeviceTy &Device, int32_t ArgNum,
       DP("Mapping does not exist (%s)\n",
          (HasPresentModifier ? "'present' map type modifier" : "ignored"));
       if (HasPresentModifier) {
+        // OpenMP 5.1, sec. 2.21.7.1 "map Clause", p. 350 L10-13:
+        // "If a map clause appears on a target, target data, target enter data
+        // or target exit data construct with a present map-type-modifier then
+        // on entry to the region if the corresponding list item does not appear
+        // in the device data environment then an error occurs and the program
+        // terminates."
+        //
         // This should be an error upon entering an "omp target exit data".  It
         // should not be an error upon exiting an "omp target data" or "omp
         // target".  For "omp target data", Clang thus doesn't include present
@@ -564,10 +675,23 @@ int targetDataEnd(ident_t *loc, DeviceTy &Device, int32_t ArgNum,
          DataSize, DPxPTR(TgtPtrBegin), (IsLast ? "" : " not"));
     }
 
+    // OpenMP 5.1, sec. 2.21.7.1 "map Clause", p. 351 L14-16:
+    // "If the map clause appears on a target, target data, or target exit data
+    // construct and a corresponding list item of the original list item is not
+    // present in the device data environment on exit from the region then the
+    // list item is ignored."
+    if (!TgtPtrBegin)
+      continue;
+
     bool DelEntry = IsLast || ForceDelete;
 
-    if ((ArgTypes[I] & OMP_TGT_MAPTYPE_MEMBER_OF) &&
-        !(ArgTypes[I] & OMP_TGT_MAPTYPE_PTR_AND_OBJ)) {
+    // If the last element from the mapper (for end transfer args comes in
+    // reverse order), do not remove the partial entry, the parent struct still
+    // exists.
+    if (((ArgTypes[I] & OMP_TGT_MAPTYPE_MEMBER_OF) &&
+         !(ArgTypes[I] & OMP_TGT_MAPTYPE_PTR_AND_OBJ)) ||
+        (ArgTypes[I] & OMP_TGT_MAPTYPE_PTR_AND_OBJ && FromMapper &&
+         I == ArgNum - 1)) {
       DelEntry = false; // protect parent struct from being deallocated
     }
 
@@ -804,7 +928,7 @@ static int getNonContigMergedDimension(__tgt_target_non_contig *NonContig,
 int targetDataUpdate(ident_t *loc, DeviceTy &Device, int32_t ArgNum,
                      void **ArgsBase, void **Args, int64_t *ArgSizes,
                      int64_t *ArgTypes, map_var_info_t *ArgNames,
-                     void **ArgMappers, AsyncInfoTy &AsyncInfo) {
+                     void **ArgMappers, AsyncInfoTy &AsyncInfo, bool) {
   // process each input.
   for (int32_t I = 0; I < ArgNum; ++I) {
     if ((ArgTypes[I] & OMP_TGT_MAPTYPE_LITERAL) ||

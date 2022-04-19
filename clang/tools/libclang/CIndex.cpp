@@ -1548,6 +1548,8 @@ bool CursorVisitor::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
 #include "clang/Basic/AArch64SVEACLETypes.def"
 #define PPC_VECTOR_TYPE(Name, Id, Size) case BuiltinType::Id:
 #include "clang/Basic/PPCTypes.def"
+#define RVV_TYPE(Name, Id, SingletonId) case BuiltinType::Id:
+#include "clang/Basic/RISCVVTypes.def"
 #define BUILTIN_TYPE(Id, SingletonId)
 #define SIGNED_TYPE(Id, SingletonId) case BuiltinType::Id:
 #define UNSIGNED_TYPE(Id, SingletonId) case BuiltinType::Id:
@@ -5541,6 +5543,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("CXXAccessSpecifier");
   case CXCursor_ModuleImportDecl:
     return cxstring::createRef("ModuleImport");
+  case CXCursor_OMPCanonicalLoop:
+    return cxstring::createRef("OMPCanonicalLoop");
   case CXCursor_OMPParallelDirective:
     return cxstring::createRef("OMPParallelDirective");
   case CXCursor_OMPSimdDirective:
@@ -9160,16 +9164,3 @@ cxindex::Logger::~Logger() {
     OS << "--------------------------------------------------\n";
   }
 }
-
-#ifdef CLANG_TOOL_EXTRA_BUILD
-// This anchor is used to force the linker to link the clang-tidy plugin.
-extern volatile int ClangTidyPluginAnchorSource;
-static int LLVM_ATTRIBUTE_UNUSED ClangTidyPluginAnchorDestination =
-    ClangTidyPluginAnchorSource;
-
-// This anchor is used to force the linker to link the clang-include-fixer
-// plugin.
-extern volatile int ClangIncludeFixerPluginAnchorSource;
-static int LLVM_ATTRIBUTE_UNUSED ClangIncludeFixerPluginAnchorDestination =
-    ClangIncludeFixerPluginAnchorSource;
-#endif

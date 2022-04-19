@@ -13959,6 +13959,20 @@ TEST_F(FormatTest, AlignConsecutiveDeclarations) {
   verifyFormat("int      oneTwoThree{0}; // comment\n"
                "unsigned oneTwo;         // comment",
                Alignment);
+  verifyFormat("unsigned int *      a;\n"
+               "int *               b;\n"
+               "unsigned int Const *c;\n"
+               "unsigned int const *d;\n"
+               "unsigned int Const &e;\n"
+               "unsigned int const &f;",
+               Alignment);
+  verifyFormat("Const unsigned int *c;\n"
+               "const unsigned int *d;\n"
+               "Const unsigned int &e;\n"
+               "const unsigned int &f;\n"
+               "const unsigned      g;\n"
+               "Const unsigned      h;",
+               Alignment);
   EXPECT_EQ("float const a = 5;\n"
             "\n"
             "int oneTwoThree = 123;",
@@ -14263,6 +14277,38 @@ TEST_F(FormatTest, AlignConsecutiveDeclarations) {
   EXPECT_EQ("DECOR1 /**/ int8_t /**/ DECOR2 /**/\n"
             "foo(int a);",
             format("DECOR1 /**/ int8_t /**/ DECOR2 /**/ foo (int a);", Style));
+
+  Alignment.PointerAlignment = FormatStyle::PAS_Left;
+  verifyFormat("unsigned int*       a;\n"
+               "int*                b;\n"
+               "unsigned int Const* c;\n"
+               "unsigned int const* d;\n"
+               "unsigned int Const& e;\n"
+               "unsigned int const& f;",
+               Alignment);
+  verifyFormat("Const unsigned int* c;\n"
+               "const unsigned int* d;\n"
+               "Const unsigned int& e;\n"
+               "const unsigned int& f;\n"
+               "const unsigned      g;\n"
+               "Const unsigned      h;",
+               Alignment);
+
+  Alignment.PointerAlignment = FormatStyle::PAS_Middle;
+  verifyFormat("unsigned int *       a;\n"
+               "int *                b;\n"
+               "unsigned int Const * c;\n"
+               "unsigned int const * d;\n"
+               "unsigned int Const & e;\n"
+               "unsigned int const & f;",
+               Alignment);
+  verifyFormat("Const unsigned int * c;\n"
+               "const unsigned int * d;\n"
+               "Const unsigned int & e;\n"
+               "const unsigned int & f;\n"
+               "const unsigned       g;\n"
+               "Const unsigned       h;",
+               Alignment);
 }
 
 TEST_F(FormatTest, LinuxBraceBreaking) {
@@ -14735,6 +14781,7 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                WhitesmithsBraceStyle);
   */
 
+  WhitesmithsBraceStyle.NamespaceIndentation = FormatStyle::NI_None;
   verifyFormat("namespace a\n"
                "  {\n"
                "class A\n"
@@ -14757,6 +14804,89 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                "  int x;\n"
                "  };\n"
                "  } // namespace a",
+               WhitesmithsBraceStyle);
+
+  verifyFormat("namespace a\n"
+               "  {\n"
+               "namespace b\n"
+               "  {\n"
+               "class A\n"
+               "  {\n"
+               "  void f()\n"
+               "    {\n"
+               "    if (true)\n"
+               "      {\n"
+               "      a();\n"
+               "      b();\n"
+               "      }\n"
+               "    }\n"
+               "  void g()\n"
+               "    {\n"
+               "    return;\n"
+               "    }\n"
+               "  };\n"
+               "struct B\n"
+               "  {\n"
+               "  int x;\n"
+               "  };\n"
+               "  } // namespace b\n"
+               "  } // namespace a",
+               WhitesmithsBraceStyle);
+
+  WhitesmithsBraceStyle.NamespaceIndentation = FormatStyle::NI_Inner;
+  verifyFormat("namespace a\n"
+               "  {\n"
+               "namespace b\n"
+               "  {\n"
+               "  class A\n"
+               "    {\n"
+               "    void f()\n"
+               "      {\n"
+               "      if (true)\n"
+               "        {\n"
+               "        a();\n"
+               "        b();\n"
+               "        }\n"
+               "      }\n"
+               "    void g()\n"
+               "      {\n"
+               "      return;\n"
+               "      }\n"
+               "    };\n"
+               "  struct B\n"
+               "    {\n"
+               "    int x;\n"
+               "    };\n"
+               "  } // namespace b\n"
+               "  } // namespace a",
+               WhitesmithsBraceStyle);
+
+  WhitesmithsBraceStyle.NamespaceIndentation = FormatStyle::NI_All;
+  verifyFormat("namespace a\n"
+               "  {\n"
+               "  namespace b\n"
+               "    {\n"
+               "    class A\n"
+               "      {\n"
+               "      void f()\n"
+               "        {\n"
+               "        if (true)\n"
+               "          {\n"
+               "          a();\n"
+               "          b();\n"
+               "          }\n"
+               "        }\n"
+               "      void g()\n"
+               "        {\n"
+               "        return;\n"
+               "        }\n"
+               "      };\n"
+               "    struct B\n"
+               "      {\n"
+               "      int x;\n"
+               "      };\n"
+               "    } // namespace b\n"
+               "  }   // namespace a",
                WhitesmithsBraceStyle);
 
   verifyFormat("void f()\n"
@@ -14793,7 +14923,7 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                "  }\n",
                WhitesmithsBraceStyle);
 
-  WhitesmithsBraceStyle.IndentCaseBlocks = true;
+  WhitesmithsBraceStyle.IndentCaseLabels = true;
   verifyFormat("void switchTest1(int a)\n"
                "  {\n"
                "  switch (a)\n"
@@ -14801,7 +14931,7 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                "    case 2:\n"
                "      {\n"
                "      }\n"
-               "    break;\n"
+               "      break;\n"
                "    }\n"
                "  }\n",
                WhitesmithsBraceStyle);
@@ -14811,7 +14941,7 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                "  switch (a)\n"
                "    {\n"
                "    case 0:\n"
-               "    break;\n"
+               "      break;\n"
                "    case 1:\n"
                "      {\n"
                "      break;\n"
@@ -14819,9 +14949,9 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                "    case 2:\n"
                "      {\n"
                "      }\n"
-               "    break;\n"
+               "      break;\n"
                "    default:\n"
-               "    break;\n"
+               "      break;\n"
                "    }\n"
                "  }\n",
                WhitesmithsBraceStyle);
@@ -14834,17 +14964,17 @@ TEST_F(FormatTest, WhitesmithsBraceBreaking) {
                "      {\n"
                "      foo(x);\n"
                "      }\n"
-               "    break;\n"
+               "      break;\n"
                "    default:\n"
                "      {\n"
                "      foo(1);\n"
                "      }\n"
-               "    break;\n"
+               "      break;\n"
                "    }\n"
                "  }\n",
                WhitesmithsBraceStyle);
 
-  WhitesmithsBraceStyle.IndentCaseBlocks = false;
+  WhitesmithsBraceStyle.IndentCaseLabels = false;
 
   verifyFormat("void switchTest4(int a)\n"
                "  {\n"
@@ -15467,6 +15597,7 @@ TEST_F(FormatTest, ParsesConfigurationBools) {
   CHECK_PARSE_BOOL(DerivePointerAlignment);
   CHECK_PARSE_BOOL_FIELD(DerivePointerAlignment, "DerivePointerBinding");
   CHECK_PARSE_BOOL(DisableFormat);
+  CHECK_PARSE_BOOL(IndentAccessModifiers);
   CHECK_PARSE_BOOL(IndentCaseLabels);
   CHECK_PARSE_BOOL(IndentCaseBlocks);
   CHECK_PARSE_BOOL(IndentGotoLabels);
@@ -15974,7 +16105,7 @@ TEST_F(FormatTest, ParsesConfiguration) {
 
   Style.SortIncludes = FormatStyle::SI_Never;
   CHECK_PARSE("SortIncludes: true", SortIncludes,
-              FormatStyle::SI_CaseInsensitive);
+              FormatStyle::SI_CaseSensitive);
   CHECK_PARSE("SortIncludes: false", SortIncludes, FormatStyle::SI_Never);
   CHECK_PARSE("SortIncludes: CaseInsensitive", SortIncludes,
               FormatStyle::SI_CaseInsensitive);
@@ -18098,7 +18229,7 @@ TEST_F(ReplacementTest, SortIncludesAfterReplacement) {
                             "#include \"b.h\"\n")});
 
   format::FormatStyle Style = format::getLLVMStyle();
-  Style.SortIncludes = FormatStyle::SI_CaseInsensitive;
+  Style.SortIncludes = FormatStyle::SI_CaseSensitive;
   auto FormattedReplaces = formatReplacements(Code, Replaces, Style);
   EXPECT_TRUE(static_cast<bool>(FormattedReplaces))
       << llvm::toString(FormattedReplaces.takeError()) << "\n";
@@ -19168,6 +19299,84 @@ TEST_F(FormatTest, StatementAttributeLikeMacros) {
             "  Q_EMIT        signal(MyChar);\n"
             "}",
             format(Source, Style));
+}
+
+TEST_F(FormatTest, IndentAccessModifiers) {
+  FormatStyle Style = getLLVMStyle();
+  Style.IndentAccessModifiers = true;
+  // Members are *two* levels below the record;
+  // Style.IndentWidth == 2, thus yielding a 4 spaces wide indentation.
+  verifyFormat("class C {\n"
+               "    int i;\n"
+               "};\n",
+               Style);
+  verifyFormat("union C {\n"
+               "    int i;\n"
+               "    unsigned u;\n"
+               "};\n",
+               Style);
+  // Access modifiers should be indented one level below the record.
+  verifyFormat("class C {\n"
+               "  public:\n"
+               "    int i;\n"
+               "};\n",
+               Style);
+  verifyFormat("struct S {\n"
+               "  private:\n"
+               "    class C {\n"
+               "        int j;\n"
+               "\n"
+               "      public:\n"
+               "        C();\n"
+               "    };\n"
+               "\n"
+               "  public:\n"
+               "    int i;\n"
+               "};\n",
+               Style);
+  // Enumerations are not records and should be unaffected.
+  Style.AllowShortEnumsOnASingleLine = false;
+  verifyFormat("enum class E\n"
+               "{\n"
+               "  A,\n"
+               "  B\n"
+               "};\n",
+               Style);
+  // Test with a different indentation width;
+  // also proves that the result is Style.AccessModifierOffset agnostic.
+  Style.IndentWidth = 3;
+  verifyFormat("class C {\n"
+               "   public:\n"
+               "      int i;\n"
+               "};\n",
+               Style);
+}
+
+TEST_F(FormatTest, LimitlessStringsAndComments) {
+  auto Style = getLLVMStyleWithColumns(0);
+  constexpr StringRef Code =
+      "/**\n"
+      " * This is a multiline comment with quite some long lines, at least for "
+      "the LLVM Style.\n"
+      " * We will redo this with strings and line comments. Just to  check if "
+      "everything is working.\n"
+      " */\n"
+      "bool foo() {\n"
+      "  /* Single line multi line comment. */\n"
+      "  const std::string String = \"This is a multiline string with quite "
+      "some long lines, at least for the LLVM Style.\"\n"
+      "                             \"We already did it with multi line "
+      "comments, and we will do it with line comments. Just to check if "
+      "everything is working.\";\n"
+      "  // This is a line comment (block) with quite some long lines, at "
+      "least for the LLVM Style.\n"
+      "  // We already did this with multi line comments and strings. Just to "
+      "check if everything is working.\n"
+      "  const std::string SmallString = \"Hello World\";\n"
+      "  // Small line comment\n"
+      "  return String.size() > SmallString.size();\n"
+      "}";
+  EXPECT_EQ(Code, format(Code, Style));
 }
 } // namespace
 } // namespace format

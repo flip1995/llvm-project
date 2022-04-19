@@ -27,6 +27,9 @@ def SDT_RISCVSelectCC : SDTypeProfile<1, 5, [SDTCisSameAs<1, 2>,
                                              SDTCisSameAs<4, 5>]>;
 def SDT_RISCVReadCycleWide : SDTypeProfile<2, 0, [SDTCisVT<0, i32>,
                                                   SDTCisVT<1, i32>]>;
+def SDT_RISCVIntBinOpW : SDTypeProfile<1, 2, [
+  SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisVT<0, i64>
+]>;
 
 // Target-independent nodes, but with target-specific formats.
 def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_CallSeqStart,
@@ -50,9 +53,9 @@ def riscv_selectcc  : SDNode<"RISCVISD::SELECT_CC", SDT_RISCVSelectCC>;
 def riscv_tail      : SDNode<"RISCVISD::TAIL", SDT_RISCVCall,
                              [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                               SDNPVariadic]>;
-def riscv_sllw      : SDNode<"RISCVISD::SLLW", SDTIntShiftOp>;
-def riscv_sraw      : SDNode<"RISCVISD::SRAW", SDTIntShiftOp>;
-def riscv_srlw      : SDNode<"RISCVISD::SRLW", SDTIntShiftOp>;
+def riscv_sllw      : SDNode<"RISCVISD::SLLW", SDT_RISCVIntBinOpW>;
+def riscv_sraw      : SDNode<"RISCVISD::SRAW", SDT_RISCVIntBinOpW>;
+def riscv_srlw      : SDNode<"RISCVISD::SRLW", SDT_RISCVIntBinOpW>;
 
 def riscv_read_cycle_wide : SDNode<"RISCVISD::READ_CYCLE_WIDE",
                                    SDT_RISCVReadCycleWide,
@@ -860,15 +863,11 @@ def IsOrAdd: PatFrag<(ops node:$A, node:$B), (or node:$A, node:$B), [{
 def assertsexti32 : PatFrag<(ops node:$src), (assertsext node:$src), [{
   return cast<VTSDNode>(N->getOperand(1))->getVT().bitsLE(MVT::i32);
 }]>;
-def sexti32 : PatFrags<(ops node:$src),
-                       [(sext_inreg node:$src, i32),
-                        (assertsexti32 node:$src)]>;
+def sexti32 : ComplexPattern<i64, 1, "selectSExti32">;
 def assertzexti32 : PatFrag<(ops node:$src), (assertzext node:$src), [{
   return cast<VTSDNode>(N->getOperand(1))->getVT().bitsLE(MVT::i32);
 }]>;
-def zexti32 : PatFrags<(ops node:$src),
-                       [(and node:$src, 0xffffffff),
-                        (assertzexti32 node:$src)]>;
+def zexti32 : ComplexPattern<i64, 1, "selectZExti32">;
 
 def SRLIWPat : PatFrag<(ops node:$A, node:$B),
                        (srl (and node:$A, imm), node:$B), [{
@@ -1005,6 +1004,10 @@ def : Pat<(brcond GPR:$cond, bb:$imm12), (BNE GPR:$cond, X0, bb:$imm12)>;
 // `brcond` only uses the lowest bit.
 def : Pat<(brcond (XLenVT (xor GPR:$cond, 1)), bb:$imm12),
           (BEQ GPR:$cond, X0, bb:$imm12)>;
+
+// Match X > -1, the canonical form of X >= 0, to the bgez pattern.
+def : Pat<(brcond (XLenVT (setgt GPR:$rs1, -1)), bb:$imm12),
+          (BGE GPR:$rs1, X0, bb:$imm12)>;
 
 let isBarrier = 1, isBranch = 1, isTerminator = 1 in
 def PseudoBR : Pseudo<(outs), (ins simm21_lsb0_jal:$imm20), [(br bb:$imm20)]>,
@@ -1155,7 +1158,7 @@ defm : LdPat<zextloadi16, LHU>, Requires<[NotCapMode]>;
 multiclass StPat<PatFrag StoreOp, RVInst Inst, RegisterClass StTy,
                  ValueType vt> {
   def : Pat<(StoreOp (vt StTy:$rs2), BaseAddr:$rs1),
-                     (Inst StTy:$rs2, BaseAddr:$rs1, 0)>;
+            (Inst StTy:$rs2, BaseAddr:$rs1, 0)>;
   def : Pat<(StoreOp (vt StTy:$rs2), (add BaseAddr:$rs1, simm12:$imm12)),
             (Inst StTy:$rs2, BaseAddr:$rs1, simm12:$imm12)>;
   def : Pat<(StoreOp (vt StTy:$rs2), (IsOrAdd AddrFI:$rs1, simm12:$imm12)),
@@ -1228,13 +1231,13 @@ def : Pat<(sext_inreg (sub GPR:$rs1, GPR:$rs2), i32),
           (SUBW GPR:$rs1, GPR:$rs2)>;
 def : Pat<(sext_inreg (shl GPR:$rs1, uimm5:$shamt), i32),
           (SLLIW GPR:$rs1, uimm5:$shamt)>;
-def : Pat<(SRLIWPat GPR:$rs1, uimm5:$shamt),
+def : Pat<(i64 (SRLIWPat GPR:$rs1, uimm5:$shamt)),
           (SRLIW GPR:$rs1, uimm5:$shamt)>;
-def : Pat<(srl (shl GPR:$rs1, (i64 32)), uimm6gt32:$shamt),
+def : Pat<(i64 (srl (shl GPR:$rs1, (i64 32)), uimm6gt32:$shamt)),
           (SRLIW GPR:$rs1, (ImmSub32 uimm6gt32:$shamt))>;
 def : Pat<(sra (sext_inreg GPR:$rs1, i32), uimm5:$shamt),
           (SRAIW GPR:$rs1, uimm5:$shamt)>;
-def : Pat<(sra (shl GPR:$rs1, (i64 32)), uimm6gt32:$shamt),
+def : Pat<(i64 (sra (shl GPR:$rs1, (i64 32)), uimm6gt32:$shamt)),
           (SRAIW GPR:$rs1, (ImmSub32 uimm6gt32:$shamt))>;
 
 def : PatGprGpr<shiftopw<riscv_sllw>, SLLW>;
@@ -1260,7 +1263,7 @@ defm : StPat<store, SD, GPR, i64>;
 /// readcyclecounter
 // On RV64, we can directly read the 64-bit "cycle" CSR.
 let Predicates = [IsRV64] in
-def : Pat<(readcyclecounter), (CSRRS CYCLE.Encoding, X0)>;
+def : Pat<(i64 (readcyclecounter)), (CSRRS CYCLE.Encoding, X0)>;
 // On RV32, ReadCycleWide will be expanded to the suggested loop reading both
 // halves of the 64-bit "cycle" CSR.
 let Predicates = [IsRV32], usesCustomInserter = 1, hasNoSchedulingInfo = 1 in

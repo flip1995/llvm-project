@@ -1161,6 +1161,8 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
   for (auto &DDI : DDIV) {
     const DbgValueInst *DI = DDI.getDI();
     assert(DI && "Ill-formed DanglingDebugInfo");
+    assert(!DDI.getDI()->hasArgList() &&
+           "Variadic dbg.values should not yet be left dangling.");
     DebugLoc dl = DDI.getdl();
     unsigned ValSDNodeOrder = Val.getNode()->getIROrder();
     unsigned DbgSDNodeOrder = DDI.getSDNodeOrder();
@@ -1195,8 +1197,7 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
                           << "in EmitFuncArgumentDbgValue\n");
     } else {
       LLVM_DEBUG(dbgs() << "Dropping debug info for " << *DI << "\n");
-      auto Undef =
-          UndefValue::get(DDI.getDI()->getVariableLocation()->getType());
+      auto Undef = UndefValue::get(DDI.getDI()->getValue(0)->getType());
       auto SDV =
           DAG.getConstantDbgValue(Variable, Expr, Undef, dl, DbgSDNodeOrder);
       DAG.AddDbgValue(SDV, nullptr, false);
@@ -1206,7 +1207,9 @@ void SelectionDAGBuilder::resolveDanglingDebugInfo(const Value *V,
 }
 
 void SelectionDAGBuilder::salvageUnresolvedDbgValue(DanglingDebugInfo &DDI) {
-  Value *V = DDI.getDI()->getValue();
+  assert(!DDI.getDI()->hasArgList() &&
+         "Variadic dbg.values should not yet be left dangling.");
+  Value *V = DDI.getDI()->getValue(0);
   DILocalVariable *Var = DDI.getDI()->getVariable();
   DIExpression *Expr = DDI.getDI()->getExpression();
   DebugLoc DL = DDI.getdl();
@@ -1250,7 +1253,7 @@ void SelectionDAGBuilder::salvageUnresolvedDbgValue(DanglingDebugInfo &DDI) {
   // This was the final opportunity to salvage this debug information, and it
   // couldn't be done. Place an undef DBG_VALUE at this location to terminate
   // any earlier variable location.
-  auto Undef = UndefValue::get(DDI.getDI()->getVariableLocation()->getType());
+  auto Undef = UndefValue::get(DDI.getDI()->getValue(0)->getType());
   auto SDV = DAG.getConstantDbgValue(Var, Expr, Undef, DL, SDNodeOrder);
   DAG.AddDbgValue(SDV, nullptr, false);
 
@@ -1463,9 +1466,8 @@ SDValue SelectionDAGBuilder::getValueImpl(const Value *V) {
 
     if (isa<ConstantStruct>(C) || isa<ConstantArray>(C)) {
       SmallVector<SDValue, 4> Constants;
-      for (User::const_op_iterator OI = C->op_begin(), OE = C->op_end();
-           OI != OE; ++OI) {
-        SDNode *Val = getValue(*OI).getNode();
+      for (const Use &U : C->operands()) {
+        SDNode *Val = getValue(U).getNode();
         // If the operand is an empty aggregate, there are no values.
         if (!Val) continue;
         // Add each leaf value from the operand to the Constants list
@@ -5942,7 +5944,7 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     LLVM_DEBUG(dbgs() << "SelectionDAG visiting debug intrinsic: " << DI
                       << "\n");
     // Check if address has undef value.
-    const Value *Address = DI.getVariableLocation();
+    const Value *Address = DI.getVariableLocationOp(0);
     if (!Address || isa<UndefValue>(Address) ||
         (Address->use_empty() && !isa<Argument>(Address))) {
       LLVM_DEBUG(dbgs() << "Dropping debug info for " << DI
@@ -6035,7 +6037,7 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     DILocalVariable *Variable = DI.getVariable();
     DIExpression *Expression = DI.getExpression();
     dropDanglingDebugInfo(Variable, Expression);
-    const Value *V = DI.getValue();
+    const Value *V = DI.getValue(0);
     if (!V)
       return;
 
@@ -7105,6 +7107,14 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     SDValue Vec = getValue(I.getOperand(0));
     SDValue SubVec = getValue(I.getOperand(1));
     SDValue Index = getValue(I.getOperand(2));
+
+    // The intrinsic's index type is i64, but the SDNode requires an index type
+    // suitable for the target. Convert the index as required.
+    MVT VectorIdxTy = TLI.getVectorIdxTy(DAG.getDataLayout());
+    if (Index.getValueType() != VectorIdxTy)
+      Index = DAG.getVectorIdxConstant(
+          cast<ConstantSDNode>(Index)->getZExtValue(), DL);
+
     EVT ResultVT = TLI.getValueType(DAG.getDataLayout(), I.getType());
     setValue(&I, DAG.getNode(ISD::INSERT_SUBVECTOR, DL, ResultVT, Vec, SubVec,
                              Index));
@@ -7116,6 +7126,13 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     SDValue Vec = getValue(I.getOperand(0));
     SDValue Index = getValue(I.getOperand(1));
     EVT ResultVT = TLI.getValueType(DAG.getDataLayout(), I.getType());
+
+    // The intrinsic's index type is i64, but the SDNode requires an index type
+    // suitable for the target. Convert the index as required.
+    MVT VectorIdxTy = TLI.getVectorIdxTy(DAG.getDataLayout());
+    if (Index.getValueType() != VectorIdxTy)
+      Index = DAG.getVectorIdxConstant(
+          cast<ConstantSDNode>(Index)->getZExtValue(), DL);
 
     setValue(&I, DAG.getNode(ISD::EXTRACT_SUBVECTOR, DL, ResultVT, Vec, Index));
     return;

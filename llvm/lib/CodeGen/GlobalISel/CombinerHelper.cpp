@@ -2295,12 +2295,18 @@ bool CombinerHelper::matchCombineAnyExtTrunc(MachineInstr &MI, Register &Reg) {
                   m_GTrunc(m_all_of(m_Reg(Reg), m_SpecificType(DstTy))));
 }
 
-bool CombinerHelper::applyCombineAnyExtTrunc(MachineInstr &MI, Register &Reg) {
-  assert(MI.getOpcode() == TargetOpcode::G_ANYEXT && "Expected a G_ANYEXT");
+bool CombinerHelper::matchCombineZextTrunc(MachineInstr &MI, Register &Reg) {
+  assert(MI.getOpcode() == TargetOpcode::G_ZEXT && "Expected a G_ZEXT");
   Register DstReg = MI.getOperand(0).getReg();
-  MI.eraseFromParent();
-  replaceRegWith(MRI, DstReg, Reg);
-  return true;
+  Register SrcReg = MI.getOperand(1).getReg();
+  LLT DstTy = MRI.getType(DstReg);
+  if (mi_match(SrcReg, MRI,
+               m_GTrunc(m_all_of(m_Reg(Reg), m_SpecificType(DstTy))))) {
+    unsigned DstSize = DstTy.getScalarSizeInBits();
+    unsigned SrcSize = MRI.getType(SrcReg).getScalarSizeInBits();
+    return KB->getKnownBits(Reg).countMinLeadingZeros() >= DstSize - SrcSize;
+  }
+  return false;
 }
 
 bool CombinerHelper::matchCombineExtOfExt(
@@ -2382,14 +2388,6 @@ bool CombinerHelper::matchCombineFAbsOfFAbs(MachineInstr &MI, Register &Src) {
   Src = MI.getOperand(1).getReg();
   Register AbsSrc;
   return mi_match(Src, MRI, m_GFabs(m_Reg(AbsSrc)));
-}
-
-bool CombinerHelper::applyCombineFAbsOfFAbs(MachineInstr &MI, Register &Src) {
-  assert(MI.getOpcode() == TargetOpcode::G_FABS && "Expected a G_FABS");
-  Register Dst = MI.getOperand(0).getReg();
-  MI.eraseFromParent();
-  replaceRegWith(MRI, Dst, Src);
-  return true;
 }
 
 bool CombinerHelper::matchCombineTruncOfExt(

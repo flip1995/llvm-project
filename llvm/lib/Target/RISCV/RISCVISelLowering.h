@@ -20,6 +20,7 @@
 
 namespace llvm {
 class RISCVSubtarget;
+struct RISCVRegisterInfo;
 namespace RISCVISD {
 enum NodeType : unsigned {
   FIRST_NUMBER = ISD::BUILTIN_OP_END,
@@ -98,6 +99,7 @@ enum NodeType : unsigned {
   GREVIW,
   GORCI,
   GORCIW,
+  SHFLI,
   // Vector Extension
   // VMV_V_X_VL matches the semantics of vmv.v.x but includes an extra operand
   // for the VL value to be used for the operation.
@@ -108,13 +110,17 @@ enum NodeType : unsigned {
   // VMV_X_S matches the semantics of vmv.x.s. The result is always XLenVT sign
   // extended from the vector element size.
   VMV_X_S,
+  // VMV_S_XF_VL matches the semantics of vmv.s.x/vmv.s.f, depending on the
+  // types of its operands. It carries a VL operand.
+  VMV_S_XF_VL,
   // Splats an i64 scalar to a vector type (with element type i64) where the
   // scalar is a sign-extended i32.
   SPLAT_VECTOR_I64,
   // Read VLENB CSR
   READ_VLENB,
-  // Truncates a RVV integer vector by one power-of-two.
-  TRUNCATE_VECTOR,
+  // Truncates a RVV integer vector by one power-of-two. Carries both an extra
+  // mask and VL operand.
+  TRUNCATE_VECTOR_VL,
   // Unit-stride fault-only-first load
   VLEFF,
   VLEFF_MASK,
@@ -129,8 +135,9 @@ enum NodeType : unsigned {
   VID_VL,
   // Matches the semantics of the vfcnvt.rod function (Convert double-width
   // float to single-width float, rounding towards odd). Takes a double-width
-  // float vector and produces a single-width float vector.
-  VFNCVT_ROD,
+  // float vector and produces a single-width float vector. Also has a mask and
+  // VL operand.
+  VFNCVT_ROD_VL,
   // These nodes match the semantics of the corresponding RVV vector reduction
   // instructions. They produce a vector result which is the reduction
   // performed over the first vector operand plus the first element of the
@@ -180,6 +187,14 @@ enum NodeType : unsigned {
   SMAX_VL,
   UMIN_VL,
   UMAX_VL,
+  MULHS_VL,
+  MULHU_VL,
+  FP_TO_SINT_VL,
+  FP_TO_UINT_VL,
+  SINT_TO_FP_VL,
+  UINT_TO_FP_VL,
+  FP_ROUND_VL,
+  FP_EXTEND_VL,
 
   // Vector compare producing a mask. Fourth operand is input mask. Fifth
   // operand is VL.
@@ -199,6 +214,10 @@ enum NodeType : unsigned {
 
   // Matches the semantics of vrgather.vx with an extra operand for VL.
   VRGATHER_VX_VL,
+
+  // Vector sign/zero extend with additional mask & VL operands.
+  VSEXT_VL,
+  VZEXT_VL,
 
   // Memory opcodes start here.
   VLE_VL = ISD::FIRST_TARGET_MEMORY_OPCODE,
@@ -237,6 +256,9 @@ public:
                     bool ForCodeSize) const override;
 
   bool hasBitPreservingFPLogic(EVT VT) const override;
+  bool
+  shouldExpandBuildVectorWithShuffles(EVT VT,
+                                      unsigned DefinedValues) const override;
 
   // Provide custom lowering hooks for some operations.
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
@@ -390,6 +412,20 @@ public:
       MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
       bool *Fast = nullptr) const override;
 
+  static RISCVVLMUL getLMUL(MVT VT);
+  static unsigned getRegClassIDForLMUL(RISCVVLMUL LMul);
+  static unsigned getSubregIndexByMVT(MVT VT, unsigned Index);
+  static unsigned getRegClassIDForVecVT(MVT VT);
+  static std::pair<unsigned, unsigned>
+  decomposeSubvectorInsertExtractToSubRegs(MVT VecVT, MVT SubVecVT,
+                                           unsigned InsertExtractIdx,
+                                           const RISCVRegisterInfo *TRI);
+  MVT getContainerForFixedLengthVector(MVT VT) const;
+  static MVT getContainerForFixedLengthVector(const TargetLowering &TLI, MVT VT,
+                                              const RISCVSubtarget &Subtarget);
+  static MVT getContainerForFixedLengthVector(SelectionDAG &DAG, MVT VT,
+                                              const RISCVSubtarget &Subtarget);
+
 private:
   void analyzeInputArgs(MachineFunction &MF, CCState &CCInfo,
                         const SmallVectorImpl<ISD::InputArg> &Ins,
@@ -428,6 +464,8 @@ private:
   SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVECREDUCE(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFPVECREDUCE(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerINSERT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerEXTRACT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorLoadToRVV(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorStoreToRVV(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorSetccToRVV(SDValue Op, SelectionDAG &DAG) const;
@@ -438,6 +476,8 @@ private:
                                             SelectionDAG &DAG) const;
   SDValue lowerToScalableOp(SDValue Op, SelectionDAG &DAG, unsigned NewOpc,
                             bool HasMask = true) const;
+  SDValue lowerFixedLengthVectorExtendToRVV(SDValue Op, SelectionDAG &DAG,
+                                            unsigned ExtendOpc) const;
 
   bool hasCapabilitySetAddress() const override { return true; }
 

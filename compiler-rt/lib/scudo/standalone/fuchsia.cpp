@@ -134,7 +134,7 @@ void unmap(void *Addr, usize Size, usize Flags, MapPlatformData *Data) {
   }
 }
 
-void releasePagesToOS(UNUSED uptr BaseAddress, uptr Offset, usize Size,
+void releasePagesToOS(UNUSED uptr BaseAddress, uptr Offset, uptr Size,
                       MapPlatformData *Data) {
   DCHECK(Data);
   DCHECK_NE(Data->Vmar, ZX_HANDLE_INVALID);

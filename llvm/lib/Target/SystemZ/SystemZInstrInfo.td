@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+def IsTargetXPLINK64      : Predicate<"Subtarget->isTargetXPLINK64()">;
 def IsTargetELF           : Predicate<"Subtarget->isTargetELF()">;
 
 //===----------------------------------------------------------------------===//
@@ -80,7 +81,7 @@ let isBranch = 1, isTerminator = 1, Uses = [CC] in {
   foreach V = [ "E", "NE", "H", "NH", "L", "NL", "HE", "NHE", "LE", "NLE",
                 "Z", "NZ", "P", "NP", "M", "NM", "LH", "NLH", "O", "NO" ] in {
     def JAsm#V  : FixedCondBranchRI <CV<V>, "j#",  0xA74>;
-    def JGAsm#V : FixedCondBranchRIL<CV<V>, "jg#", 0xC04>;
+    def JGAsm#V : FixedCondBranchRIL<CV<V>, "j{g|l}#", 0xC04>;
     let isIndirectBranch = 1 in {
       def BAsm#V  : FixedCondBranchRX <CV<V>, "b#",  0x47>;
       def BRAsm#V : FixedCondBranchRR <CV<V>, "b#r", 0x07>;
@@ -94,7 +95,7 @@ let isBranch = 1, isTerminator = 1, Uses = [CC] in {
 // conditional branches with the condition mask set to "always".
 let isBranch = 1, isTerminator = 1, isBarrier = 1 in {
   def J  : FixedCondBranchRI <CondAlways, "j",  0xA74, br>;
-  def JG : FixedCondBranchRIL<CondAlways, "jg", 0xC04>;
+  def JG : FixedCondBranchRIL<CondAlways, "j{g|lu}", 0xC04>;
   let isIndirectBranch = 1 in {
     def B  : FixedCondBranchRX<CondAlways, "b",  0x47>;
     def BR : FixedCondBranchRR<CondAlways, "br", 0x07, brind>;
@@ -116,7 +117,8 @@ def NOPR_bare : InstAlias<"nopr", (BCRAsm 0, R0D), 0>;
 def JNOP : InstAlias<"jnop\t$RI2", (BRCAsm 0, brtarget16:$RI2), 0>;
 
 // An alias of BRCL 0, label
-def JGNOP : InstAlias<"jgnop\t$RI2", (BRCLAsm 0, brtarget32:$RI2), 0>;
+// jgnop on att ; jlnop on hlasm
+def JGNOP : InstAlias<"{jgnop|jlnop}\t$RI2", (BRCLAsm 0, brtarget32:$RI2), 0>;
 
 // Fused compare-and-branch instructions.
 //
@@ -275,6 +277,16 @@ let isCall = 1, Defs = [CC] in {
   def BASR  : CallRR <"basr", 0x0D>;
 }
 
+// z/OS XPLINK
+let Predicates = [IsTargetXPLINK64] in {
+  let isCall = 1, Defs = [R7D, CC], Uses = [FPC] in {
+    def CallBRASL_XPLINK64 : Alias<8, (outs), (ins pcrel32:$I2, variable_ops),
+                          [(z_call pcrel32:$I2)]>;
+    def CallBASR_XPLINK64  : Alias<4, (outs), (ins ADDR64:$R2, variable_ops),
+                          [(z_call ADDR64:$R2)]>;
+  }
+}
+
 // Regular calls.
 // z/Linux ELF
 let Predicates = [IsTargetELF] in {
@@ -295,7 +307,8 @@ let Predicates = [IsTargetELF] in {
   }
 }
 
-// Sibling calls.
+// Sibling calls. Indirect sibling calls must be via R6 for XPLink,
+// R1 used for ELF
 let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1 in {
   def CallJG : Alias<6, (outs), (ins pcrel32:$I2),
                      [(z_sibcall pcrel32:$I2)]>;
@@ -323,7 +336,7 @@ let isCall = 1, isTerminator = 1, isReturn = 1 in {
   def CLGIBCall : Alias<6, (outs), (ins GR64:$R1, imm64zx8:$I2, cond4:$M3, ADDR64:$R4), []>;
 }
 
-// A return instruction (br %r14).
+// A return instruction (br %r14) for ELF and (b 2 %r7) for XPLink.
 let isReturn = 1, isTerminator = 1, isBarrier = 1, hasCtrlDep = 1 in
   def Return : Alias<2, (outs), (ins), [(z_retflag)]>;
 
@@ -2363,10 +2376,12 @@ def JXHG  : MnemonicAlias<"jxhg", "brxhg">;
 def JXLEG : MnemonicAlias<"jxleg", "brxlg">;
 
 def BRU   : MnemonicAlias<"bru", "j">;
-def BRUL  : MnemonicAlias<"brul", "jg">;
+def BRUL  : MnemonicAlias<"brul", "jg", "att">;
+def BRUL_HLASM  : MnemonicAlias<"brul", "jlu", "hlasm">;
 
 foreach V = [ "E", "NE", "H", "NH", "L", "NL", "HE", "NHE", "LE", "NLE",
               "Z", "NZ", "P", "NP", "M", "NM", "LH", "NLH", "O", "NO" ] in {
-  def BRUAsm#V : MnemonicCondBranchAlias <CV<V>, "br#", "j#">;
-  def BRULAsm#V : MnemonicCondBranchAlias <CV<V>, "br#l", "jg#">;
+  defm BRUAsm#V  : MnemonicCondBranchAlias <CV<V>, "br#", "j#">;
+  defm BRULAsm#V : MnemonicCondBranchAlias <CV<V>, "br#l", "jg#", "att">;
+  defm BRUL_HLASMAsm#V : MnemonicCondBranchAlias <CV<V>, "br#l", "jl#", "hlasm">;
 }

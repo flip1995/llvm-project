@@ -335,6 +335,8 @@ private:
                     unsigned Abbrev);
   void writeDIMacroFile(const DIMacroFile *N, SmallVectorImpl<uint64_t> &Record,
                         unsigned Abbrev);
+  void writeDIArgList(const DIArgList *N, SmallVectorImpl<uint64_t> &Record,
+                      unsigned Abbrev);
   void writeDIModule(const DIModule *N, SmallVectorImpl<uint64_t> &Record,
                      unsigned Abbrev);
   void writeDITemplateTypeParameter(const DITemplateTypeParameter *N,
@@ -1871,6 +1873,17 @@ void ModuleBitcodeWriter::writeDIMacroFile(const DIMacroFile *N,
   Record.clear();
 }
 
+void ModuleBitcodeWriter::writeDIArgList(const DIArgList *N,
+                                         SmallVectorImpl<uint64_t> &Record,
+                                         unsigned Abbrev) {
+  Record.reserve(N->getArgs().size());
+  for (ValueAsMetadata *MD : N->getArgs())
+    Record.push_back(VE.getMetadataOrNullID(MD));
+
+  Stream.EmitRecord(bitc::METADATA_ARG_LIST, Record, Abbrev);
+  Record.clear();
+}
+
 void ModuleBitcodeWriter::writeDIModule(const DIModule *N,
                                         SmallVectorImpl<uint64_t> &Record,
                                         unsigned Abbrev) {
@@ -2613,6 +2626,10 @@ void ModuleBitcodeWriter::writeConstants(unsigned FirstVal, unsigned LastVal,
       Record.push_back(VE.getTypeID(BA->getFunction()->getType()));
       Record.push_back(VE.getValueID(BA->getFunction()));
       Record.push_back(VE.getGlobalBasicBlockID(BA->getBasicBlock()));
+    } else if (const auto *Equiv = dyn_cast<DSOLocalEquivalent>(C)) {
+      Code = bitc::CST_CODE_DSO_LOCAL_EQUIVALENT;
+      Record.push_back(VE.getTypeID(Equiv->getGlobalValue()->getType()));
+      Record.push_back(VE.getValueID(Equiv->getGlobalValue()));
     } else {
 #ifndef NDEBUG
       C->dump();
@@ -4855,7 +4872,7 @@ void llvm::EmbedBitcodeInModule(llvm::Module &M, llvm::MemoryBufferRef Buf,
                                 const std::vector<uint8_t> &CmdArgs) {
   // Save llvm.compiler.used and remove it.
   SmallVector<Constant *, 2> UsedArray;
-  SmallPtrSet<GlobalValue *, 4> UsedGlobals;
+  SmallVector<GlobalValue *, 4> UsedGlobals;
   Type *UsedElementType = Type::getInt8Ty(M.getContext())->getPointerTo(0);
   GlobalVariable *Used = collectUsedGlobalVariables(M, UsedGlobals, true);
   for (auto *GV : UsedGlobals) {

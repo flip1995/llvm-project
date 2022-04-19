@@ -15,6 +15,7 @@
 #include "llvm/Support/VersionTuple.h"
 #include "llvm/TextAPI/MachO/Architecture.h"
 #include "llvm/TextAPI/MachO/Platform.h"
+#include "llvm/TextAPI/MachO/Target.h"
 
 #include <vector>
 
@@ -24,10 +25,18 @@ namespace macho {
 class Symbol;
 struct SymbolPriorityEntry;
 
+using NamePair = std::pair<llvm::StringRef, llvm::StringRef>;
+using SectionRenameMap = llvm::DenseMap<NamePair, NamePair>;
+using SegmentRenameMap = llvm::DenseMap<llvm::StringRef, llvm::StringRef>;
+
 struct PlatformInfo {
-  llvm::MachO::PlatformKind kind;
   llvm::VersionTuple minimum;
   llvm::VersionTuple sdk;
+};
+
+enum class NamespaceKind {
+  twolevel,
+  flat,
 };
 
 enum class UndefinedSymbolTreatment {
@@ -52,6 +61,7 @@ struct Configuration {
   bool printWhyLoad = false;
   bool searchDylibsFirst = false;
   bool saveTemps = false;
+  bool adhocCodesign = false;
   uint32_t headerPad;
   uint32_t dylibCompatibilityVersion = 0;
   uint32_t dylibCurrentVersion = 0;
@@ -59,8 +69,9 @@ struct Configuration {
   llvm::StringRef outputFile;
   llvm::StringRef ltoObjPath;
   bool demangle = false;
-  llvm::MachO::Architecture arch;
-  PlatformInfo platform;
+  llvm::MachO::Target target;
+  PlatformInfo platformInfo;
+  NamespaceKind namespaceKind = NamespaceKind::twolevel;
   UndefinedSymbolTreatment undefinedSymbolTreatment =
       UndefinedSymbolTreatment::error;
   llvm::MachO::HeaderFileType outputType;
@@ -70,6 +81,8 @@ struct Configuration {
   std::vector<llvm::StringRef> runtimePaths;
   std::vector<Symbol *> explicitUndefineds;
   llvm::DenseMap<llvm::StringRef, SymbolPriorityEntry> priorities;
+  SectionRenameMap sectionRenameMap;
+  SegmentRenameMap segmentRenameMap;
 };
 
 // The symbol with the highest priority should be ordered first in the output

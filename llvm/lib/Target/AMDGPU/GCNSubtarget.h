@@ -163,6 +163,7 @@ protected:
   bool HasVscnt;
   bool HasGetWaveIdInst;
   bool HasSMemTimeInst;
+  bool HasShaderCyclesRegister;
   bool HasRegisterBanking;
   bool HasVOP3Literal;
   bool HasNoDataDepHazard;
@@ -714,6 +715,10 @@ public:
     return HasSMemTimeInst;
   }
 
+  bool hasShaderCyclesRegister() const {
+    return HasShaderCyclesRegister;
+  }
+
   bool hasRegisterBanking() const {
     return HasRegisterBanking;
   }
@@ -929,6 +934,9 @@ public:
   bool hasHardClauses() const { return getGeneration() >= GFX10; }
 
   bool hasGFX90AInsts() const { return GFX90AInsts; }
+
+  /// Return if operations acting on VGPR tuples require even alignment.
+  bool needsAlignedVGPRs() const { return GFX90AInsts; }
 
   bool hasPackedTID() const { return HasPackedTID; }
 

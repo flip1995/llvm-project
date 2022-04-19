@@ -2173,16 +2173,6 @@ Instruction *InstCombinerImpl::visitGetElementPtrInst(GetElementPtrInst &GEP) {
       }
 
       if (Matched) {
-        // Canonicalize (gep i8* X, -(ptrtoint Y))
-        // to (inttoptr (sub (ptrtoint X), (ptrtoint Y)))
-        // The GEP pattern is emitted by the SCEV expander for certain kinds of
-        // pointer arithmetic.
-        if (match(V, m_Neg(m_PtrToInt(m_Value())))) {
-          Operator *Index = cast<Operator>(V);
-          Value *PtrToInt = Builder.CreatePtrToInt(PtrOp, Index->getType());
-          Value *NewSub = Builder.CreateSub(PtrToInt, Index->getOperand(1));
-          return CastInst::Create(Instruction::IntToPtr, NewSub, GEPType);
-        }
         // Canonicalize (gep i8* X, (ptrtoint Y)-(ptrtoint X))
         // to (bitcast Y)
         Value *Y;
@@ -2807,6 +2797,20 @@ Instruction *InstCombinerImpl::visitFree(CallInst &FI) {
   // when lots of inlining happens.
   if (isa<ConstantPointerNull>(Op))
     return eraseInstFromFunction(FI);
+
+  // If we free a pointer we've been explicitly told won't be freed, this
+  // would be full UB and thus we can conclude this is unreachable. Cases:
+  // 1) freeing a pointer which is explicitly nofree
+  // 2) calling free from a call site marked nofree
+  // 3) calling free in a function scope marked nofree
+  if (auto *A = dyn_cast<Argument>(Op->stripPointerCasts()))
+    if (A->hasAttribute(Attribute::NoFree) ||
+        FI.hasFnAttr(Attribute::NoFree) ||
+        FI.getFunction()->hasFnAttribute(Attribute::NoFree)) {
+      // Leave a marker since we can't modify the CFG here.
+      CreateNonTerminatorUnreachable(&FI);
+      return eraseInstFromFunction(FI);
+    }
 
   // If we optimize for code size, try to move the call to free before the null
   // test so that simplify cfg can remove the empty block and dead code
@@ -3572,27 +3576,39 @@ static bool TryToSinkInstruction(Instruction *I, BasicBlock *DestBlock) {
   // here, but that computation has been sunk.
   SmallVector<DbgVariableIntrinsic *, 2> DbgUsers;
   findDbgUsers(DbgUsers, I);
+  // Process the sinking DbgUsers in reverse order, as we only want to clone the
+  // last appearing debug intrinsic for each given variable.
+  SmallVector<DbgVariableIntrinsic *, 2> DbgUsersToSink;
+  for (DbgVariableIntrinsic *DVI : DbgUsers)
+    if (DVI->getParent() == SrcBlock)
+      DbgUsersToSink.push_back(DVI);
+  llvm::sort(DbgUsersToSink,
+             [](auto *A, auto *B) { return B->comesBefore(A); });
 
   // Update the arguments of a dbg.declare instruction, so that it
   // does not point into a sunk instruction.
-  auto updateDbgDeclare = [&I](DbgVariableIntrinsic *DII) {
+  auto updateDbgDeclare = [](DbgVariableIntrinsic *DII) {
     if (!isa<DbgDeclareInst>(DII))
       return false;
 
-    if (isa<CastInst>(I))
-      DII->setOperand(
-          0, MetadataAsValue::get(I->getContext(),
-                                  ValueAsMetadata::get(I->getOperand(0))));
     return true;
   };
 
   SmallVector<DbgVariableIntrinsic *, 2> DIIClones;
-  for (auto User : DbgUsers) {
+  SmallSet<DebugVariable, 4> SunkVariables;
+  for (auto User : DbgUsersToSink) {
     // A dbg.declare instruction should not be cloned, since there can only be
     // one per variable fragment. It should be left in the original place
     // because the sunk instruction is not an alloca (otherwise we could not be
     // here).
-    if (User->getParent() != SrcBlock || updateDbgDeclare(User))
+    if (updateDbgDeclare(User))
+      continue;
+
+    DebugVariable DbgUserVariable =
+        DebugVariable(User->getVariable(), User->getExpression(),
+                      User->getDebugLoc()->getInlinedAt());
+
+    if (!SunkVariables.insert(DbgUserVariable).second)
       continue;
 
     DIIClones.emplace_back(cast<DbgVariableIntrinsic>(User->clone()));
@@ -3602,7 +3618,9 @@ static bool TryToSinkInstruction(Instruction *I, BasicBlock *DestBlock) {
   // Perform salvaging without the clones, then sink the clones.
   if (!DIIClones.empty()) {
     salvageDebugInfoForDbgValues(*I, DbgUsers);
-    for (auto &DIIClone : DIIClones) {
+    // The clones are in reverse order of original appearance, reverse again to
+    // maintain the original order.
+    for (auto &DIIClone : llvm::reverse(DIIClones)) {
       DIIClone->insertBefore(&*InsertPos);
       LLVM_DEBUG(dbgs() << "SINK: " << *DIIClone << '\n');
     }

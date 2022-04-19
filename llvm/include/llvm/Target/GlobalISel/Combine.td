@@ -424,7 +424,17 @@ def anyext_trunc_fold: GICombineRule <
   (defs root:$root, anyext_trunc_fold_matchinfo:$matchinfo),
   (match (wip_match_opcode G_ANYEXT):$root,
          [{ return Helper.matchCombineAnyExtTrunc(*${root}, ${matchinfo}); }]),
-  (apply [{ return Helper.applyCombineAnyExtTrunc(*${root}, ${matchinfo}); }])
+  (apply [{ return Helper.replaceSingleDefInstWithReg(*${root}, ${matchinfo}); }])
+>;
+
+// Fold (zext (trunc x)) -> x if the source type is same as the destination type
+// and truncated bits are known to be zero.
+def zext_trunc_fold_matchinfo : GIDefMatchData<"Register">;
+def zext_trunc_fold: GICombineRule <
+  (defs root:$root, zext_trunc_fold_matchinfo:$matchinfo),
+  (match (wip_match_opcode G_ZEXT):$root,
+         [{ return Helper.matchCombineZextTrunc(*${root}, ${matchinfo}); }]),
+  (apply [{ return Helper.replaceSingleDefInstWithReg(*${root}, ${matchinfo}); }])
 >;
 
 // Fold ([asz]ext ([asz]ext x)) -> ([asz]ext x).
@@ -468,7 +478,7 @@ def fabs_fabs_fold: GICombineRule<
   (defs root:$root, fabs_fabs_fold_matchinfo:$matchinfo),
   (match (wip_match_opcode G_FABS):$root,
          [{ return Helper.matchCombineFAbsOfFAbs(*${root}, ${matchinfo}); }]),
-  (apply [{ return Helper.applyCombineFAbsOfFAbs(*${root}, ${matchinfo}); }])
+  (apply [{ return Helper.replaceSingleDefInstWithReg(*${root}, ${matchinfo}); }])
 >;
 
 // Fold (unmerge cst) -> cst1, cst2, ...
@@ -583,7 +593,8 @@ def identity_combines : GICombineGroup<[select_same_val, right_identity_zero,
 def const_combines : GICombineGroup<[constant_fp_op, const_ptradd_to_i2p]>;
 
 def known_bits_simplifications : GICombineGroup<[
-  redundant_and, redundant_sext_inreg, redundant_or, urem_pow2_to_mask]>;
+  redundant_and, redundant_sext_inreg, redundant_or, urem_pow2_to_mask,
+  zext_trunc_fold]>;
 
 def width_reduction_combines : GICombineGroup<[reduce_shl_of_extend]>;
 

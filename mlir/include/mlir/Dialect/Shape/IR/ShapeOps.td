@@ -81,7 +81,7 @@ def Shape_BroadcastOp : Shape_Op<"broadcast", [Commutative, NoSideEffect]> {
     $shapes attr-dict `:` type($shapes) `->` type($result)
   }];
 
-  let builders = [OpBuilderDAG<(ins "::mlir::Type":$result,
+  let builders = [OpBuilder<(ins "::mlir::Type":$result,
                                 "::mlir::Value":$lhs, "::mlir::Value":$rhs,
                                 "/*optional*/ ::mlir::StringAttr":$error), [{
       build($_builder, $_state, result, ::llvm::makeArrayRef({lhs, rhs}), error);
@@ -132,26 +132,74 @@ def Shape_ConstSizeOp : Shape_Op<"const_size", [
   let arguments = (ins IndexAttr:$value);
   let results = (outs Shape_SizeType:$result);
 
-  let builders = [OpBuilderDAG<(ins "int64_t":$value)>];
+  let builders = [OpBuilder<(ins "int64_t":$value)>];
 
   let assemblyFormat = "$value attr-dict";
   let hasFolder = 1;
 }
 
-def Shape_ShapeEqOp : Shape_Op<"shape_eq", [Commutative, NoSideEffect]> {
-  let summary = "Returns whether the input shapes or extent tensors are equal";
+def Shape_DivOp : Shape_Op<"div", [NoSideEffect]> {
+  let summary = "Division of sizes and indices";
   let description = [{
-    Takes two shape or extent tensor operands and determines whether they are
-    equal. When extent tensors are compared to shapes they are regarded as their
-    equivalent non-error shapes. Error shapes can be tested for equality like
-    any other shape value, meaning that the error value is equal to itself.
+    Divides two sizes or indices. If either operand is an error it will be
+    propagated to the result. The operands can be of type `size` or `index`.
+    If at least one of the operands can hold an error, i.e. if it is of type
+    `size`, the result must be of type `size`. If error propagation is not
+    possible because both operands are of type `index` then the result may be
+    of type  `size` or `index`. If both operands and result are of type `index`,
+    their runtime values could be negative. The result is rounded toward
+    negative infinity, i.e. floor(lhs / rhs), such that
+
+        div(lhs, rhs) * rhs + mod(lhs, rhs) = lhs
+
+    always holds. If any of the values is of type `size`, the behavior for
+    negative value is undefined.
   }];
 
-  let arguments = (ins Shape_ShapeOrExtentTensorType:$lhs,
-                       Shape_ShapeOrExtentTensorType:$rhs);
+  let arguments = (ins Shape_SizeOrIndexType:$lhs,
+                       Shape_SizeOrIndexType:$rhs);
+  let results = (outs Shape_SizeOrIndexType:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)
+  }];
+
+  let verifier = [{ return ::verifySizeOrIndexOp(*this); }];
+  let hasFolder = 1;
+}
+
+def Shape_ShapeEqOp : Shape_Op<"shape_eq", [NoSideEffect, Commutative,
+                                            InferTypeOpInterface]> {
+  let summary = "Returns whether the input shapes or extent tensors are equal";
+  let description = [{
+    Takes one or more shape or extent tensor operands and determines whether
+    they are equal. When extent tensors are compared to shapes they are regarded
+    as their equivalent non-error shapes. Error shapes can be tested for
+    equality like any other shape value, meaning that the error value is equal
+    to itself.
+  }];
+
+  let arguments = (ins Variadic<Shape_ShapeOrExtentTensorType>:$shapes);
   let results = (outs I1:$result);
 
-  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs)";
+  // Convenience builder alias for the binary version.
+  let builders = [
+  OpBuilder<(ins "::mlir::Value":$lhs, "::mlir::Value":$rhs),
+    [{ build($_builder, $_state, ::llvm::makeArrayRef({lhs, rhs})); }]>,
+  ];
+  let extraClassDeclaration = [{
+    // TODO: This should really be automatic. Figure out how to not need this defined.
+    static ::mlir::LogicalResult inferReturnTypes(::mlir::MLIRContext *context,
+    ::llvm::Optional<::mlir::Location> location, ::mlir::ValueRange operands,
+    ::mlir::DictionaryAttr attributes, ::mlir::RegionRange regions,
+    ::llvm::SmallVectorImpl<::mlir::Type>&inferredReturnTypes) {
+      inferredReturnTypes.push_back(::mlir::IntegerType::get(context,
+                                                             /*width=*/1));
+      return success();
+    };
+  }];
+
+  let assemblyFormat = "$shapes attr-dict `:` type($shapes)";
   let hasFolder = 1;
 }
 
@@ -168,10 +216,10 @@ def Shape_FromExtentsOp : Shape_Op<"from_extents", [NoSideEffect]> {
     %s1 = shape.from_extents
     ```
   }];
-  let arguments = (ins Variadic<Index>:$extents);
+  let arguments = (ins Variadic<Shape_SizeOrIndexType>:$extents);
   let results = (outs Shape_ShapeType:$shape);
 
-  let assemblyFormat = "$extents attr-dict";
+  let assemblyFormat = "$extents attr-dict `:` type($extents)";
 
   let hasFolder = 1;
 }
@@ -214,7 +262,7 @@ def Shape_IsBroadcastableOp : Shape_Op<"is_broadcastable",
   let results = (outs I1:$result);
 
   let builders = [
-  OpBuilderDAG<(ins "::mlir::Value":$lhs, "::mlir::Value":$rhs),
+  OpBuilder<(ins "::mlir::Value":$lhs, "::mlir::Value":$rhs),
     [{ build($_builder, $_state, ::llvm::makeArrayRef({lhs, rhs})); }]>,
   ];
   let extraClassDeclaration = [{
@@ -282,7 +330,7 @@ def Shape_GetExtentOp : Shape_Op<"get_extent", [NoSideEffect]> {
 
   let builders = [
     // Builder that allows passing a constant dimension as a simple integer.
-    OpBuilderDAG<(ins "Value":$shape, "int64_t":$dim)>
+    OpBuilder<(ins "Value":$shape, "int64_t":$dim)>
   ];
 
   let extraClassDeclaration = [{
@@ -381,7 +429,7 @@ def Shape_NumElementsOp : Shape_Op<"num_elements", [NoSideEffect]> {
   let arguments = (ins Shape_ShapeOrExtentTensorType:$shape);
   let results = (outs Shape_SizeOrIndexType:$result);
 
-  let builders = [OpBuilderDAG<(ins "Value":$shape)>];
+  let builders = [OpBuilder<(ins "Value":$shape)>];
 
   let assemblyFormat = "$shape attr-dict `:` type($shape) `->` type($result)";
 
@@ -429,7 +477,7 @@ def Shape_ReduceOp : Shape_Op<"reduce",
   let results = (outs Variadic<AnyType>:$result);
   let regions = (region SizedRegion<1>:$region);
 
-  let builders = [OpBuilderDAG<(ins "Value":$shape, "ValueRange":$initVals)>];
+  let builders = [OpBuilder<(ins "Value":$shape, "ValueRange":$initVals)>];
 
   let verifier = [{ return ::verify(*this); }];
   let printer = [{ return ::print(p, *this); }];
@@ -449,7 +497,7 @@ def Shape_ShapeOfOp : Shape_Op<"shape_of", [NoSideEffect]> {
 
   let assemblyFormat = "$arg attr-dict `:` type($arg) `->` type($result)";
 
-  let builders = [OpBuilderDAG<(ins "Value":$arg)>];
+  let builders = [OpBuilder<(ins "Value":$arg)>];
 
   let verifier = [{ return ::verifyShapeOrExtentTensorOp(*this); }];
   let hasCanonicalizer = 1;
@@ -526,7 +574,7 @@ def Shape_YieldOp : Shape_Op<"yield",
 
   let arguments = (ins Variadic<AnyType>:$operands);
 
-  let builders = [OpBuilderDAG<(ins),
+  let builders = [OpBuilder<(ins),
     [{ build($_builder, $_state, llvm::None); }]>
   ];
 
@@ -556,7 +604,8 @@ def Shape_SplitAtOp : Shape_Op<"split_at", [NoSideEffect]> {
     If `index` is negative, it is treated as indexing from the back of the
     shape. This negative-handling behavior is important when handling unranked
     shapes, where the positive index is not necessarily knowable due to a
-    dynamic number of leading dimensions.
+    dynamic number of leading dimensions. If the result is in extent tensor form
+    out of bounds indices result in undefined behavior.
 
     Examples:
     - split_at([4,5,6], index=0) -> [], [4,5,6]
@@ -575,7 +624,8 @@ def Shape_SplitAtOp : Shape_Op<"split_at", [NoSideEffect]> {
 
   let arguments = (ins Shape_ShapeOrExtentTensorType:$operand,
                        Shape_SizeOrIndexType:$index);
-  let results = (outs Shape_ShapeType:$head, Shape_ShapeType:$tail);
+  let results = (outs Shape_ShapeOrExtentTensorType:$head,
+                      Shape_ShapeOrExtentTensorType:$tail);
   let hasFolder = 1;
 }
 
@@ -705,7 +755,7 @@ def Shape_AssumingYieldOp : Shape_Op<"assuming_yield",
 
   let arguments = (ins Variadic<AnyType>:$operands);
 
-  let builders = [OpBuilderDAG<(ins), [{ /* nothing to do */ }]>];
+  let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
 
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
 }
@@ -733,7 +783,7 @@ def Shape_CstrBroadcastableOp : Shape_Op<"cstr_broadcastable",
   let assemblyFormat = "$shapes attr-dict `:` type($shapes)";
 
   let builders = [
-  OpBuilderDAG<(ins "::mlir::Value":$lhs, "::mlir::Value":$rhs),
+  OpBuilder<(ins "::mlir::Value":$lhs, "::mlir::Value":$rhs),
     [{ build($_builder, $_state, ::llvm::makeArrayRef({lhs, rhs})); }]>,
   ];
 
@@ -753,7 +803,7 @@ def Shape_CstrBroadcastableOp : Shape_Op<"cstr_broadcastable",
   let verifier = [{ return ::verify(*this); }];
 }
 
-def Shape_CstrEqOp : Shape_Op<"cstr_eq", [Commutative]> {
+def Shape_CstrEqOp : Shape_Op<"cstr_eq", [Commutative, InferTypeOpInterface]> {
   let summary = "Determines if all input shapes are equal";
   let description = [{
     Given 1 or more input shapes, determine if all shapes are the exact same.
@@ -766,10 +816,21 @@ def Shape_CstrEqOp : Shape_Op<"cstr_eq", [Commutative]> {
     %w1 = shape.cstr_eq [2,2], [1,2] // Failure
     ```
   }];
-  let arguments = (ins Variadic<Shape_ShapeType>:$inputs);
+  let arguments = (ins Variadic<Shape_ShapeOrExtentTensorType>:$shapes);
   let results = (outs Shape_WitnessType:$result);
 
-  let assemblyFormat = "$inputs attr-dict";
+  let assemblyFormat = "$shapes attr-dict `:` type($shapes)";
+
+  let extraClassDeclaration = [{
+    // TODO: This should really be automatic. Figure out how to not need this defined.
+    static ::mlir::LogicalResult inferReturnTypes(::mlir::MLIRContext *context,
+    ::llvm::Optional<::mlir::Location> location, ::mlir::ValueRange operands,
+    ::mlir::DictionaryAttr attributes, ::mlir::RegionRange regions,
+    ::llvm::SmallVectorImpl<::mlir::Type>&inferredReturnTypes) {
+      inferredReturnTypes.push_back(::mlir::shape::WitnessType::get(context));
+      return success();
+    };
+  }];
 
   let hasCanonicalizer = 1;
   let hasFolder = 1;
@@ -861,7 +922,7 @@ def Shape_FunctionLibraryOp : Shape_Op<"function_library",
     FuncOp getShapeFunction(Operation *op);
   }];
 
-  let builders = [OpBuilderDAG<(ins "StringRef":$name)>];
+  let builders = [OpBuilder<(ins "StringRef":$name)>];
   let skipDefaultBuilders = 1;
 
   let printer = [{ ::print(p, *this); }];
