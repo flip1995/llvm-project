@@ -123,13 +123,8 @@ STATISTIC(NumReassoc  , "Number of reassociations");
 DEBUG_COUNTER(VisitCounter, "instcombine-visit",
               "Controls which instructions are visited");
 
-// FIXME: these limits eventually should be as low as 2.
 static constexpr unsigned InstCombineDefaultMaxIterations = 1000;
-#ifndef NDEBUG
-static constexpr unsigned InstCombineDefaultInfiniteLoopThreshold = 100;
-#else
 static constexpr unsigned InstCombineDefaultInfiniteLoopThreshold = 1000;
-#endif
 
 static cl::opt<bool>
 EnableCodeSinking("instcombine-code-sinking", cl::desc("Enable code sinking"),
@@ -3369,12 +3364,6 @@ static bool TryToSinkInstruction(Instruction *I, BasicBlock *DestBlock) {
   BasicBlock::iterator InsertPos = DestBlock->getFirstInsertionPt();
   I->moveBefore(&*InsertPos);
   ++NumSunkInst;
-
-  // Drop the debug loc of non-inlinable instructions. This prevents
-  // single-stepping from going backwards. See HowToUpdateDebugInfo.rst for
-  // the full rationale.
-  if (!isa<CallBase>(I))
-    I->setDebugLoc(DebugLoc());
 
   // Also sink all related debug uses from the source basic block. Otherwise we
   // get debug use before the def. Attempt to salvage debug uses first, to
