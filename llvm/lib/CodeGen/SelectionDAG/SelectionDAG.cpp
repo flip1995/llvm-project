@@ -3169,13 +3169,10 @@ KnownBits SelectionDAG::computeKnownBits(SDValue Op, const APInt &DemandedElts,
           }
         } else if (BitWidth == CstTy->getPrimitiveSizeInBits()) {
           if (auto *CInt = dyn_cast<ConstantInt>(Cst)) {
-            const APInt &Value = CInt->getValue();
-            Known.One = Value;
-            Known.Zero = ~Value;
+            Known = KnownBits::makeConstant(CInt->getValue());
           } else if (auto *CFP = dyn_cast<ConstantFP>(Cst)) {
-            APInt Value = CFP->getValueAPF().bitcastToAPInt();
-            Known.One = Value;
-            Known.Zero = ~Value;
+            Known =
+                KnownBits::makeConstant(CFP->getValueAPF().bitcastToAPInt());
           }
         }
       }
@@ -3454,7 +3451,6 @@ KnownBits SelectionDAG::computeKnownBits(SDValue Op, const APInt &DemandedElts,
     }
 
     Known = computeKnownBits(Op.getOperand(0), DemandedElts, Depth + 1);
-    if (Known.isUnknown()) break; // Early-out
     Known2 = computeKnownBits(Op.getOperand(1), DemandedElts, Depth + 1);
     if (IsMax)
       Known = KnownBits::smax(Known, Known2);
@@ -4837,6 +4833,15 @@ SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, EVT VT,
     break;
   case ISD::VSCALE:
     assert(VT == Operand.getValueType() && "Unexpected VT!");
+    break;
+  case ISD::CTPOP:
+    if (Operand.getValueType().getScalarType() == MVT::i1)
+      return Operand;
+    break;
+  case ISD::CTLZ:
+  case ISD::CTTZ:
+    if (Operand.getValueType().getScalarType() == MVT::i1)
+      return getNOT(DL, Operand, Operand.getValueType());
     break;
   case ISD::VECREDUCE_SMIN:
   case ISD::VECREDUCE_UMAX:
