@@ -370,7 +370,7 @@ static Address emitVoidPtrDirectVAArg(CodeGenFunction &CGF,
 ///   leaving one or more empty slots behind as padding.
 static Address emitVoidPtrVAArg(CodeGenFunction &CGF, Address VAListAddr,
                                 QualType ValueTy, bool IsIndirect,
-                                std::pair<CharUnits, CharUnits> ValueInfo,
+                                TypeInfoChars ValueInfo,
                                 CharUnits SlotSizeAndAlign,
                                 bool AllowHigherAlign) {
   // The size and alignment of the value that was passed directly.
@@ -379,8 +379,8 @@ static Address emitVoidPtrVAArg(CodeGenFunction &CGF, Address VAListAddr,
     DirectSize = CGF.getPointerSize();
     DirectAlign = CGF.getPointerAlign();
   } else {
-    DirectSize = ValueInfo.first;
-    DirectAlign = ValueInfo.second;
+    DirectSize = ValueInfo.Width;
+    DirectAlign = ValueInfo.Align;
   }
 
   // Cast the address we've calculated to the right type.
@@ -394,7 +394,7 @@ static Address emitVoidPtrVAArg(CodeGenFunction &CGF, Address VAListAddr,
                                         AllowHigherAlign);
 
   if (IsIndirect) {
-    Addr = Address(CGF.Builder.CreateLoad(Addr), ValueInfo.second);
+    Addr = Address(CGF.Builder.CreateLoad(Addr), ValueInfo.Align);
   }
 
   return Addr;
@@ -690,7 +690,7 @@ Address EmitVAArgInstr(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
         "Unexpected IndirectRealign seen in arginfo in generic VAArg emitter!");
 
     auto TyInfo = CGF.getContext().getTypeInfoInChars(Ty);
-    CharUnits TyAlignForABI = TyInfo.second;
+    CharUnits TyAlignForABI = TyInfo.Align;
 
     llvm::Type *BaseTy =
         CGF.CGM.getPointerInDefaultAS(CGF.ConvertTypeForMem(Ty));
@@ -2193,8 +2193,8 @@ Address X86_32ABIInfo::EmitVAArg(CodeGenFunction &CGF,
   //
   // Just messing with TypeInfo like this works because we never pass
   // anything indirectly.
-  TypeInfo.second = CharUnits::fromQuantity(
-                getTypeStackAlignInBytes(Ty, TypeInfo.second.getQuantity()));
+  TypeInfo.Align = CharUnits::fromQuantity(
+                getTypeStackAlignInBytes(Ty, TypeInfo.Align.getQuantity()));
 
   return emitVoidPtrVAArg(CGF, VAListAddr, Ty, /*Indirect*/ false,
                           TypeInfo, CharUnits::fromQuantity(4),
@@ -3192,6 +3192,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
 
     // Classify the fields one at a time, merging the results.
     unsigned idx = 0;
+    bool IsUnion = RT->isUnionType();
     for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
            i != e; ++i, ++idx) {
       uint64_t Offset = OffsetBase + Layout.getFieldOffset(idx);
@@ -3202,14 +3203,17 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
         continue;
 
       // AMD64-ABI 3.2.3p2: Rule 1. If the size of an object is larger than
-      // four eightbytes, or it contains unaligned fields, it has class MEMORY.
+      // eight eightbytes, or it contains unaligned fields, it has class MEMORY.
       //
-      // The only case a 256-bit wide vector could be used is when the struct
-      // contains a single 256-bit element. Since Lo and Hi logic isn't extended
-      // to work for sizes wider than 128, early check and fallback to memory.
+      // The only case a 256-bit or a 512-bit wide vector could be used is when
+      // the struct contains a single 256-bit or 512-bit element. Early check
+      // and fallback to memory.
       //
-      if (Size > 128 && (Size != getContext().getTypeSize(i->getType()) ||
-                         Size > getNativeVectorSizeForAVXABI(AVXLevel))) {
+      // FIXME: Extended the Lo and Hi logic properly to work for size wider
+      // than 128.
+      if (Size > 128 &&
+          ((!IsUnion && Size != getContext().getTypeSize(i->getType())) ||
+           Size > getNativeVectorSizeForAVXABI(AVXLevel))) {
         Lo = Memory;
         postMerge(Size, Lo, Hi);
         return;
@@ -4194,10 +4198,9 @@ Address X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     RegAddr = CGF.Builder.CreateElementBitCast(RegAddr, LTy);
 
     // Copy to a temporary if necessary to ensure the appropriate alignment.
-    std::pair<CharUnits, CharUnits> SizeAlign =
-        getContext().getTypeInfoInChars(Ty);
-    uint64_t TySize = SizeAlign.first.getQuantity();
-    CharUnits TyAlign = SizeAlign.second;
+    auto TInfo = getContext().getTypeInfoInChars(Ty);
+    uint64_t TySize = TInfo.Width.getQuantity();
+    CharUnits TyAlign = TInfo.Align;
 
     // Copy into a temporary if the type is more aligned than the
     // register save area.
@@ -4700,7 +4703,7 @@ Address AIXABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     llvm::report_fatal_error("vector type is not supported on AIX yet");
 
   auto TypeInfo = getContext().getTypeInfoInChars(Ty);
-  TypeInfo.second = getParamTypeAlignment(Ty);
+  TypeInfo.Align = getParamTypeAlignment(Ty);
 
   CharUnits SlotSize = CharUnits::fromQuantity(PtrByteSize);
 
@@ -4819,7 +4822,7 @@ Address PPC32_SVR4_ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAList,
                                       QualType Ty) const {
   if (getTarget().getTriple().isOSDarwin()) {
     auto TI = getContext().getTypeInfoInChars(Ty);
-    TI.second = getParamTypeAlignment(Ty);
+    TI.Align = getParamTypeAlignment(Ty);
 
     CharUnits SlotSize = CharUnits::fromQuantity(4);
     return emitVoidPtrVAArg(CGF, VAList, Ty,
@@ -4929,7 +4932,7 @@ Address PPC32_SVR4_ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAList,
     CharUnits Size;
     if (!isIndirect) {
       auto TypeInfo = CGF.getContext().getTypeInfoInChars(Ty);
-      Size = TypeInfo.first.alignTo(OverflowAreaAlign);
+      Size = TypeInfo.Width.alignTo(OverflowAreaAlign);
     } else {
       Size = CGF.getPointerSize();
     }
@@ -5492,7 +5495,7 @@ PPC64_SVR4_ABIInfo::classifyReturnType(QualType RetTy) const {
 Address PPC64_SVR4_ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
                                       QualType Ty) const {
   auto TypeInfo = getContext().getTypeInfoInChars(Ty);
-  TypeInfo.second = getParamTypeAlignment(Ty);
+  TypeInfo.Align = getParamTypeAlignment(Ty);
 
   CharUnits SlotSize = CharUnits::fromQuantity(8);
 
@@ -5503,7 +5506,7 @@ Address PPC64_SVR4_ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
   // loads of the real and imaginary parts relative to the va_list pointer,
   // and store them to a temporary structure.
   if (const ComplexType *CTy = Ty->getAs<ComplexType>()) {
-    CharUnits EltSize = TypeInfo.first / 2;
+    CharUnits EltSize = TypeInfo.Width / 2;
     if (EltSize < SlotSize) {
       Address Addr = emitVoidPtrDirectVAArg(CGF, VAListAddr, CGF.Int8Ty,
                                             SlotSize * 2, SlotSize,
@@ -6135,13 +6138,13 @@ Address AArch64ABIInfo::EmitAAPCSVAArg(Address VAListAddr,
     llvm::Type *BaseTy = CGF.ConvertType(QualType(Base, 0));
     llvm::Type *HFATy = llvm::ArrayType::get(BaseTy, NumMembers);
     Address Tmp = CGF.CreateTempAlloca(HFATy,
-                                       std::max(TyAlign, BaseTyInfo.second));
+                                       std::max(TyAlign, BaseTyInfo.Align));
 
     // On big-endian platforms, the value will be right-aligned in its slot.
     int Offset = 0;
     if (CGF.CGM.getDataLayout().isBigEndian() &&
-        BaseTyInfo.first.getQuantity() < 16)
-      Offset = 16 - BaseTyInfo.first.getQuantity();
+        BaseTyInfo.Width.getQuantity() < 16)
+      Offset = 16 - BaseTyInfo.Width.getQuantity();
 
     for (unsigned i = 0; i < NumMembers; ++i) {
       CharUnits BaseOffset = CharUnits::fromQuantity(16 * i + Offset);
@@ -6265,7 +6268,7 @@ Address AArch64ABIInfo::EmitDarwinVAArg(Address VAListAddr, QualType Ty,
   // Arguments bigger than 16 bytes which aren't homogeneous
   // aggregates should be passed indirectly.
   bool IsIndirect = false;
-  if (TyInfo.first.getQuantity() > 16) {
+  if (TyInfo.Width.getQuantity() > 16) {
     const Type *Base = nullptr;
     uint64_t Members = 0;
     IsIndirect = !isHomogeneousAggregate(Ty, Base, Members);
@@ -7027,7 +7030,7 @@ Address ARMABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     TyAlignForABI = CharUnits::fromQuantity(4);
   }
 
-  std::pair<CharUnits, CharUnits> TyInfo = { TySize, TyAlignForABI };
+  TypeInfoChars TyInfo(TySize, TyAlignForABI, false);
   return emitVoidPtrVAArg(CGF, VAListAddr, Ty, IsIndirect, TyInfo,
                           SlotSize, /*AllowHigherAlign*/ true);
 }
@@ -7501,8 +7504,8 @@ Address SystemZABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
       ArgTy = AI.getCoerceToType();
     InFPRs = (!IsSoftFloatABI && (ArgTy->isFloatTy() || ArgTy->isDoubleTy()));
     IsVector = ArgTy->isVectorTy();
-    UnpaddedSize = TyInfo.first;
-    DirectAlign = TyInfo.second;
+    UnpaddedSize = TyInfo.Width;
+    DirectAlign = TyInfo.Align;
   }
   CharUnits PaddedSize = CharUnits::fromQuantity(8);
   if (IsVector && UnpaddedSize > PaddedSize)
@@ -7523,7 +7526,7 @@ Address SystemZABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
         CGF.Builder.CreateStructGEP(VAListAddr, 2, "overflow_arg_area_ptr");
     Address OverflowArgArea =
       Address(CGF.Builder.CreateLoad(OverflowArgAreaPtr, "overflow_arg_area"),
-              TyInfo.second);
+              TyInfo.Align);
     Address MemAddr =
       CGF.Builder.CreateElementBitCast(OverflowArgArea, DirectTy, "mem_addr");
 
@@ -7620,7 +7623,7 @@ Address SystemZABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
 
   if (IsIndirect)
     ResAddr = Address(CGF.Builder.CreateLoad(ResAddr, "indirect_arg"),
-                      TyInfo.second);
+                      TyInfo.Align);
 
   return ResAddr;
 }
@@ -8406,8 +8409,8 @@ Address MipsABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
   // The alignment of things in the argument area is never larger than
   // StackAlignInBytes for O32.
   if (IsO32)
-    TyInfo.second =
-      std::min(TyInfo.second, CharUnits::fromQuantity(StackAlignInBytes));
+    TyInfo.Align =
+      std::min(TyInfo.Align, CharUnits::fromQuantity(StackAlignInBytes));
 
   // MinABIStackAlignInBytes is the size of argument slots on the stack.
   CharUnits ArgSlotSize = CharUnits::fromQuantity(MinABIStackAlignInBytes);
@@ -9492,13 +9495,9 @@ void AMDGPUTargetCodeGenInfo::setTargetAttributes(
       assert(Max == 0 && "Max must be zero");
   } else if (IsOpenCLKernel || IsHIPKernel) {
     // By default, restrict the maximum size to a value specified by
-    // --gpu-max-threads-per-block=n or its default value for HIP.
-    const unsigned OpenCLDefaultMaxWorkGroupSize = 256;
-    const unsigned DefaultMaxWorkGroupSize =
-        IsOpenCLKernel ? OpenCLDefaultMaxWorkGroupSize
-                       : M.getLangOpts().GPUMaxThreadsPerBlock;
+    // --gpu-max-threads-per-block=n or its default value.
     std::string AttrVal =
-        std::string("1,") + llvm::utostr(DefaultMaxWorkGroupSize);
+        std::string("1,") + llvm::utostr(M.getLangOpts().GPUMaxThreadsPerBlock);
     F->addFnAttr("amdgpu-flat-work-group-size", AttrVal);
   }
 
@@ -9885,7 +9884,7 @@ Address SparcV9ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
 
   case ABIArgInfo::Extend: {
     Stride = SlotSize;
-    CharUnits Offset = SlotSize - TypeInfo.first;
+    CharUnits Offset = SlotSize - TypeInfo.Width;
     ArgAddr = Builder.CreateConstInBoundsByteGEP(Addr, Offset, "extend");
     break;
   }
@@ -9902,11 +9901,11 @@ Address SparcV9ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     Stride = SlotSize;
     ArgAddr = Builder.CreateElementBitCast(Addr, ArgPtrTy, "indirect");
     ArgAddr = Address(Builder.CreateLoad(ArgAddr, "indirect.arg"),
-                      TypeInfo.second);
+                      TypeInfo.Align);
     break;
 
   case ABIArgInfo::Ignore:
-    return Address(llvm::UndefValue::get(ArgPtrTy), TypeInfo.second);
+    return Address(llvm::UndefValue::get(ArgPtrTy), TypeInfo.Align);
   }
 
   // Update VAList.
@@ -11228,14 +11227,13 @@ Address RISCVABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     return Addr;
   }
 
-  std::pair<CharUnits, CharUnits> SizeAndAlign =
-      getContext().getTypeInfoInChars(Ty);
+  auto TInfo = getContext().getTypeInfoInChars(Ty);
 
   bool IsSingleCapRecord = false;
   CharUnits CapabilityWidth =
     CharUnits::fromQuantity(getTarget().getCHERICapabilityWidth() / 8);
   if (const auto *RT = Ty->getAs<RecordType>())
-    IsSingleCapRecord = SizeAndAlign.first == CapabilityWidth &&
+    IsSingleCapRecord = SizeAndAlign.Width == CapabilityWidth &&
                         getContext().containsCapabilities(RT->getDecl());
 
   bool IsCapability = Ty->isCHERICapabilityType(getContext()) ||
@@ -11243,11 +11241,11 @@ Address RISCVABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
 
   // Arguments bigger than 2*Xlen bytes are passed indirectly, as are
   // capabilities for the hybrid ABI.
-  bool IsIndirect = SizeAndAlign.first > 2 * SlotSize ||
+  bool IsIndirect = SizeAndAlign.Width > 2 * SlotSize ||
     (!getContext().getTargetInfo().areAllPointersCapabilities() &&
      IsCapability);
 
-  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, IsIndirect, SizeAndAlign,
+  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, IsIndirect, TInfo,
                           SlotSize, /*AllowHigherAlign=*/true);
 }
 

@@ -5505,16 +5505,14 @@ ScalarEvolution::getRangeRef(const SCEV *S,
         auto RangeFromAffine = getRangeForAffineAR(
             AddRec->getStart(), AddRec->getStepRecurrence(*this), MaxBECount,
             BitWidth);
-        if (!RangeFromAffine.isFullSet())
-          ConservativeResult =
-              ConservativeResult.intersectWith(RangeFromAffine, RangeType);
+        ConservativeResult =
+            ConservativeResult.intersectWith(RangeFromAffine, RangeType);
 
         auto RangeFromFactoring = getRangeViaFactoring(
             AddRec->getStart(), AddRec->getStepRecurrence(*this), MaxBECount,
             BitWidth);
-        if (!RangeFromFactoring.isFullSet())
-          ConservativeResult =
-              ConservativeResult.intersectWith(RangeFromFactoring, RangeType);
+        ConservativeResult =
+            ConservativeResult.intersectWith(RangeFromFactoring, RangeType);
       }
     }
 
@@ -9697,7 +9695,17 @@ bool ScalarEvolution::isImpliedCond(ICmpInst::Predicate Pred, const SCEV *LHS,
       FoundRHS = getZeroExtendExpr(FoundRHS, LHS->getType());
     }
   }
+  return isImpliedCondBalancedTypes(Pred, LHS, RHS, FoundPred, FoundLHS,
+                                    FoundRHS, Context);
+}
 
+bool ScalarEvolution::isImpliedCondBalancedTypes(
+    ICmpInst::Predicate Pred, const SCEV *LHS, const SCEV *RHS,
+    ICmpInst::Predicate FoundPred, const SCEV *FoundLHS, const SCEV *FoundRHS,
+    const Instruction *Context) {
+  assert(getTypeSizeInBits(LHS->getType()) ==
+             getTypeSizeInBits(FoundLHS->getType()) &&
+         "Types should be balanced!");
   // Canonicalize the query to match the way instcombine will have
   // canonicalized the comparison.
   if (SimplifyICmpOperands(Pred, LHS, RHS))
@@ -12710,6 +12718,27 @@ const SCEV* ScalarEvolution::computeMaxBackedgeTakenCount(const Loop *L) {
   return getUMinFromMismatchedTypes(ExitCounts);
 }
 
+/// This rewriter is similar to SCEVParameterRewriter (it replaces SCEVUnknown
+/// components following the Map (Value -> SCEV)), but skips AddRecExpr because
+/// we cannot guarantee that the replacement is loop invariant in the loop of
+/// the AddRec.
+class SCEVLoopGuardRewriter : public SCEVRewriteVisitor<SCEVLoopGuardRewriter> {
+  ValueToSCEVMapTy &Map;
+
+public:
+  SCEVLoopGuardRewriter(ScalarEvolution &SE, ValueToSCEVMapTy &M)
+      : SCEVRewriteVisitor(SE), Map(M) {}
+
+  const SCEV *visitAddRecExpr(const SCEVAddRecExpr *Expr) { return Expr; }
+
+  const SCEV *visitUnknown(const SCEVUnknown *Expr) {
+    auto I = Map.find(Expr->getValue());
+    if (I == Map.end())
+      return Expr;
+    return I->second;
+  }
+};
+
 const SCEV *ScalarEvolution::applyLoopGuards(const SCEV *Expr, const Loop *L) {
   auto CollectCondition = [&](ICmpInst::Predicate Predicate, const SCEV *LHS,
                               const SCEV *RHS, ValueToSCEVMapTy &RewriteMap) {
@@ -12735,6 +12764,16 @@ const SCEV *ScalarEvolution::applyLoopGuards(const SCEV *Expr, const Loop *L) {
 
         RewriteMap[LHSUnknown->getValue()] =
             getUMinExpr(Base, getMinusSCEV(RHS, getOne(RHS->getType())));
+      }
+      break;
+    }
+    case CmpInst::ICMP_ULE: {
+      if (!containsAddRecurrence(RHS)) {
+        const SCEV *Base = LHS;
+        auto I = RewriteMap.find(LHSUnknown->getValue());
+        if (I != RewriteMap.end())
+          Base = I->second;
+        RewriteMap[LHSUnknown->getValue()] = getUMinExpr(Base, RHS);
       }
       break;
     }
@@ -12792,5 +12831,6 @@ const SCEV *ScalarEvolution::applyLoopGuards(const SCEV *Expr, const Loop *L) {
 
   if (RewriteMap.empty())
     return Expr;
-  return SCEVParameterRewriter::rewrite(Expr, *this, RewriteMap);
+  SCEVLoopGuardRewriter Rewriter(*this, RewriteMap);
+  return Rewriter.visit(Expr);
 }

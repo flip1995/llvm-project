@@ -95,7 +95,7 @@ bool TargetLowering::parametersInCSRMatch(const MachineRegisterInfo &MRI,
     SDValue Value = OutVals[I];
     if (Value->getOpcode() != ISD::CopyFromReg)
       return false;
-    MCRegister ArgReg = cast<RegisterSDNode>(Value->getOperand(1))->getReg();
+    Register ArgReg = cast<RegisterSDNode>(Value->getOperand(1))->getReg();
     if (MRI.getLiveInPhysReg(ArgReg) != Reg)
       return false;
   }
@@ -3472,7 +3472,7 @@ SDValue TargetLowering::SimplifySetCC(EVT VT, SDValue N0, SDValue N1,
 
     if (CTPOP.hasOneUse() && CTPOP.getOpcode() == ISD::CTPOP &&
         (N0 == CTPOP ||
-         N0.getValueSizeInBits() > Log2_32_Ceil(CTPOP.getValueSizeInBits()))) {
+         N0.getValueSizeInBits() > Log2_32(CTPOP.getValueSizeInBits()))) {
       EVT CTVT = CTPOP.getValueType();
       SDValue CTOp = CTPOP.getOperand(0);
 

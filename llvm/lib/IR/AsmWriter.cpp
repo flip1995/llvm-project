@@ -1994,6 +1994,11 @@ static void writeDICompositeType(raw_ostream &Out, const DICompositeType *N,
   Printer.printMetadata("dataLocation", N->getRawDataLocation());
   Printer.printMetadata("associated", N->getRawAssociated());
   Printer.printMetadata("allocated", N->getRawAllocated());
+  if (auto *RankConst = N->getRankConst())
+    Printer.printInt("rank", RankConst->getSExtValue(),
+                     /* ShouldSkipZero */ false);
+  else
+    Printer.printMetadata("rank", N->getRawRank(), /*ShouldSkipNull */ true);
   Out << ")";
 }
 
@@ -4318,12 +4323,15 @@ void AssemblyWriter::writeAttribute(const Attribute &Attr, bool InAttrGroup) {
   }
 
   assert((Attr.hasAttribute(Attribute::ByVal) ||
+          Attr.hasAttribute(Attribute::StructRet) ||
           Attr.hasAttribute(Attribute::ByRef) ||
           Attr.hasAttribute(Attribute::Preallocated)) &&
          "unexpected type attr");
 
   if (Attr.hasAttribute(Attribute::ByVal)) {
     Out << "byval";
+  } else if (Attr.hasAttribute(Attribute::StructRet)) {
+    Out << "sret";
   } else if (Attr.hasAttribute(Attribute::ByRef)) {
     Out << "byref";
   } else {

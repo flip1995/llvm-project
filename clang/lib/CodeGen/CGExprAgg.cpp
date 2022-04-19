@@ -907,6 +907,8 @@ void AggExprEmitter::VisitCastExpr(CastExpr *E) {
   case CK_CHERICapabilityToAddress:
 
   case CK_IntToOCLSampler:
+  case CK_FloatingToFixedPoint:
+  case CK_FixedPointToFloating:
   case CK_FixedPointCast:
   case CK_FixedPointToBoolean:
   case CK_FixedPointToIntegral:
@@ -1761,7 +1763,9 @@ void AggExprEmitter::VisitDesignatedInitUpdateExpr(DesignatedInitUpdateExpr *E) 
 /// non-zero bytes that will be stored when outputting the initializer for the
 /// specified initializer expression.
 static CharUnits GetNumNonZeroBytesInInit(const Expr *E, CodeGenFunction &CGF) {
-  E = E->IgnoreParens();
+  if (auto *MTE = dyn_cast<MaterializeTemporaryExpr>(E))
+    E = MTE->getSubExpr();
+  E = E->IgnoreParenNoopCasts(CGF.getContext());
 
   // 0 and 0.0 won't require any non-zero stores!
   if (isSimpleZero(E, CGF)) return CharUnits::Zero();
@@ -1810,7 +1814,7 @@ static CharUnits GetNumNonZeroBytesInInit(const Expr *E, CodeGenFunction &CGF) {
     }
   }
 
-
+  // FIXME: This overestimates the number of non-zero bytes for bit-fields.
   CharUnits NumNonZeroBytes = CharUnits::Zero();
   for (unsigned i = 0, e = ILE->getNumInits(); i != e; ++i)
     NumNonZeroBytes += GetNumNonZeroBytesInInit(ILE->getInit(i), CGF);
@@ -1978,28 +1982,28 @@ void CodeGenFunction::EmitAggregateCopy(LValue Dest, LValue Src, QualType Ty,
   // Get data size info for this aggregate. Don't copy the tail padding if this
   // might be a potentially-overlapping subobject, since the tail padding might
   // be occupied by a different object. Otherwise, copying it is fine.
-  std::pair<CharUnits, CharUnits> TypeInfo;
+  TypeInfoChars TypeInfo;
   if (MayOverlap)
     TypeInfo = getContext().getTypeInfoDataSizeInChars(Ty);
   else
     TypeInfo = getContext().getTypeInfoInChars(Ty);
 
   llvm::Value *SizeVal = nullptr;
-  if (TypeInfo.first.isZero()) {
+  if (TypeInfo.Width.isZero()) {
     // But note that getTypeInfo returns 0 for a VLA.
     if (auto *VAT = dyn_cast_or_null<VariableArrayType>(
             getContext().getAsArrayType(Ty))) {
       QualType BaseEltTy;
       SizeVal = emitArrayLength(VAT, BaseEltTy, DestPtr);
       TypeInfo = getContext().getTypeInfoInChars(BaseEltTy);
-      assert(!TypeInfo.first.isZero());
+      assert(!TypeInfo.Width.isZero());
       SizeVal = Builder.CreateNUWMul(
           SizeVal,
-          llvm::ConstantInt::get(SizeTy, TypeInfo.first.getQuantity()));
+          llvm::ConstantInt::get(SizeTy, TypeInfo.Width.getQuantity()));
     }
   }
   if (!SizeVal) {
-    SizeVal = llvm::ConstantInt::get(SizeTy, TypeInfo.first.getQuantity());
+    SizeVal = llvm::ConstantInt::get(SizeTy, TypeInfo.Width.getQuantity());
   }
 
   // FIXME: If we have a volatile struct, the optimizer can remove what might

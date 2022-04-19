@@ -1057,8 +1057,8 @@ Currently, only the following parameter attributes are defined:
     ``byval`` parameters). This is not a valid attribute for return
     values.
 
-    The byval attribute also supports an optional type argument, which must be
-    the same as the pointee type of the argument.
+    The byval attribute also supports an optional type argument, which
+    must be the same as the pointee type of the argument.
 
     The byval attribute also supports specifying an alignment with the
     align attribute. It indicates the alignment of the stack slot to
@@ -1144,13 +1144,17 @@ Currently, only the following parameter attributes are defined:
     See :doc:`InAlloca` for more information on how to use this
     attribute.
 
-``sret``
+``sret`` or ``sret(<ty>)``
     This indicates that the pointer parameter specifies the address of a
     structure that is the return value of the function in the source
     program. This pointer must be guaranteed by the caller to be valid:
     loads and stores to the structure may be assumed by the callee not
     to trap and to be properly aligned. This is not a valid attribute
     for return values.
+
+    The sret attribute also supports an optional type argument, which
+    must be the same as the pointee type of the argument. In the
+    future this will be required.
 
 .. _attr_align:
 
@@ -4906,7 +4910,9 @@ arrays which can be attached to actual arrays, this attachment between pointer
 and pointee is called association.  The optional ``associated`` is a
 DIExpression that describes whether the pointer array is currently associated.
 The optional ``allocated`` is a DIExpression that describes whether the
-allocatable array is currently allocated.
+allocatable array is currently allocated.  The optional ``rank`` is a
+DIExpression that describes the rank (number of dimensions) of fortran assumed
+rank array (rank is known at runtime).
 
 For ``DW_TAG_enumeration_type``, the ``elements:`` should be :ref:`enumerator
 descriptors <DIEnumerator>`, each representing the definition of an enumeration
@@ -5043,13 +5049,13 @@ a :ref:`compile unit <DICompileUnit>`.
 DISubprogram
 """"""""""""
 
-``DISubprogram`` nodes represent functions from the source language. A
-distinct ``DISubprogram`` may be attached to a function definition using
-``!dbg`` metadata. A unique ``DISubprogram`` may be attached to a function
-declaration used for call site debug info. The ``variables:`` field points at
-:ref:`variables <DILocalVariable>` that must be retained, even if their IR
-counterparts are optimized out of the IR. The ``type:`` field must point at an
-:ref:`DISubroutineType`.
+``DISubprogram`` nodes represent functions from the source language. A distinct
+``DISubprogram`` may be attached to a function definition using ``!dbg``
+metadata. A unique ``DISubprogram`` may be attached to a function declaration
+used for call site debug info. The ``retainedNodes:`` field is a list of
+:ref:`variables <DILocalVariable>` and :ref:`labels <DILabel>` that must be
+retained, even if their IR counterparts are optimized out of the IR. The
+``type:`` field must point at an :ref:`DISubroutineType`.
 
 .. _DISubprogramDeclaration:
 
@@ -5072,7 +5078,8 @@ and ``scope:``.
                                 virtuality: DW_VIRTUALITY_pure_virtual,
                                 virtualIndex: 10, flags: DIFlagPrototyped,
                                 isOptimized: true, unit: !5, templateParams: !6,
-                                declaration: !7, variables: !8, thrownTypes: !9)
+                                declaration: !7, retainedNodes: !8,
+                                thrownTypes: !9)
 
 .. _DILexicalBlock:
 
@@ -5296,6 +5303,22 @@ appear in the included source file.
 
    !2 = !DIMacroFile(macinfo: DW_MACINFO_start_file, line: 7, file: !2,
                      nodes: !3)
+
+.. _DILabel:
+
+DILabel
+"""""""
+
+``DILabel`` nodes represent labels within a :ref:`DISubprogram`. All fields of
+a ``DILabel`` are mandatory. The ``scope:`` field must be one of either a
+:ref:`DILexicalBlockFile`, a :ref:`DILexicalBlock`, or a :ref:`DISubprogram`.
+The ``name:`` field is the label identifier. The ``file:`` field is the
+:ref:`DIFile` the label is present in. The ``line:`` field is the source line
+within the file where the label is declared.
+
+.. code-block:: text
+
+  !2 = !DILabel(scope: !0, name: "foo", file: !1, line: 7)
 
 '``tbaa``' Metadata
 ^^^^^^^^^^^^^^^^^^^
