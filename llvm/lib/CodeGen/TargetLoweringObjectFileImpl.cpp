@@ -864,28 +864,28 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
     const Function &F, const MachineBasicBlock &MBB,
     const TargetMachine &TM) const {
   assert(MBB.isBeginSection() && "Basic block does not start a section!");
-  SmallString<128> Name;
-  Name =
-      (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))->getName();
   unsigned UniqueID = MCContext::GenericSectionID;
 
-  switch (MBB.getSectionID().Type) {
-    // Append suffixes to represent special cold and exception sections.
-  case MBBSectionID::SectionType::Exception:
-    Name += ".eh";
-    break;
-  case MBBSectionID::SectionType::Cold:
-    Name += ".unlikely";
-    break;
-  // For regular sections, either use a unique name, or a unique ID for the
-  // section.
-  default:
+  // For cold sections use the .text.unlikely prefix along with the parent
+  // function name. All cold blocks for the same function go to the same
+  // section. Similarly all exception blocks are grouped by symbol name
+  // under the .text.eh prefix. For regular sections, we either use a unique
+  // name, or a unique ID for the section.
+  SmallString<128> Name;
+  if (MBB.getSectionID() == MBBSectionID::ColdSectionID) {
+    Name += ".text.unlikely.";
+    Name += MBB.getParent()->getName();
+  } else if (MBB.getSectionID() == MBBSectionID::ExceptionSectionID) {
+    Name += ".text.eh.";
+    Name += MBB.getParent()->getName();
+  } else {
+    Name += MBB.getParent()->getSection()->getName();
     if (TM.getUniqueBBSectionNames()) {
       Name += ".";
       Name += MBB.getSymbol()->getName();
-    } else
+    } else {
       UniqueID = NextUniqueID++;
-    break;
+    }
   }
 
   unsigned Flags = ELF::SHF_ALLOC | ELF::SHF_EXECINSTR;
@@ -1971,6 +1971,40 @@ MCSection *TargetLoweringObjectFileWasm::getStaticDtorSection(
 //===----------------------------------------------------------------------===//
 //                                  XCOFF
 //===----------------------------------------------------------------------===//
+MCSymbol *
+TargetLoweringObjectFileXCOFF::getTargetSymbol(const GlobalValue *GV,
+                                               const TargetMachine &TM) const {
+  if (TM.getDataSections())
+    report_fatal_error("XCOFF unique data sections not yet implemented");
+
+  // We always use a qualname symbol for a GV that represents
+  // a declaration, a function descriptor, or a common symbol.
+  // It is inherently ambiguous when the GO represents the address of a
+  // function, as the GO could either represent a function descriptor or a
+  // function entry point. We choose to always return a function descriptor
+  // here.
+  if (const GlobalObject *GO = dyn_cast<GlobalObject>(GV)) {
+    if (GO->isDeclaration())
+      return cast<MCSectionXCOFF>(getSectionForExternalReference(GO, TM))
+          ->getQualNameSymbol();
+
+    SectionKind GOKind = getKindForGlobal(GO, TM);
+    if (GOKind.isText())
+      return cast<MCSectionXCOFF>(
+                 getSectionForFunctionDescriptor(cast<Function>(GO), TM))
+          ->getQualNameSymbol();
+    if (GOKind.isCommon() || GOKind.isBSSLocal())
+      return cast<MCSectionXCOFF>(SectionForGlobal(GO, GOKind, TM))
+          ->getQualNameSymbol();
+  }
+
+  // For all other cases, fall back to getSymbol to return the unqualified name.
+  // This could change for a GV that is a GlobalVariable when we decide to
+  // support -fdata-sections since we could avoid having label symbols if the
+  // linkage name is applied to the csect symbol.
+  return nullptr;
+}
+
 MCSection *TargetLoweringObjectFileXCOFF::getExplicitSectionGlobal(
     const GlobalObject *GO, SectionKind Kind, const TargetMachine &TM) const {
   report_fatal_error("XCOFF explicit sections not yet implemented.");
