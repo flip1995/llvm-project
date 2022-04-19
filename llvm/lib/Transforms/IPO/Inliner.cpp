@@ -711,7 +711,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
   //
   // Note that this particular order of processing is actually critical to
   // avoid very bad behaviors. Consider *highly connected* call graphs where
-  // each function contains a small amonut of code and a couple of calls to
+  // each function contains a small amount of code and a couple of calls to
   // other functions. Because the LLVM inliner is fundamentally a bottom-up
   // inliner, it can handle gracefully the fact that these all appear to be
   // reasonable inlining candidates as it will flatten things until they become
@@ -906,7 +906,7 @@ PreservedAnalyses InlinerPass::run(LazyCallGraph::SCC &InitialC,
           // Note that after this point, it is an error to do anything other
           // than use the callee's address or delete it.
           Callee.dropAllReferences();
-          assert(find(DeadFunctions, &Callee) == DeadFunctions.end() &&
+          assert(!is_contained(DeadFunctions, &Callee) &&
                  "Cannot put cause a function to become dead twice!");
           DeadFunctions.push_back(&Callee);
           CalleeWasDeleted = true;

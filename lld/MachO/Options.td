@@ -246,7 +246,6 @@ def seg1addr : Separate<["-"], "seg1addr">,
      Group<grp_opts>;
 def no_implicit_dylibs : Flag<["-"], "no_implicit_dylibs">,
      HelpText<"Do not optimize public dylib transitive symbol references">,
-     Flags<[HelpHidden]>,
      Group<grp_opts>;
 def exported_symbols_order : Separate<["-"], "exported_symbols_order">,
      MetaVarName<"<file>">,
@@ -291,7 +290,6 @@ def mark_dead_strippable_dylib : Flag<["-"], "mark_dead_strippable_dylib">,
 def compatibility_version : Separate<["-"], "compatibility_version">,
      MetaVarName<"<version>">,
      HelpText<"Compatibility <version> of this library">,
-     Flags<[HelpHidden]>,
      Group<grp_dylib>;
 def dylib_compatibility_version : Separate<["-"], "dylib_compatibility_version">,
      MetaVarName<"<version>">,
@@ -302,7 +300,6 @@ def dylib_compatibility_version : Separate<["-"], "dylib_compatibility_version">
 def current_version : Separate<["-"], "current_version">,
      MetaVarName<"<version>">,
      HelpText<"Current <version> of this library">,
-     Flags<[HelpHidden]>,
      Group<grp_dylib>;
 def dylib_current_version : Separate<["-"], "dylib_current_version">,
      MetaVarName<"<version>">,
@@ -426,8 +423,7 @@ def commons : Separate<["-"], "commons">,
 def grp_introspect : OptionGroup<"introspect">, HelpText<"INTROSPECTING THE LINKER">;
 
 def why_load : Flag<["-"], "why_load">,
-     HelpText<"Log the symbol that compels loading of each object file from a static library">,
-     Flags<[HelpHidden]>,
+     HelpText<"Log why each object file is loaded from a static library">,
      Group<grp_introspect>;
 def whyload : Flag<["-"], "whyload">,
      Alias<why_load>,
@@ -445,7 +441,6 @@ def print_statistics : Flag<["-"], "print_statistics">,
      Group<grp_introspect>;
 def t : Flag<["-"], "t">,
      HelpText<"Log every file the linker loads: object, archive, and dylib">,
-     Flags<[HelpHidden]>,
      Group<grp_introspect>;
 def whatsloaded : Flag<["-"], "whatsloaded">,
      HelpText<"Logs only the object files the linker loads">,
@@ -842,7 +837,6 @@ def no_objc_category_merging : Flag<["-"], "no_objc_category_merging">,
 def object_path_lto : Separate<["-"], "object_path_lto">,
      MetaVarName<"<path>">,
      HelpText<"Retain any temporary mach-o file in <path> that would otherwise be deleted during LTO">,
-     Flags<[HelpHidden]>,
      Group<grp_rare>;
 def lto_library : Separate<["-"], "lto_library">,
      MetaVarName<"<path>">,
@@ -879,7 +873,9 @@ def not_for_dyld_shared_cache : Flag<["-"], "not_for_dyld_shared_cache">,
      Group<grp_rare>;
 def mllvm : Separate<["-"], "mllvm">,
      HelpText<"Options to pass to LLVM">,
-     Flags<[HelpHidden]>,
+     Group<grp_rare>;
+def mcpu : Separate<["-"], "mcpu">,
+     HelpText<"Processor family target for LTO code generation">,
      Group<grp_rare>;
 
 def grp_deprecated : OptionGroup<"deprecated">, HelpText<"DEPRECATED">;
@@ -1211,10 +1207,6 @@ def iosmac_version_min : Flag<["-"], "iosmac_version_min">,
 def uikitformac_version_min : Flag<["-"], "uikitformac_version_min">,
      Alias<maccatalyst_version_min>,
      HelpText<"Alias for -maccatalyst_version_min">,
-     Flags<[HelpHidden]>,
-     Group<grp_undocumented>;
-def mcpu : Flag<["-"], "mcpu">,
-     HelpText<"This option is undocumented in ld64">,
      Flags<[HelpHidden]>,
      Group<grp_undocumented>;
 def no_compact_unwind : Flag<["-"], "no_compact_unwind">,

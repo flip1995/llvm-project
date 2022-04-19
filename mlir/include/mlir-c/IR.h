@@ -70,7 +70,7 @@ DEFINE_C_API_STRUCT(MlirValue, const void);
  * a string.
  */
 struct MlirNamedAttribute {
-  MlirStringRef name;
+  MlirIdentifier name;
   MlirAttribute attribute;
 };
 typedef struct MlirNamedAttribute MlirNamedAttribute;
@@ -386,6 +386,9 @@ MLIR_CAPI_EXPORTED void mlirOperationPrintWithFlags(MlirOperation op,
 /// Prints an operation to stderr.
 MLIR_CAPI_EXPORTED void mlirOperationDump(MlirOperation op);
 
+/// Verify the operation and return true if it passes, false if it fails.
+MLIR_CAPI_EXPORTED bool mlirOperationVerify(MlirOperation op);
+
 //===----------------------------------------------------------------------===//
 // Region API.
 //===----------------------------------------------------------------------===//
@@ -597,7 +600,7 @@ MLIR_CAPI_EXPORTED void mlirAttributePrint(MlirAttribute attr,
 MLIR_CAPI_EXPORTED void mlirAttributeDump(MlirAttribute attr);
 
 /// Associates an attribute with the name. Takes ownership of neither.
-MLIR_CAPI_EXPORTED MlirNamedAttribute mlirNamedAttributeGet(MlirStringRef name,
+MLIR_CAPI_EXPORTED MlirNamedAttribute mlirNamedAttributeGet(MlirIdentifier name,
                                                             MlirAttribute attr);
 
 //===----------------------------------------------------------------------===//

@@ -178,6 +178,11 @@ void TestDialect::initialize() {
   allowUnknownOperations();
 }
 
+Operation *TestDialect::materializeConstant(OpBuilder &builder, Attribute value,
+                                            Type type, Location loc) {
+  return builder.create<TestOpConstant>(loc, type, value);
+}
+
 static Type parseTestType(MLIRContext *ctxt, DialectAsmParser &parser,
                           llvm::SetVector<Type> &stack) {
   StringRef typeTag;
@@ -559,8 +564,28 @@ static void print(OpAsmPrinter &p, AffineScopeOp op) {
 // Test parser.
 //===----------------------------------------------------------------------===//
 
-static ParseResult parseWrappedKeywordOp(OpAsmParser &parser,
-                                         OperationState &result) {
+static ParseResult parseParseIntegerLiteralOp(OpAsmParser &parser,
+                                              OperationState &result) {
+  if (parser.parseOptionalColon())
+    return success();
+  uint64_t numResults;
+  if (parser.parseInteger(numResults))
+    return failure();
+
+  IndexType type = parser.getBuilder().getIndexType();
+  for (unsigned i = 0; i < numResults; ++i)
+    result.addTypes(type);
+  return success();
+}
+
+static void print(OpAsmPrinter &p, ParseIntegerLiteralOp op) {
+  p << ParseIntegerLiteralOp::getOperationName();
+  if (unsigned numResults = op->getNumResults())
+    p << " : " << numResults;
+}
+
+static ParseResult parseParseWrappedKeywordOp(OpAsmParser &parser,
+                                              OperationState &result) {
   StringRef keyword;
   if (parser.parseKeyword(&keyword))
     return failure();
@@ -568,8 +593,8 @@ static ParseResult parseWrappedKeywordOp(OpAsmParser &parser,
   return success();
 }
 
-static void print(OpAsmPrinter &p, WrappedKeywordOp op) {
-  p << WrappedKeywordOp::getOperationName() << " " << op.keyword();
+static void print(OpAsmPrinter &p, ParseWrappedKeywordOp op) {
+  p << ParseWrappedKeywordOp::getOperationName() << " " << op.keyword();
 }
 
 //===----------------------------------------------------------------------===//
@@ -669,7 +694,7 @@ LogicalResult TestOpWithVariadicResultsAndFolder::fold(
 OpFoldResult TestOpInPlaceFold::fold(ArrayRef<Attribute> operands) {
   assert(operands.size() == 1);
   if (operands.front()) {
-    setAttr("attr", operands.front());
+    (*this)->setAttr("attr", operands.front());
     return getResult();
   }
   return {};
@@ -726,7 +751,7 @@ struct TestResource : public SideEffects::Resource::Base<TestResource> {
 void SideEffectOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   // Check for an effects attribute on the op instance.
-  ArrayAttr effectsAttr = getAttrOfType<ArrayAttr>("effects");
+  ArrayAttr effectsAttr = (*this)->getAttrOfType<ArrayAttr>("effects");
   if (!effectsAttr)
     return;
 
@@ -761,7 +786,7 @@ void SideEffectOp::getEffects(
 
 void SideEffectOp::getEffects(
     SmallVectorImpl<TestEffects::EffectInstance> &effects) {
-  auto effectsAttr = getAttrOfType<AffineMapAttr>("effect_parameter");
+  auto effectsAttr = (*this)->getAttrOfType<AffineMapAttr>("effect_parameter");
   if (!effectsAttr)
     return;
 

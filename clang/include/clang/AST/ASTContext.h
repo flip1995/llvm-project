@@ -336,7 +336,7 @@ class ASTContext : public RefCountedBase<ASTContext> {
 
   /// The typedef for the __uintcap_t type.
   mutable TypedefDecl *UIntCapDecl = nullptr;
-  
+
   /// __builtin_va_list type.
   mutable TypedefDecl *BuiltinVaListDecl = nullptr;
 
@@ -389,7 +389,7 @@ class ASTContext : public RefCountedBase<ASTContext> {
 
   /// The typedef declaration for the Objective-C "instancetype" type.
   TypedefDecl *ObjCInstanceTypeDecl = nullptr;
-  
+
   mutable RecordDecl *CHERIClassDecl = nullptr;
 
   /// The type for the C FILE type.
@@ -1094,7 +1094,7 @@ public:
 
   /// \brief Retrieve the declaration for the unsigned capability-as-integer type.
   TypedefDecl *getUIntCapDecl() const;
-  
+
   //===--------------------------------------------------------------------===//
   //                           Type Constructors
   //===--------------------------------------------------------------------===//
@@ -1472,7 +1472,7 @@ public:
   /// Return the unique reference to the type for the specified
   /// typedef-name decl.
   QualType getTypedefType(const TypedefNameDecl *Decl,
-                          QualType Canon = QualType(),
+                          QualType Underlying = QualType(),
                           bool IsCHERICap = false) const;
 
   QualType getRecordType(const RecordDecl *Decl) const;

@@ -1,5 +1,8 @@
 // Check target CPUs are correctly passed.
 
+// https://PR46644
+// XFAIL: arm64-apple
+
 // RUN: %clang -target aarch64 -### -c %s 2>&1 | FileCheck -check-prefix=GENERIC %s
 // RUN: %clang -target aarch64 -mcpu=generic -### -c %s 2>&1 | FileCheck -check-prefix=GENERIC %s
 // RUN: %clang -target aarch64 -mlittle-endian -### -c %s 2>&1 | FileCheck -check-prefix=GENERIC %s
@@ -25,6 +28,9 @@
 // RUN: %clang -target arm64-apple-ios12.0 -### -c %s 2>&1 | FileCheck -check-prefix=ARM64-DARWIN %s
 // ARM64-DARWIN: "-cc1"{{.*}} "-triple" "arm64{{.*}}" "-target-cpu" "apple-a7"
 // ARM64-DARWIN-SAME: "-target-feature" "+aes"
+
+// RUN: %clang -target arm64-apple-darwin -arch arm64e -### -c %s 2>&1 | FileCheck -check-prefix=ARM64E-DARWIN %s
+// ARM64E-DARWIN: "-cc1"{{.*}} "-triple" "arm64e{{.*}}" "-target-cpu" "apple-a12"
 
 // RUN: %clang -target arm64-apple-darwin -arch arm64_32 -### -c %s 2>&1 | FileCheck -check-prefix=ARM64_32-DARWIN %s
 // ARM64_32-DARWIN: "-cc1"{{.*}} "-triple" "aarch64_32{{.*}}" "-target-cpu" "apple-s4"

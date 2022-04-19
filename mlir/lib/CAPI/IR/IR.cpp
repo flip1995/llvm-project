@@ -17,6 +17,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Types.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser.h"
 
 using namespace mlir;
@@ -307,7 +308,7 @@ intptr_t mlirOperationGetNumAttributes(MlirOperation op) {
 
 MlirNamedAttribute mlirOperationGetAttribute(MlirOperation op, intptr_t pos) {
   NamedAttribute attr = unwrap(op)->getAttrs()[pos];
-  return MlirNamedAttribute{wrap(attr.first.strref()), wrap(attr.second)};
+  return MlirNamedAttribute{wrap(attr.first), wrap(attr.second)};
 }
 
 MlirAttribute mlirOperationGetAttributeByName(MlirOperation op,
@@ -338,6 +339,10 @@ void mlirOperationPrintWithFlags(MlirOperation op, MlirOpPrintingFlags flags,
 }
 
 void mlirOperationDump(MlirOperation op) { return unwrap(op)->dump(); }
+
+bool mlirOperationVerify(MlirOperation op) {
+  return succeeded(verify(unwrap(op)));
+}
 
 //===----------------------------------------------------------------------===//
 // Region API.
@@ -581,7 +586,7 @@ void mlirAttributePrint(MlirAttribute attr, MlirStringCallback callback,
 
 void mlirAttributeDump(MlirAttribute attr) { unwrap(attr).dump(); }
 
-MlirNamedAttribute mlirNamedAttributeGet(MlirStringRef name,
+MlirNamedAttribute mlirNamedAttributeGet(MlirIdentifier name,
                                          MlirAttribute attr) {
   return MlirNamedAttribute{name, attr};
 }

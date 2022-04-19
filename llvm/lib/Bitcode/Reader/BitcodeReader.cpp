@@ -1437,6 +1437,8 @@ static Attribute::AttrKind getAttrFromCode(uint64_t Code) {
     return Attribute::NoAlias;
   case bitc::ATTR_KIND_NO_BUILTIN:
     return Attribute::NoBuiltin;
+  case bitc::ATTR_KIND_NO_CALLBACK:
+    return Attribute::NoCallback;
   case bitc::ATTR_KIND_NO_CAPTURE:
     return Attribute::NoCapture;
   case bitc::ATTR_KIND_NO_DUPLICATE:
@@ -3963,7 +3965,8 @@ Error BitcodeReader::parseFunctionBody(Function *F) {
         if (!IA)
           return error("Invalid record");
       }
-      LastLoc = DebugLoc::get(Line, Col, Scope, IA, isImplicitCode);
+      LastLoc = DILocation::get(Scope->getContext(), Line, Col, Scope, IA,
+                                isImplicitCode);
       I->setDebugLoc(LastLoc);
       I = nullptr;
       continue;
