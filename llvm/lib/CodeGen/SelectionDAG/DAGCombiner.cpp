@@ -11054,6 +11054,36 @@ SDValue DAGCombiner::visitSIGN_EXTEND(SDNode *N) {
           return DAG.getSExtOrTrunc(VsetCC, DL, VT);
         }
       }
+
+      // Try to eliminate the sext of a setcc by zexting the compare operands.
+      // TODO: Handle signed compare by sexting the ops.
+      if (!ISD::isSignedIntSetCC(CC) && N0.hasOneUse() &&
+          TLI.isOperationLegalOrCustom(ISD::SETCC, VT) &&
+          !TLI.isOperationLegalOrCustom(ISD::SETCC, SVT)) {
+        // We have an unsupported narrow vector compare op that would be legal
+        // if extended to the destination type. See if the compare operands
+        // can be freely extended to the destination type.
+        auto IsFreeToZext = [&](SDValue V) {
+          if (isConstantOrConstantVector(V, /*NoOpaques*/ true))
+            return true;
+
+          // Match a simple, non-extended load that can be converted to a
+          // legal zext-load.
+          // TODO: Handle more than one use if the other uses are free to zext.
+          // TODO: Allow widening of an existing zext-load?
+          return ISD::isNON_EXTLoad(V.getNode()) &&
+                 ISD::isUNINDEXEDLoad(V.getNode()) &&
+                 cast<LoadSDNode>(V)->isSimple() &&
+                 TLI.isLoadExtLegal(ISD::ZEXTLOAD, VT, V.getValueType()) &&
+                 V.hasOneUse();
+        };
+
+        if (IsFreeToZext(N00) && IsFreeToZext(N01)) {
+          SDValue Ext0 = DAG.getZExtOrTrunc(N00, DL, VT);
+          SDValue Ext1 = DAG.getZExtOrTrunc(N01, DL, VT);
+          return DAG.getSetCC(DL, VT, Ext0, Ext1, CC);
+        }
+      }
     }
 
     // sext(setcc x, y, cc) -> (select (setcc x, y, cc), T, 0)
@@ -16846,6 +16876,9 @@ bool DAGCombiner::mergeStoresOfConstantsOrVecElts(
   if (NumStores < 2)
     return false;
 
+  assert((!UseTrunc || !UseVector) &&
+         "This optimization cannot emit a vector truncating store");
+
   // The latest Node in the DAG.
   SDLoc DL(StoreNodes[0].MemNode);
 
@@ -17341,6 +17374,7 @@ bool DAGCombiner::tryStoreMergeOfConstants(
 
     bool UseVector = (LastLegalVectorType > LastLegalType) && AllowVectors;
     unsigned NumElem = (UseVector) ? LastLegalVectorType : LastLegalType;
+    bool UseTrunc = LastIntegerTrunc && !UseVector;
 
     // Check if we found a legal integer type that creates a meaningful
     // merge.
@@ -17371,8 +17405,9 @@ bool DAGCombiner::tryStoreMergeOfConstants(
       continue;
     }
 
-    MadeChange |= mergeStoresOfConstantsOrVecElts(
-        StoreNodes, MemVT, NumElem, true, UseVector, LastIntegerTrunc);
+    MadeChange |= mergeStoresOfConstantsOrVecElts(StoreNodes, MemVT, NumElem,
+                                                  /*IsConstantSrc*/ true,
+                                                  UseVector, UseTrunc);
 
     // Remove merged stores for next iteration.
     StoreNodes.erase(StoreNodes.begin(), StoreNodes.begin() + NumElem);
@@ -17441,7 +17476,8 @@ bool DAGCombiner::tryStoreMergeOfExtracts(
     }
 
     MadeChange |= mergeStoresOfConstantsOrVecElts(
-        StoreNodes, MemVT, NumStoresToMerge, false, true, false);
+        StoreNodes, MemVT, NumStoresToMerge, /*IsConstantSrc*/ false,
+        /*UseVector*/ true, /*UseTrunc*/ false);
 
     StoreNodes.erase(StoreNodes.begin(), StoreNodes.begin() + NumStoresToMerge);
     NumConsecutiveStores -= NumStoresToMerge;
@@ -18601,26 +18637,19 @@ SDValue DAGCombiner::scalarizeExtractedVectorLoad(SDNode *EVE, EVT InVecVT,
 
   Alignment = NewAlign;
 
-  SDValue NewPtr = OriginalLoad->getBasePtr();
-  SDValue Offset;
-  EVT PtrType = NewPtr.getValueType();
   MachinePointerInfo MPI;
   SDLoc DL(EVE);
   if (auto *ConstEltNo = dyn_cast<ConstantSDNode>(EltNo)) {
     int Elt = ConstEltNo->getZExtValue();
     unsigned PtrOff = VecEltVT.getSizeInBits() * Elt / 8;
-    Offset = DAG.getConstant(PtrOff, DL, PtrType);
     MPI = OriginalLoad->getPointerInfo().getWithOffset(PtrOff);
   } else {
-    Offset = DAG.getZExtOrTrunc(EltNo, DL, PtrType);
-    Offset = DAG.getNode(
-        ISD::MUL, DL, PtrType, Offset,
-        DAG.getConstant(VecEltVT.getStoreSize(), DL, PtrType));
     // Discard the pointer info except the address space because the memory
     // operand can't represent this new access since the offset is variable.
     MPI = MachinePointerInfo(OriginalLoad->getPointerInfo().getAddrSpace());
   }
-  NewPtr = DAG.getMemBasePlusOffset(NewPtr, Offset, DL);
+  SDValue NewPtr = TLI.getVectorElementPointer(DAG, OriginalLoad->getBasePtr(),
+                                               InVecVT, EltNo);
 
   // The replacement we need to do here is a little tricky: we need to
   // replace an extractelement of a load with a load.

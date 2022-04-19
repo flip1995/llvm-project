@@ -114,6 +114,7 @@ class Parser : public CodeCompletionHandler {
   /// Contextual keywords for Microsoft extensions.
   IdentifierInfo *Ident__except;
   mutable IdentifierInfo *Ident_sealed;
+  mutable IdentifierInfo *Ident_abstract;
 
   /// Ident_super - IdentifierInfo for "super", to support fast
   /// comparison.
@@ -1802,6 +1803,7 @@ private:
   ExprResult ParsePostfixExpressionSuffix(ExprResult LHS);
   ExprResult ParseUnaryExprOrTypeTraitExpression();
   ExprResult ParseBuiltinPrimaryExpression();
+  ExprResult ParseSYCLUniqueStableNameExpression();
 
   ExprResult ParseExprAfterUnaryExprOrTypeTrait(const Token &OpTok,
                                                      bool &isCastExpr,
@@ -2915,6 +2917,7 @@ private:
                                           SourceLocation FriendLoc);
 
   bool isCXX11FinalKeyword() const;
+  bool isClassCompatibleKeyword() const;
 
   /// DeclaratorScopeObj - RAII object used in Parser::ParseDirectDeclarator to
   /// enter a new C++ declarator scope and exit it when the function is

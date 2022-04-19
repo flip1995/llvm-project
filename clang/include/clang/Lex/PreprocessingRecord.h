@@ -538,6 +538,9 @@ class Token;
                const MacroDefinition &MD) override;
     void Ifndef(SourceLocation Loc, const Token &MacroNameTok,
                 const MacroDefinition &MD) override;
+
+    using PPCallbacks::Elifdef;
+    using PPCallbacks::Elifndef;
     void Elifdef(SourceLocation Loc, const Token &MacroNameTok,
                  const MacroDefinition &MD) override;
     void Elifndef(SourceLocation Loc, const Token &MacroNameTok,

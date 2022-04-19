@@ -296,8 +296,8 @@ public:
     bool IsSwiftError : 1;
     bool IsCFGuardTarget : 1;
     MaybeAlign Alignment = None;
-    // Type for byval, inalloca, or preallocated.
-    Type *IndirectType = nullptr;
+    Type *ByValType = nullptr;
+    Type *PreallocatedType = nullptr;
 
     ArgListEntry()
         : IsSExt(false), IsZExt(false), IsInReg(false), IsSRet(false),
@@ -424,6 +424,12 @@ public:
     // FIXME: hardcoded AS0
     return getPointerTy(DL, 0);
   }
+
+  /// Returns the type to be used for the EVL/AVL operand of VP nodes:
+  /// ISD::VP_ADD, ISD::VP_SUB, etc. It must be a legal scalar integer type,
+  /// and must be at least as large as i32. The EVL is implicitly zero-extended
+  /// to any larger type.
+  virtual MVT getVPExplicitVectorLengthTy() const { return MVT::i32; }
 
   /// This callback is used to inspect load/store instructions and add
   /// target-specific MachineMemOperand flags to them.  The default
