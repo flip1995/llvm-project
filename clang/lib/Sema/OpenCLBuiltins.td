@@ -687,7 +687,7 @@ foreach name = ["isfinite", "isinf", "isnan", "isnormal", "signbit"] in {
   def : Builtin<name, [GenTypeShortVecNoScalar, GenTypeHalfVecNoScalar], Attr.Const>;
 }
 foreach name = ["any", "all"] in {
-  def : Builtin<name, [Int, AIGenTypeN], Attr.Const>;
+  def : Builtin<name, [Int, SGenTypeN], Attr.Const>;
 }
 
 // --- 2 arguments ---
@@ -1409,7 +1409,9 @@ let Extension = FuncExtKhrGlMsaaSharing in {
       }
       def : Builtin<"get_image_dim", [VectorType<Int, 2>, ImageType<imgTy, aQual>], Attr.Const>;
     }
-    def : Builtin<"get_image_array_size", [Size, ImageType<Image2dArrayMsaaDepth, aQual>], Attr.Const>;
+    foreach imgTy = [Image2dArrayMsaa, Image2dArrayMsaaDepth] in {
+      def : Builtin<"get_image_array_size", [Size, ImageType<imgTy, aQual>], Attr.Const>;
+    }
   }
 }
 
