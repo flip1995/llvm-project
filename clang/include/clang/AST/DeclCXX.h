@@ -1396,6 +1396,11 @@ public:
             hasTrivialDefaultConstructor());
   }
 
+  /// Determine whether this is a structural type.
+  bool isStructural() const {
+    return isLiteral() && data().StructuralIfLiteral;
+  }
+
   /// If this record is an instantiation of a member class,
   /// retrieves the member class from which it was instantiated.
   ///
@@ -4070,8 +4075,11 @@ public:
 
 /// Insertion operator for diagnostics.  This allows sending an AccessSpecifier
 /// into a diagnostic with <<.
-const StreamableDiagnosticBase &operator<<(const StreamableDiagnosticBase &DB,
-                                           AccessSpecifier AS);
+const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
+                                    AccessSpecifier AS);
+
+const PartialDiagnostic &operator<<(const PartialDiagnostic &DB,
+                                    AccessSpecifier AS);
 
 } // namespace clang
 
