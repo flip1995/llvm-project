@@ -186,6 +186,7 @@ add_llvm_component_library(LLVMSupport
   TrigramIndex.cpp
   Triple.cpp
   Twine.cpp
+  TypeSize.cpp
   Unicode.cpp
   UnicodeCaseFold.cpp
   VersionTuple.cpp
@@ -274,8 +275,5 @@ if(LLVM_INTEGRATED_CRT_ALLOC)
 endif()
 
 if(LLVM_WITH_Z3)
-  target_include_directories(LLVMSupport SYSTEM
-    PRIVATE
-    ${Z3_INCLUDE_DIR}
-    )
+  include_directories(SYSTEM ${Z3_INCLUDE_DIR})
 endif()
