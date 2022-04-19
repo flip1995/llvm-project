@@ -444,6 +444,9 @@ static Instruction *foldCttzCtlz(IntrinsicInst &II, InstCombinerImpl &IC) {
     SelectPatternFlavor SPF = matchSelectPattern(Op0, X, Y).Flavor;
     if (SPF == SPF_ABS || SPF == SPF_NABS)
       return IC.replaceOperand(II, 0, X);
+
+    if (match(Op0, m_Intrinsic<Intrinsic::abs>(m_Value(X))))
+      return IC.replaceOperand(II, 0, X);
   }
 
   KnownBits Known = IC.computeKnownBits(Op0, 0, &II);
@@ -638,7 +641,7 @@ Instruction *InstCombinerImpl::visitVAEndInst(VAEndInst &I) {
   return nullptr;
 }
 
-static Instruction *canonicalizeConstantArg0ToArg1(CallInst &Call) {
+static CallInst *canonicalizeConstantArg0ToArg1(CallInst &Call) {
   assert(Call.getNumArgOperands() > 1 && "Need at least 2 args to swap");
   Value *Arg0 = Call.getArgOperand(0), *Arg1 = Call.getArgOperand(1);
   if (isa<Constant>(Arg0) && !isa<Constant>(Arg1)) {
@@ -945,6 +948,11 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     }
   }
 
+  if (II->isCommutative()) {
+    if (CallInst *NewCall = canonicalizeConstantArg0ToArg1(CI))
+      return NewCall;
+  }
+
   Intrinsic::ID IID = II->getIntrinsicID();
   switch (IID) {
   case Intrinsic::objectsize:
@@ -953,6 +961,8 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     return nullptr;
   case Intrinsic::abs: {
     Value *IIOperand = II->getArgOperand(0);
+    bool IntMinIsPoison = cast<Constant>(II->getArgOperand(1))->isOneValue();
+
     // abs(-x) -> abs(x)
     // TODO: Copy nsw if it was present on the neg?
     Value *X;
@@ -962,6 +972,19 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
       return replaceOperand(*II, 0, X);
     if (match(IIOperand, m_Select(m_Value(), m_Neg(m_Value(X)), m_Deferred(X))))
       return replaceOperand(*II, 0, X);
+
+    if (Optional<bool> Imp = isImpliedByDomCondition(
+            ICmpInst::ICMP_SGE, IIOperand,
+            Constant::getNullValue(IIOperand->getType()), II, DL)) {
+      // abs(x) -> x if x >= 0
+      if (*Imp)
+        return replaceInstUsesWith(*II, IIOperand);
+
+      // abs(x) -> -x if x < 0
+      if (IntMinIsPoison)
+        return BinaryOperator::CreateNSWNeg(IIOperand);
+      return BinaryOperator::CreateNeg(IIOperand);
+    }
 
     break;
   }
@@ -1087,8 +1110,6 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
   }
   case Intrinsic::uadd_with_overflow:
   case Intrinsic::sadd_with_overflow: {
-    if (Instruction *I = canonicalizeConstantArg0ToArg1(CI))
-      return I;
     if (Instruction *I = foldIntrinsicWithOverflowCommon(II))
       return I;
 
@@ -1116,10 +1137,6 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
 
   case Intrinsic::umul_with_overflow:
   case Intrinsic::smul_with_overflow:
-    if (Instruction *I = canonicalizeConstantArg0ToArg1(CI))
-      return I;
-    LLVM_FALLTHROUGH;
-
   case Intrinsic::usub_with_overflow:
     if (Instruction *I = foldIntrinsicWithOverflowCommon(II))
       return I;
@@ -1150,9 +1167,6 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
 
   case Intrinsic::uadd_sat:
   case Intrinsic::sadd_sat:
-    if (Instruction *I = canonicalizeConstantArg0ToArg1(CI))
-      return I;
-    LLVM_FALLTHROUGH;
   case Intrinsic::usub_sat:
   case Intrinsic::ssub_sat: {
     SaturatingInst *SI = cast<SaturatingInst>(II);
@@ -1233,8 +1247,6 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
   case Intrinsic::maxnum:
   case Intrinsic::minimum:
   case Intrinsic::maximum: {
-    if (Instruction *I = canonicalizeConstantArg0ToArg1(CI))
-      return I;
     Value *Arg0 = II->getArgOperand(0);
     Value *Arg1 = II->getArgOperand(1);
     Value *X, *Y;
@@ -1343,9 +1355,6 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     LLVM_FALLTHROUGH;
   }
   case Intrinsic::fma: {
-    if (Instruction *I = canonicalizeConstantArg0ToArg1(CI))
-      return I;
-
     // fma fneg(x), fneg(y), z -> fma x, y, z
     Value *Src0 = II->getArgOperand(0);
     Value *Src1 = II->getArgOperand(1);
