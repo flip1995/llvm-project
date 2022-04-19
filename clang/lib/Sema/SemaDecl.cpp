@@ -2550,7 +2550,7 @@ static bool mergeDeclAttribute(Sema &S, NamedDecl *D,
     NewAttr = S.mergeCodeSegAttr(D, *CSA, CSA->getName());
   else if (const auto *IA = dyn_cast<MSInheritanceAttr>(Attr))
     NewAttr = S.mergeMSInheritanceAttr(D, *IA, IA->getBestCase(),
-                                       IA->getSemanticSpelling());
+                                       IA->getInheritanceModel());
   else if (const auto *AA = dyn_cast<AlwaysInlineAttr>(Attr))
     NewAttr = S.mergeAlwaysInlineAttr(D, *AA,
                                       &S.Context.Idents.get(AA->getSpelling()));
@@ -13418,8 +13418,10 @@ ShouldWarnAboutMissingPrototype(const FunctionDecl *FD,
     return false;
 
   // Don't warn about 'main'.
-  if (FD->isMain())
-    return false;
+  if (isa<TranslationUnitDecl>(FD->getDeclContext()->getRedeclContext()))
+    if (IdentifierInfo *II = FD->getIdentifier())
+      if (II->isStr("main"))
+        return false;
 
   // Don't warn about inline functions.
   if (FD->isInlined())
@@ -16897,7 +16899,7 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
       if (const MSInheritanceAttr *IA = Record->getAttr<MSInheritanceAttr>())
         checkMSInheritanceAttrOnDefinition(cast<CXXRecordDecl>(Record),
                                            IA->getRange(), IA->getBestCase(),
-                                           IA->getSemanticSpelling());
+                                           IA->getInheritanceModel());
     }
 
     // Check if the structure/union declaration is a type that can have zero
