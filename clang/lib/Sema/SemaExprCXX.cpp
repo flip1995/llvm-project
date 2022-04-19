@@ -921,7 +921,7 @@ bool Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc,
       // cannot be a simple walk of the class's decls.  Instead, we must perform
       // lookup and overload resolution.
       CXXConstructorDecl *CD = LookupCopyingConstructor(Subobject, 0);
-      if (!CD)
+      if (!CD || CD->isDeleted())
         continue;
 
       // Mark the constructor referenced as it is used by this throw expression.
@@ -7813,8 +7813,9 @@ class TransformTypos : public TreeTransform<TransformTypos> {
 
     // If we found a valid result, double check to make sure it's not ambiguous.
     if (!IsAmbiguous && !Res.isInvalid() && !AmbiguousTypoExprs.empty()) {
-      auto SavedTransformCache = std::move(TransformCache);
-      TransformCache.clear();
+      auto SavedTransformCache =
+          llvm::SmallDenseMap<TypoExpr *, ExprResult, 2>(TransformCache);
+
       // Ensure none of the TypoExprs have multiple typo correction candidates
       // with the same edit length that pass all the checks and filters.
       while (!AmbiguousTypoExprs.empty()) {

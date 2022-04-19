@@ -1933,6 +1933,7 @@ void LLParser::ParseOptionalDLLStorageClass(unsigned &Res) {
 ///   ::= 'fastcc'
 ///   ::= 'intel_ocl_bicc'
 ///   ::= 'coldcc'
+///   ::= 'cfguard_checkcc'
 ///   ::= 'x86_stdcallcc'
 ///   ::= 'x86_fastcallcc'
 ///   ::= 'x86_thiscallcc'
@@ -1979,6 +1980,7 @@ bool LLParser::ParseOptionalCallingConv(unsigned &CC) {
   case lltok::kw_coldcc:         CC = CallingConv::Cold; break;
   case lltok::kw_chericcallcc:   CC = CallingConv::CHERI_CCall; break;
   case lltok::kw_chericcallcce:  CC = CallingConv::CHERI_CCallee; break;
+  case lltok::kw_cfguard_checkcc: CC = CallingConv::CFGuard_Check; break;
   case lltok::kw_x86_stdcallcc:  CC = CallingConv::X86_StdCall; break;
   case lltok::kw_x86_fastcallcc: CC = CallingConv::X86_FastCall; break;
   case lltok::kw_x86_regcallcc:  CC = CallingConv::X86_RegCall; break;
@@ -3423,7 +3425,7 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
     ID.Kind = ValID::t_Constant;
     return false;
   }
- 
+
   // Unary Operators.
   case lltok::kw_fneg: {
     unsigned Opc = Lex.getUIntVal();
@@ -3433,7 +3435,7 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
         ParseGlobalTypeAndValue(Val) ||
         ParseToken(lltok::rparen, "expected ')' in unary constantexpr"))
       return true;
-    
+
     // Check that the type is valid for the operator.
     switch (Opc) {
     case Instruction::FNeg:
@@ -4769,7 +4771,7 @@ bool LLParser::ParseDICommonBlock(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(declaration, MDField, );                                            \
   OPTIONAL(name, MDStringField, );                                             \
   OPTIONAL(file, MDField, );                                                   \
-  OPTIONAL(line, LineField, );						       
+  OPTIONAL(line, LineField, );
   PARSE_MD_FIELDS();
 #undef VISIT_MD_FIELDS
 
@@ -5813,7 +5815,7 @@ int LLParser::ParseInstruction(Instruction *&Inst, BasicBlock *BB,
     if (Res != 0)
       return Res;
     if (FMF.any()) {
-      if (!Inst->getType()->isFPOrFPVectorTy())
+      if (!isa<FPMathOperator>(Inst))
         return Error(Loc, "fast-math-flags specified for select without "
                           "floating-point scalar or vector return type");
       Inst->setFastMathFlags(FMF);
@@ -5830,7 +5832,7 @@ int LLParser::ParseInstruction(Instruction *&Inst, BasicBlock *BB,
     if (Res != 0)
       return Res;
     if (FMF.any()) {
-      if (!Inst->getType()->isFPOrFPVectorTy())
+      if (!isa<FPMathOperator>(Inst))
         return Error(Loc, "fast-math-flags specified for phi without "
                           "floating-point scalar or vector return type");
       Inst->setFastMathFlags(FMF);
@@ -6801,10 +6803,6 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
       ParseOptionalOperandBundles(BundleList, PFS))
     return true;
 
-  if (FMF.any() && !RetType->isFPOrFPVectorTy())
-    return Error(CallLoc, "fast-math-flags specified for call without "
-                          "floating-point scalar or vector return type");
-
   // If RetType is a non-function pointer type, then this is the short syntax
   // for the call, which means that RetType is just the return type.  Infer the
   // rest of the function argument types from the arguments that are present.
@@ -6867,8 +6865,12 @@ bool LLParser::ParseCall(Instruction *&Inst, PerFunctionState &PFS,
   CallInst *CI = CallInst::Create(Ty, Callee, Args, BundleList);
   CI->setTailCallKind(TCK);
   CI->setCallingConv(CC);
-  if (FMF.any())
+  if (FMF.any()) {
+    if (!isa<FPMathOperator>(CI))
+      return Error(CallLoc, "fast-math-flags specified for call without "
+                   "floating-point scalar or vector return type");
     CI->setFastMathFlags(FMF);
+  }
   CI->setAttributes(PAL);
   ForwardRefAttrGroups[CI] = FwdRefAttrGrps;
   Inst = CI;
@@ -6933,8 +6935,7 @@ int LLParser::ParseAlloc(Instruction *&Inst, PerFunctionState &PFS) {
   if (Size && !Size->getType()->isIntegerTy())
     return Error(SizeLoc, "element count must have integer type");
 
-  AllocaInst *AI =
-      new AllocaInst(Ty, AddrSpace, Size, Alignment ? Alignment->value() : 0);
+  AllocaInst *AI = new AllocaInst(Ty, AddrSpace, Size, Alignment);
   AI->setUsedWithInAlloca(IsInAlloca);
   AI->setSwiftError(IsSwiftError);
   Inst = AI;

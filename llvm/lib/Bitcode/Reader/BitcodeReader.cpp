@@ -4647,10 +4647,9 @@ Error BitcodeReader::parseFunctionBody(Function *F) {
       // There is an optional final record for fast-math-flags if this phi has a
       // floating-point type.
       size_t NumArgs = (Record.size() - 1) / 2;
-      if ((Record.size() - 1) % 2 == 1 && !Ty->isFPOrFPVectorTy())
-        return error("Invalid record");
-
       PHINode *PN = PHINode::Create(Ty, NumArgs);
+      if ((Record.size() - 1) % 2 == 1 && !isa<FPMathOperator>(PN))
+        return error("Invalid record");
       InstructionList.push_back(PN);
 
       for (unsigned i = 0; i != NumArgs; i++) {
@@ -4767,7 +4766,7 @@ Error BitcodeReader::parseFunctionBody(Function *F) {
       const DataLayout &DL = TheModule->getDataLayout();
       unsigned AS = DL.getAllocaAddrSpace();
 
-      AllocaInst *AI = new AllocaInst(Ty, AS, Size, Align ? Align->value() : 0);
+      AllocaInst *AI = new AllocaInst(Ty, AS, Size, Align);
       AI->setUsedWithInAlloca(InAlloca);
       AI->setSwiftError(SwiftError);
       I = AI;

@@ -76,12 +76,12 @@ public:
                          unsigned *NewImm) const;
 
 protected:
+  bool isReallyTriviallyReMaterializable(const MachineInstr &MI, AAResults *AA) const override;
   /// If the specific machine instruction is a instruction that moves/copies
   /// value from one register to another register return true along with
   /// @Source machine operand and @Destination machine operand.
   bool isCopyInstrImpl(const MachineInstr &MI, const MachineOperand *&Source,
                        const MachineOperand *&Destination) const override;
-  bool isReallyTriviallyReMaterializable(const MachineInstr &MI, AAResults *AA) const override;
 
 private:
   unsigned getAnalyzableBrOpc(unsigned Opc) const override;

@@ -769,6 +769,9 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DebugFwdTemplateParams = Args.hasArg(OPT_debug_forward_template_params);
   Opts.EmbedSource = Args.hasArg(OPT_gembed_source);
 
+  Opts.ForceDwarfFrameSection =
+      Args.hasFlag(OPT_fforce_dwarf_frame, OPT_fno_force_dwarf_frame, false);
+
   for (const auto &Arg : Args.getAllArgValues(OPT_fdebug_prefix_map_EQ))
     Opts.DebugPrefixMap.insert(StringRef(Arg).split('='));
 
@@ -1016,6 +1019,7 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.MainFileName = Args.getLastArgValue(OPT_main_file_name);
   Opts.VerifyModule = !Args.hasArg(OPT_disable_llvm_verifier);
 
+  Opts.ControlFlowGuardNoChecks = Args.hasArg(OPT_cfguard_no_checks);
   Opts.ControlFlowGuard = Args.hasArg(OPT_cfguard);
 
   Opts.DisableGCov = Args.hasArg(OPT_test_coverage);

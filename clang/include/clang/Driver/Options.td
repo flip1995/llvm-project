@@ -559,8 +559,6 @@ def bind__at__load : Flag<["-"], "bind_at_load">;
 def bundle__loader : Separate<["-"], "bundle_loader">;
 def bundle : Flag<["-"], "bundle">;
 def b : JoinedOrSeparate<["-"], "b">, Flags<[Unsupported]>;
-def cfguard : Flag<["-"], "cfguard">, Flags<[CC1Option]>,
-  HelpText<"Emit tables required for Windows Control Flow Guard.">;
 def cl_opt_disable : Flag<["-"], "cl-opt-disable">, Group<opencl_Group>, Flags<[CC1Option]>,
   HelpText<"OpenCL only. This option disables all optimizations. By default optimizations are enabled.">;
 def cl_strict_aliasing : Flag<["-"], "cl-strict-aliasing">, Group<opencl_Group>, Flags<[CC1Option]>,
@@ -1368,6 +1366,9 @@ def flto_jobs_EQ : Joined<["-"], "flto-jobs=">,
 def fthinlto_index_EQ : Joined<["-"], "fthinlto-index=">,
   Flags<[CoreOption, CC1Option]>, Group<f_Group>,
   HelpText<"Perform ThinLTO importing using provided function summary index">;
+def fthin_link_bitcode_EQ : Joined<["-"], "fthin-link-bitcode=">,
+  Flags<[CoreOption, CC1Option]>, Group<f_Group>,
+  HelpText<"Write minimized bitcode to <file> for the ThinLTO thin link only">;
 def fmacro_backtrace_limit_EQ : Joined<["-"], "fmacro-backtrace-limit=">,
                                 Group<f_Group>, Flags<[DriverOption, CoreOption]>;
 def fmerge_all_constants : Flag<["-"], "fmerge-all-constants">, Group<f_Group>,
@@ -2005,6 +2006,10 @@ def fdebug_prefix_map_EQ
   : Joined<["-"], "fdebug-prefix-map=">, Group<f_Group>,
     Flags<[CC1Option,CC1AsOption]>,
     HelpText<"remap file source paths in debug info">;
+def fforce_dwarf_frame : Flag<["-"], "fforce-dwarf-frame">, Group<f_Group>, Flags<[CC1Option]>,
+    HelpText<"Always emit a debug frame section">;
+def fno_force_dwarf_frame : Flag<["-"], "fno-force-dwarf-frame">, Group<f_Group>, Flags<[CC1Option]>,
+    HelpText<"Don't always emit a debug frame section">;
 def g_Flag : Flag<["-"], "g">, Group<g_Group>,
   HelpText<"Generate source-level debug information">;
 def gline_tables_only : Flag<["-"], "gline-tables-only">, Group<gN_Group>,
@@ -2023,6 +2028,10 @@ def ggdb2 : Flag<["-"], "ggdb2">, Group<ggdbN_Group>;
 def ggdb3 : Flag<["-"], "ggdb3">, Group<ggdbN_Group>;
 def glldb : Flag<["-"], "glldb">, Group<gTune_Group>;
 def gsce : Flag<["-"], "gsce">, Group<gTune_Group>;
+// Equivalent to our default dwarf version. Forces usual dwarf emission when
+// CodeView is enabled.
+def gdwarf : Flag<["-"], "gdwarf">, Group<g_Group>, Flags<[CoreOption]>,
+  HelpText<"Generate source-level debug information with the default dwarf version">;
 def gdwarf_2 : Flag<["-"], "gdwarf-2">, Group<g_Group>,
   HelpText<"Generate source-level debug information with dwarf version 2">;
 def gdwarf_3 : Flag<["-"], "gdwarf-3">, Group<g_Group>,
@@ -2039,10 +2048,6 @@ def gcodeview_ghash : Flag<["-"], "gcodeview-ghash">,
   HelpText<"Emit type record hashes in a .debug$H section">,
   Flags<[CC1Option, CoreOption]>;
 def gno_codeview_ghash : Flag<["-"], "gno-codeview-ghash">, Flags<[CoreOption]>;
-
-// Equivalent to our default dwarf version. Forces usual dwarf emission when
-// CodeView is enabled.
-def gdwarf : Flag<["-"], "gdwarf">, Alias<gdwarf_4>, Flags<[CoreOption]>;
 
 def gfull : Flag<["-"], "gfull">, Group<g_Group>;
 def gused : Flag<["-"], "gused">, Group<g_Group>;

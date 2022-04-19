@@ -10,6 +10,7 @@ add_llvm_library(LLVMCodeGen
   BuiltinGCs.cpp
   CalcSpillWeights.cpp
   CallingConvLower.cpp
+  CFGuardLongjmp.cpp
   CFIInstrInserter.cpp
   CheriBoundAllocas.cpp
   CodeGen.cpp
@@ -93,6 +94,7 @@ add_llvm_library(LLVMCodeGen
   MachineRegisterInfo.cpp
   MachineScheduler.cpp
   MachineSink.cpp
+  MachineSizeOpts.cpp
   MachineSSAUpdater.cpp
   MachineTraceMetrics.cpp
   MachineVerifier.cpp
