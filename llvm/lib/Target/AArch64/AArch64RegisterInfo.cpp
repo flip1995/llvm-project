@@ -63,7 +63,7 @@ bool AArch64RegisterInfo::regNeedsCFI(unsigned Reg,
   return true;
 }
 
-static bool hasSVEArgsOrReturn(const MachineFunction *MF) {
+bool AArch64RegisterInfo::hasSVEArgsOrReturn(const MachineFunction *MF) {
   const Function &F = MF->getFunction();
   return isa<ScalableVectorType>(F.getReturnType()) ||
          any_of(F.args(), [](const Argument &Arg) {
@@ -334,8 +334,8 @@ bool AArch64RegisterInfo::isAnyArgRegReserved(const MachineFunction &MF) const {
 void AArch64RegisterInfo::emitReservedArgRegCallError(
     const MachineFunction &MF) const {
   const Function &F = MF.getFunction();
-  F.getContext().diagnose(DiagnosticInfoUnsupported{F, "AArch64 doesn't support"
-    " function calls if any of the argument registers is reserved."});
+  F.getContext().diagnose(DiagnosticInfoUnsupported{F, ("AArch64 doesn't support"
+    " function calls if any of the argument registers is reserved.")});
 }
 
 bool AArch64RegisterInfo::isAsmClobberable(const MachineFunction &MF,

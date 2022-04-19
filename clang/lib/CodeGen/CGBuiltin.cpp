@@ -11293,68 +11293,7 @@ Value *CodeGenFunction::EmitBPFBuiltinExpr(unsigned BuiltinID,
         {FieldAddr->getType()});
     return Builder.CreateCall(FnGetFieldInfo, {FieldAddr, InfoKind});
   }
-  case BPF::BI__builtin_btf_type_id: {
-    Value *FieldVal = nullptr;
-
-    // The LValue cannot be converted Value in order to be used as the function
-    // parameter. If it is a structure, it is the "alloca" result of the LValue
-    // (a pointer) is used in the parameter. If it is a simple type,
-    // the value will be loaded from its corresponding "alloca" and used as
-    // the parameter. In our case, let us just get a pointer of the LValue
-    // since we do not really use the parameter. The purpose of parameter
-    // is to prevent the generated IR llvm.bpf.btf.type.id intrinsic call,
-    // which carries metadata, from being changed.
-    bool IsLValue = E->getArg(0)->isLValue();
-    if (IsLValue)
-      FieldVal = EmitLValue(E->getArg(0)).getPointer(*this);
-    else
-      FieldVal = EmitScalarExpr(E->getArg(0));
-
-    if (!getDebugInfo()) {
-      CGM.Error(E->getExprLoc(), "using __builtin_btf_type_id() without -g");
-      return nullptr;
-    }
-
-    // Generate debuginfo type for the first argument.
-    llvm::DIType *DbgInfo =
-        getDebugInfo()->getOrCreateStandaloneType(E->getArg(0)->getType(),
-                                                  E->getArg(0)->getExprLoc());
-
-    ConstantInt *Flag = cast<ConstantInt>(EmitScalarExpr(E->getArg(1)));
-    Value *FlagValue = ConstantInt::get(Int64Ty, Flag->getSExtValue());
-
-    // Built the IR for the btf_type_id intrinsic.
-    //
-    // In the above, we converted LValue argument to a pointer to LValue.
-    // For example, the following
-    //   int v;
-    //   C1: __builtin_btf_type_id(v, flag);
-    // will be converted to
-    //   L1: llvm.bpf.btf.type.id(&v, flag)
-    // This makes it hard to differentiate from
-    //   C2: __builtin_btf_type_id(&v, flag);
-    // to
-    //   L2: llvm.bpf.btf.type.id(&v, flag)
-    //
-    // If both C1 and C2 are present in the code, the llvm may later
-    // on do CSE on L1 and L2, which will result in incorrect tagged types.
-    //
-    // The C1->L1 transformation only happens if the argument of
-    // __builtin_btf_type_id() is a LValue. So Let us put whether
-    // the argument is an LValue or not into generated IR. This should
-    // prevent potential CSE from causing debuginfo type loss.
-    //
-    // The generated IR intrinsics will hence look like
-    //   L1: llvm.bpf.btf.type.id(&v, 1, flag) !di_type_for_{v};
-    //   L2: llvm.bpf.btf.type.id(&v, 0, flag) !di_type_for_{&v};
-    Constant *CV = ConstantInt::get(IntTy, IsLValue);
-    llvm::Function *FnBtfTypeId = llvm::Intrinsic::getDeclaration(
-        &CGM.getModule(), llvm::Intrinsic::bpf_btf_type_id,
-        {FieldVal->getType(), CV->getType()});
-    CallInst *Fn = Builder.CreateCall(FnBtfTypeId, {FieldVal, CV, FlagValue});
-    Fn->setMetadata(LLVMContext::MD_preserve_access_index, DbgInfo);
-    return Fn;
-  }
+  case BPF::BI__builtin_btf_type_id:
   case BPF::BI__builtin_preserve_type_info: {
     if (!getDebugInfo()) {
       CGM.Error(E->getExprLoc(), "using builtin function without -g");
@@ -11369,10 +11308,14 @@ Value *CodeGenFunction::EmitBPFBuiltinExpr(unsigned BuiltinID,
     Value *FlagValue = ConstantInt::get(Int64Ty, Flag->getSExtValue());
     Value *SeqNumVal = ConstantInt::get(Int32Ty, BuiltinSeqNum++);
 
-    llvm::Function *FnPreserveTypeInfo = llvm::Intrinsic::getDeclaration(
-        &CGM.getModule(), llvm::Intrinsic::bpf_preserve_type_info, {});
-    CallInst *Fn =
-        Builder.CreateCall(FnPreserveTypeInfo, {SeqNumVal, FlagValue});
+    llvm::Function *FnDecl;
+    if (BuiltinID == BPF::BI__builtin_btf_type_id)
+      FnDecl = llvm::Intrinsic::getDeclaration(
+          &CGM.getModule(), llvm::Intrinsic::bpf_btf_type_id, {});
+    else
+      FnDecl = llvm::Intrinsic::getDeclaration(
+          &CGM.getModule(), llvm::Intrinsic::bpf_preserve_type_info, {});
+    CallInst *Fn = Builder.CreateCall(FnDecl, {SeqNumVal, FlagValue});
     Fn->setMetadata(LLVMContext::MD_preserve_access_index, DbgInfo);
     return Fn;
   }
@@ -12152,6 +12095,7 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     return EmitX86CpuInit();
 
   SmallVector<Value*, 4> Ops;
+  bool IsMaskFCmp = false;
 
   // Find out if any arguments are required to be integer constant expressions.
   unsigned ICEArguments = 0;
@@ -14050,16 +13994,18 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
   case X86::BI__builtin_ia32_cmpordps:
   case X86::BI__builtin_ia32_cmpordpd:
     return getVectorFCmpIR(CmpInst::FCMP_ORD, /*IsSignaling*/false);
-  case X86::BI__builtin_ia32_cmpps:
-  case X86::BI__builtin_ia32_cmpps256:
-  case X86::BI__builtin_ia32_cmppd:
-  case X86::BI__builtin_ia32_cmppd256:
   case X86::BI__builtin_ia32_cmpps128_mask:
   case X86::BI__builtin_ia32_cmpps256_mask:
   case X86::BI__builtin_ia32_cmpps512_mask:
   case X86::BI__builtin_ia32_cmppd128_mask:
   case X86::BI__builtin_ia32_cmppd256_mask:
-  case X86::BI__builtin_ia32_cmppd512_mask: {
+  case X86::BI__builtin_ia32_cmppd512_mask:
+    IsMaskFCmp = true;
+    LLVM_FALLTHROUGH;
+  case X86::BI__builtin_ia32_cmpps:
+  case X86::BI__builtin_ia32_cmpps256:
+  case X86::BI__builtin_ia32_cmppd:
+  case X86::BI__builtin_ia32_cmppd256: {
     // Lowering vector comparisons to fcmp instructions, while
     // ignoring signalling behaviour requested
     // ignoring rounding mode requested
@@ -14104,8 +14050,11 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     // If the predicate is true or false and we're using constrained intrinsics,
     // we don't have a compare intrinsic we can use. Just use the legacy X86
     // specific intrinsic.
-    if ((Pred == FCmpInst::FCMP_TRUE || Pred == FCmpInst::FCMP_FALSE) &&
-        Builder.getIsFPConstrained()) {
+    // If the intrinsic is mask enabled and we're using constrained intrinsics,
+    // use the legacy X86 specific intrinsic.
+    if (Builder.getIsFPConstrained() &&
+        (Pred == FCmpInst::FCMP_TRUE || Pred == FCmpInst::FCMP_FALSE ||
+         IsMaskFCmp)) {
 
       Intrinsic::ID IID;
       switch (BuiltinID) {
@@ -14123,36 +14072,32 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
         IID = Intrinsic::x86_avx_cmp_pd_256;
         break;
       case X86::BI__builtin_ia32_cmpps512_mask:
-        IID = Intrinsic::x86_avx512_cmp_ps_512;
+        IID = Intrinsic::x86_avx512_mask_cmp_ps_512;
         break;
       case X86::BI__builtin_ia32_cmppd512_mask:
-        IID = Intrinsic::x86_avx512_cmp_pd_512;
+        IID = Intrinsic::x86_avx512_mask_cmp_pd_512;
         break;
       case X86::BI__builtin_ia32_cmpps128_mask:
-        IID = Intrinsic::x86_avx512_cmp_ps_128;
+        IID = Intrinsic::x86_avx512_mask_cmp_ps_128;
         break;
       case X86::BI__builtin_ia32_cmpps256_mask:
-        IID = Intrinsic::x86_avx512_cmp_ps_256;
+        IID = Intrinsic::x86_avx512_mask_cmp_ps_256;
         break;
       case X86::BI__builtin_ia32_cmppd128_mask:
-        IID = Intrinsic::x86_avx512_cmp_pd_128;
+        IID = Intrinsic::x86_avx512_mask_cmp_pd_128;
         break;
       case X86::BI__builtin_ia32_cmppd256_mask:
-        IID = Intrinsic::x86_avx512_cmp_pd_256;
+        IID = Intrinsic::x86_avx512_mask_cmp_pd_256;
         break;
       }
 
       Function *Intr = CGM.getIntrinsic(IID);
-      if (cast<llvm::VectorType>(Intr->getReturnType())
-              ->getElementType()
-              ->isIntegerTy(1)) {
+      if (IsMaskFCmp) {
         unsigned NumElts =
             cast<llvm::VectorType>(Ops[0]->getType())->getNumElements();
-        Value *MaskIn = Ops[3];
-        Ops.erase(&Ops[3]);
-
+        Ops[3] = getMaskVecValue(*this, Ops[3], NumElts);
         Value *Cmp = Builder.CreateCall(Intr, Ops);
-        return EmitX86MaskedCompareResult(*this, Cmp, NumElts, MaskIn);
+        return EmitX86MaskedCompareResult(*this, Cmp, NumElts, nullptr);
       }
 
       return Builder.CreateCall(Intr, Ops);
@@ -14160,14 +14105,9 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
 
     // Builtins without the _mask suffix return a vector of integers
     // of the same width as the input vectors
-    switch (BuiltinID) {
-    case X86::BI__builtin_ia32_cmpps512_mask:
-    case X86::BI__builtin_ia32_cmppd512_mask:
-    case X86::BI__builtin_ia32_cmpps128_mask:
-    case X86::BI__builtin_ia32_cmpps256_mask:
-    case X86::BI__builtin_ia32_cmppd128_mask:
-    case X86::BI__builtin_ia32_cmppd256_mask: {
-      // FIXME: Support SAE.
+    if (IsMaskFCmp) {
+      // We ignore SAE if strict FP is disabled. We only keep precise
+      // exception behavior under strict FP.
       unsigned NumElts =
           cast<llvm::VectorType>(Ops[0]->getType())->getNumElements();
       Value *Cmp;
@@ -14177,9 +14117,8 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
         Cmp = Builder.CreateFCmp(Pred, Ops[0], Ops[1]);
       return EmitX86MaskedCompareResult(*this, Cmp, NumElts, Ops[3]);
     }
-    default:
-      return getVectorFCmpIR(Pred, IsSignaling);
-    }
+
+    return getVectorFCmpIR(Pred, IsSignaling);
   }
 
   // SSE scalar comparison intrinsics
