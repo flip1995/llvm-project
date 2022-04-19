@@ -88,10 +88,10 @@ config.environment['LLD_IN_TEST'] = '1'
 # cvtres, which always accompanies it.  Alternatively, check if we can use
 # libxml2 to merge manifests.
 if (lit.util.which('cvtres', config.environment['PATH']) or
-        config.llvm_libxml2_enabled):
+        config.have_libxml2):
     config.available_features.add('manifest_tool')
 
-if config.llvm_libxml2_enabled:
+if config.have_libxml2:
     config.available_features.add('libxml2')
 
 if config.have_dia_sdk:

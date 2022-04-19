@@ -108,11 +108,10 @@ bool GCOVFile::readGCNO(GCOVBuffer &buf) {
       for (uint32_t i = 0, e = (length - 1) / 2; i != e; ++i) {
         uint32_t dstNo = buf.getWord(), flags = buf.getWord();
         GCOVBlock *dst = fn->Blocks[dstNo].get();
-        auto arc =
-            std::make_unique<GCOVArc>(*src, *dst, flags & GCOV_ARC_FALLTHROUGH);
+        auto arc = std::make_unique<GCOVArc>(*src, *dst, flags);
         src->addDstEdge(arc.get());
         dst->addSrcEdge(arc.get());
-        if (flags & GCOV_ARC_ON_TREE)
+        if (arc->onTree())
           fn->treeArcs.push_back(std::move(arc));
         else
           fn->arcs.push_back(std::move(arc));
@@ -221,10 +220,22 @@ bool GCOVFile::readGCDA(GCOVBuffer &buf) {
       for (std::unique_ptr<GCOVArc> &arc : fn->arcs) {
         if (!buf.readInt64(arc->Count))
           return false;
-        // FIXME Fix counters
         arc->src.Counter += arc->Count;
-        if (arc->dst.succ.empty())
-          arc->dst.Counter += arc->Count;
+      }
+
+      if (fn->Blocks.size() >= 2) {
+        GCOVBlock &src = *fn->Blocks[0];
+        GCOVBlock &sink =
+            Version < GCOV::V408 ? *fn->Blocks.back() : *fn->Blocks[1];
+        auto arc = std::make_unique<GCOVArc>(sink, src, GCOV_ARC_ON_TREE);
+        sink.addDstEdge(arc.get());
+        src.addSrcEdge(arc.get());
+        fn->treeArcs.push_back(std::move(arc));
+
+        for (GCOVBlock &block : make_pointee_range(fn->Blocks))
+          fn->propagateCounts(block, nullptr);
+        for (size_t i = fn->treeArcs.size() - 1; i; --i)
+          fn->treeArcs[i - 1]->src.Counter += fn->treeArcs[i - 1]->Count;
       }
     }
     pos += 4 * length;
@@ -250,8 +261,24 @@ LLVM_DUMP_METHOD void GCOVFile::dump() const { print(dbgs()); }
 /// reading .gcno and .gcda files.
 void GCOVFile::collectLineCounts(FileInfo &fi) {
   assert(fi.sources.empty());
-  for (StringRef filename : filenames)
+  for (StringRef filename : filenames) {
     fi.sources.emplace_back(filename);
+    SourceInfo &si = fi.sources.back();
+    si.displayName = si.filename;
+    if (!fi.Options.SourcePrefix.empty() &&
+        sys::path::replace_path_prefix(si.displayName, fi.Options.SourcePrefix,
+                                       "") &&
+        !si.displayName.empty()) {
+      // TODO replace_path_prefix may strip the prefix even if the remaining
+      // part does not start with a separator.
+      if (sys::path::is_separator(si.displayName[0]))
+        si.displayName.erase(si.displayName.begin());
+      else
+        si.displayName = si.filename;
+    }
+    if (fi.Options.RelativeOnly && sys::path::is_absolute(si.displayName))
+      si.ignored = true;
+  }
   for (GCOVFunction &f : *this) {
     f.collectLineCounts(fi);
     fi.sources[f.srcIdx].functions.push_back(&f);
@@ -259,6 +286,8 @@ void GCOVFile::collectLineCounts(FileInfo &fi) {
   fi.setRunCount(RunCount);
   fi.setProgramCount(ProgramCount);
 }
+
+bool GCOVArc::onTree() const { return flags & GCOV_ARC_ON_TREE; }
 
 //===----------------------------------------------------------------------===//
 // GCOVFunction implementation.
@@ -271,10 +300,32 @@ uint64_t GCOVFunction::getEntryCount() const {
   return Blocks.front()->getCount();
 }
 
-/// getExitCount - Get the number of times the function returned by retrieving
-/// the exit block's count.
-uint64_t GCOVFunction::getExitCount() const {
-  return Blocks.back()->getCount();
+GCOVBlock &GCOVFunction::getExitBlock() const {
+  return file.getVersion() < GCOV::V408 ? *Blocks.back() : *Blocks[1];
+}
+
+// For each basic block, the sum of incoming edge counts equals the sum of
+// outgoing edge counts by Kirchoff's circuit law. If the unmeasured arcs form a
+// spanning tree, the count for each unmeasured arc (GCOV_ARC_ON_TREE) can be
+// uniquely identified.
+uint64_t GCOVFunction::propagateCounts(const GCOVBlock &v, GCOVArc *pred) {
+  // If GCOV_ARC_ON_TREE edges do form a tree, visited is not needed; otherwise
+  // this prevents infinite recursion.
+  if (!visited.insert(&v).second)
+    return 0;
+
+  uint64_t excess = 0;
+  for (GCOVArc *e : v.srcs())
+    if (e != pred)
+      excess += e->onTree() ? propagateCounts(e->src, e) : e->Count;
+  for (GCOVArc *e : v.dsts())
+    if (e != pred)
+      excess -= e->onTree() ? propagateCounts(e->dst, e) : e->Count;
+  if (int64_t(excess) < 0)
+    excess = -excess;
+  if (pred)
+    pred->Count = excess;
+  return excess;
 }
 
 void GCOVFunction::print(raw_ostream &OS) const {
@@ -322,8 +373,11 @@ void GCOVBlock::print(raw_ostream &OS) const {
   }
   if (!succ.empty()) {
     OS << "\tDestination Edges : ";
-    for (const GCOVArc *Edge : succ)
+    for (const GCOVArc *Edge : succ) {
+      if (Edge->flags & GCOV_ARC_ON_TREE)
+        OS << '*';
       OS << Edge->dst.Number << " (" << Edge->Count << "), ";
+    }
     OS << "\n";
   }
   if (!Lines.empty()) {
@@ -437,41 +491,40 @@ void GCOVBlock::getCyclesCount(const BlockVector &Blocks, uint64_t &Count) {
 }
 
 /// Get the count for the list of blocks which lie on the same line.
-uint64_t GCOVBlock::getLineCount(const BlockVector &Blocks) {
-  uint64_t Count = 0;
-
-  for (auto Block : Blocks) {
-    if (Block->getNumSrcEdges() == 0) {
-      // The block has no predecessors and a non-null counter
-      // (can be the case with entry block in functions).
-      Count += Block->getCount();
+uint64_t GCOVBlock::getLineCount(const BlockVector &blocks) {
+  uint64_t count = 0;
+  for (const GCOVBlock *block : blocks) {
+    if (block->Number == 0) {
+      // For nonstandard control flows, arcs into the exit block may be
+      // duplicately counted (fork) or not be counted (abnormal exit), and thus
+      // the (exit,entry) counter may be inaccurate. Count the entry block with
+      // the outgoing arcs.
+      for (const GCOVArc *arc : block->succ)
+        count += arc->Count;
     } else {
       // Add counts from predecessors that are not on the same line.
-      for (auto E : Block->srcs()) {
-        const GCOVBlock *W = &E->src;
-        if (find(Blocks, W) == Blocks.end()) {
-          Count += E->Count;
-        }
-      }
+      for (const GCOVArc *arc : block->pred)
+        if (!llvm::is_contained(blocks, &arc->src))
+          count += arc->Count;
     }
-    for (auto E : Block->dsts()) {
-      E->CyclesCount = E->Count;
-    }
+    for (GCOVArc *arc : block->succ)
+      arc->CyclesCount = arc->Count;
   }
 
-  GCOVBlock::getCyclesCount(Blocks, Count);
-
-  return Count;
+  GCOVBlock::getCyclesCount(blocks, count);
+  return count;
 }
 
 //===----------------------------------------------------------------------===//
 // FileInfo implementation.
 
-// Safe integer division, returns 0 if numerator is 0.
-static uint32_t safeDiv(uint64_t Numerator, uint64_t Divisor) {
-  if (!Numerator)
+// Format dividend/divisor as a percentage. Return 1 if the result is greater
+// than 0% and less than 1%.
+static uint32_t formatPercentage(uint64_t dividend, uint64_t divisor) {
+  if (!dividend || !divisor)
     return 0;
-  return Numerator / Divisor;
+  dividend *= 100;
+  return dividend < divisor ? 1 : dividend / divisor;
 }
 
 // This custom division function mimics gcov's branch ouputs:
@@ -627,6 +680,10 @@ void FileInfo::print(raw_ostream &InfoOS, StringRef MainFilename,
   llvm::sort(Filenames);
 
   for (StringRef Filename : Filenames) {
+    SourceInfo &source = sources[file.filenameToIdx.find(Filename)->second];
+    if (source.ignored)
+      continue;
+
     auto AllLines =
         Options.Intermediate ? LineConsumer() : LineConsumer(Filename);
     std::string CoveragePath = getCoveragePath(Filename, MainFilename);
@@ -638,7 +695,7 @@ void FileInfo::print(raw_ostream &InfoOS, StringRef MainFilename,
     raw_ostream &CovOS =
         !Options.NoOutput && Options.UseStdout ? llvm::outs() : *CovStream;
 
-    CovOS << "        -:    0:Source:" << Filename << "\n";
+    CovOS << "        -:    0:Source:" << source.displayName << "\n";
     CovOS << "        -:    0:Graph:" << GCNOFile << "\n";
     CovOS << "        -:    0:Data:" << GCDAFile << "\n";
     CovOS << "        -:    0:Runs:" << RunCount << "\n";
@@ -646,7 +703,7 @@ void FileInfo::print(raw_ostream &InfoOS, StringRef MainFilename,
       CovOS << "        -:    0:Programs:" << ProgramCount << "\n";
 
     const LineData &Line = LineInfo[Filename];
-    GCOVCoverage FileCoverage(Filename);
+    GCOVCoverage FileCoverage(source.displayName);
     for (uint32_t LineIndex = 0; LineIndex < Line.LastLine || !AllLines.empty();
          ++LineIndex) {
       if (Options.BranchInfo) {
@@ -730,7 +787,6 @@ void FileInfo::print(raw_ostream &InfoOS, StringRef MainFilename,
         }
       }
     }
-    SourceInfo &source = sources[file.filenameToIdx.find(Filename)->second];
     source.name = CoveragePath;
     source.coverage = FileCoverage;
   }
@@ -794,14 +850,18 @@ void FileInfo::printFunctionSummary(raw_ostream &OS,
   for (const GCOVFunction *Func : Funcs) {
     uint64_t EntryCount = Func->getEntryCount();
     uint32_t BlocksExec = 0;
+    const GCOVBlock &ExitBlock = Func->getExitBlock();
+    uint64_t exitCount = 0;
+    for (const GCOVArc *arc : ExitBlock.pred)
+      exitCount += arc->Count;
     for (const GCOVBlock &Block : Func->blocks())
-      if (Block.getNumDstEdges() && Block.getCount())
+      if (Block.Number != 0 && &Block != &ExitBlock && Block.getCount())
         ++BlocksExec;
 
     OS << "function " << Func->getName() << " called " << EntryCount
-       << " returned " << safeDiv(Func->getExitCount() * 100, EntryCount)
+       << " returned " << formatPercentage(exitCount, EntryCount)
        << "% blocks executed "
-       << safeDiv(BlocksExec * 100, Func->getNumBlocks() - 1) << "%\n";
+       << formatPercentage(BlocksExec, Func->getNumBlocks() - 2) << "%\n";
   }
 }
 
@@ -887,6 +947,8 @@ void FileInfo::printFuncCoverage(raw_ostream &OS) const {
 // printFileCoverage - Print per-file coverage info.
 void FileInfo::printFileCoverage(raw_ostream &OS) const {
   for (const SourceInfo &source : sources) {
+    if (source.ignored)
+      continue;
     const GCOVCoverage &Coverage = source.coverage;
     OS << "File '" << Coverage.Name << "'\n";
     printCoverage(OS, Coverage);

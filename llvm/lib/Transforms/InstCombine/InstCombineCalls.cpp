@@ -335,11 +335,14 @@ Instruction *InstCombinerImpl::simplifyMaskedStore(IntrinsicInst &II) {
     return new StoreInst(II.getArgOperand(0), StorePtr, false, Alignment);
   }
 
+  if (isa<ScalableVectorType>(ConstMask->getType()))
+    return nullptr;
+
   // Use masked off lanes to simplify operands via SimplifyDemandedVectorElts
   APInt DemandedElts = possiblyDemandedEltsInMask(ConstMask);
   APInt UndefElts(DemandedElts.getBitWidth(), 0);
-  if (Value *V = SimplifyDemandedVectorElts(II.getOperand(0),
-                                            DemandedElts, UndefElts))
+  if (Value *V =
+          SimplifyDemandedVectorElts(II.getOperand(0), DemandedElts, UndefElts))
     return replaceOperand(II, 0, V);
 
   return nullptr;
@@ -371,14 +374,17 @@ Instruction *InstCombinerImpl::simplifyMaskedScatter(IntrinsicInst &II) {
   if (ConstMask->isNullValue())
     return eraseInstFromFunction(II);
 
+  if (isa<ScalableVectorType>(ConstMask->getType()))
+    return nullptr;
+
   // Use masked off lanes to simplify operands via SimplifyDemandedVectorElts
   APInt DemandedElts = possiblyDemandedEltsInMask(ConstMask);
   APInt UndefElts(DemandedElts.getBitWidth(), 0);
-  if (Value *V = SimplifyDemandedVectorElts(II.getOperand(0),
-                                            DemandedElts, UndefElts))
+  if (Value *V =
+          SimplifyDemandedVectorElts(II.getOperand(0), DemandedElts, UndefElts))
     return replaceOperand(II, 0, V);
-  if (Value *V = SimplifyDemandedVectorElts(II.getOperand(1),
-                                            DemandedElts, UndefElts))
+  if (Value *V =
+          SimplifyDemandedVectorElts(II.getOperand(1), DemandedElts, UndefElts))
     return replaceOperand(II, 1, V);
 
   return nullptr;
@@ -838,6 +844,19 @@ Instruction *foldSetOffsetOrAddress(InstCombiner *IC, IntrinsicInst *II) {
   return nullptr;
 }
 
+static Optional<bool> getKnownSign(Value *Op, Instruction *CxtI,
+                                   const DataLayout &DL, AssumptionCache *AC,
+                                   DominatorTree *DT) {
+  KnownBits Known = computeKnownBits(Op, DL, 0, AC, CxtI, DT);
+  if (Known.isNonNegative())
+    return false;
+  if (Known.isNegative())
+    return true;
+
+  return isImpliedByDomCondition(
+      ICmpInst::ICMP_SLT, Op, Constant::getNullValue(Op->getType()), CxtI, DL);
+}
+
 /// CallInst simplification. This mostly only handles folding of intrinsic
 /// instructions. For normal calls, it allows visitCallBase to do the heavy
 /// lifting.
@@ -973,11 +992,9 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     if (match(IIOperand, m_Select(m_Value(), m_Neg(m_Value(X)), m_Deferred(X))))
       return replaceOperand(*II, 0, X);
 
-    if (Optional<bool> Imp = isImpliedByDomCondition(
-            ICmpInst::ICMP_SGE, IIOperand,
-            Constant::getNullValue(IIOperand->getType()), II, DL)) {
+    if (Optional<bool> Sign = getKnownSign(IIOperand, II, DL, &AC, &DT)) {
       // abs(x) -> x if x >= 0
-      if (*Imp)
+      if (!*Sign)
         return replaceInstUsesWith(*II, IIOperand);
 
       // abs(x) -> -x if x < 0
@@ -1744,11 +1761,16 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     break;
   case Intrinsic::assume: {
     Value *IIOperand = II->getArgOperand(0);
+    SmallVector<OperandBundleDef, 4> OpBundles;
+    II->getOperandBundlesAsDefs(OpBundles);
+    bool HasOpBundles = !OpBundles.empty();
     // Remove an assume if it is followed by an identical assume.
     // TODO: Do we need this? Unless there are conflicting assumptions, the
     // computeKnownBits(IIOperand) below here eliminates redundant assumes.
     Instruction *Next = II->getNextNonDebugInstruction();
-    if (match(Next, m_Intrinsic<Intrinsic::assume>(m_Specific(IIOperand))))
+    if (HasOpBundles &&
+        match(Next, m_Intrinsic<Intrinsic::assume>(m_Specific(IIOperand))) &&
+        !cast<IntrinsicInst>(Next)->hasOperandBundles())
       return eraseInstFromFunction(CI);
 
     // Canonicalize assume(a && b) -> assume(a); assume(b);
@@ -1758,14 +1780,15 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
     Value *AssumeIntrinsic = II->getCalledOperand();
     Value *A, *B;
     if (match(IIOperand, m_And(m_Value(A), m_Value(B)))) {
-      Builder.CreateCall(AssumeIntrinsicTy, AssumeIntrinsic, A, II->getName());
+      Builder.CreateCall(AssumeIntrinsicTy, AssumeIntrinsic, A, OpBundles,
+                         II->getName());
       Builder.CreateCall(AssumeIntrinsicTy, AssumeIntrinsic, B, II->getName());
       return eraseInstFromFunction(*II);
     }
     // assume(!(a || b)) -> assume(!a); assume(!b);
     if (match(IIOperand, m_Not(m_Or(m_Value(A), m_Value(B))))) {
       Builder.CreateCall(AssumeIntrinsicTy, AssumeIntrinsic,
-                         Builder.CreateNot(A), II->getName());
+                         Builder.CreateNot(A), OpBundles, II->getName());
       Builder.CreateCall(AssumeIntrinsicTy, AssumeIntrinsic,
                          Builder.CreateNot(B), II->getName());
       return eraseInstFromFunction(*II);
@@ -1781,7 +1804,8 @@ Instruction *InstCombinerImpl::visitCallInst(CallInst &CI) {
         isValidAssumeForContext(II, LHS, &DT)) {
       MDNode *MD = MDNode::get(II->getContext(), None);
       LHS->setMetadata(LLVMContext::MD_nonnull, MD);
-      return eraseInstFromFunction(*II);
+      if (!HasOpBundles)
+        return eraseInstFromFunction(*II);
 
       // TODO: apply nonnull return attributes to calls and invokes
       // TODO: apply range metadata for range check patterns?
