@@ -244,10 +244,8 @@ int IRTranslator::getOrCreateFrameIndex(const AllocaInst &AI) {
 }
 
 Align IRTranslator::getMemOpAlign(const Instruction &I) {
-  if (const StoreInst *SI = dyn_cast<StoreInst>(&I)) {
-    Type *ValTy = SI->getValueOperand()->getType();
-    return SI->getAlign().getValueOr(DL->getABITypeAlign(ValTy));
-  }
+  if (const StoreInst *SI = dyn_cast<StoreInst>(&I))
+    return SI->getAlign();
   if (const LoadInst *LI = dyn_cast<LoadInst>(&I)) {
     return DL->getValueOrABITypeAlignment(LI->getAlign(), LI->getType());
   }
@@ -1879,7 +1877,7 @@ bool IRTranslator::translateAlloca(const User &U,
       MIRBuilder.buildConstant(IntPtrTy, ~(uint64_t)(StackAlign.value() - 1));
   auto AlignedAlloc = MIRBuilder.buildAnd(IntPtrTy, AllocAdd, AlignCst);
 
-  Align Alignment = max(AI.getAlign(), DL->getPrefTypeAlign(Ty));
+  Align Alignment = std::max(AI.getAlign(), DL->getPrefTypeAlign(Ty));
   if (Alignment <= StackAlign)
     Alignment = Align(1);
   MIRBuilder.buildDynStackAlloc(getOrCreateVReg(AI), AlignedAlloc, Alignment);
