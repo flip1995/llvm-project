@@ -1764,17 +1764,18 @@ Instruction *InstCombinerImpl::visitAnd(BinaryOperator &I) {
     return replaceInstUsesWith(I, V);
 
   Value *Op0 = I.getOperand(0), *Op1 = I.getOperand(1);
+
+  Value *X, *Y;
+  if (match(Op0, m_OneUse(m_LogicalShift(m_One(), m_Value(X)))) &&
+      match(Op1, m_One())) {
+    // (1 << X) & 1 --> zext(X == 0)
+    // (1 >> X) & 1 --> zext(X == 0)
+    Value *IsZero = Builder.CreateICmpEQ(X, ConstantInt::get(Ty, 0));
+    return new ZExtInst(IsZero, Ty);
+  }
+
   const APInt *C;
   if (match(Op1, m_APInt(C))) {
-    Value *X, *Y;
-    if (match(Op0, m_OneUse(m_LogicalShift(m_One(), m_Value(X)))) &&
-        C->isOneValue()) {
-      // (1 << X) & 1 --> zext(X == 0)
-      // (1 >> X) & 1 --> zext(X == 0)
-      Value *IsZero = Builder.CreateICmpEQ(X, ConstantInt::get(Ty, 0));
-      return new ZExtInst(IsZero, Ty);
-    }
-
     const APInt *XorC;
     if (match(Op0, m_OneUse(m_Xor(m_Value(X), m_APInt(XorC))))) {
       // (X ^ C1) & C2 --> (X & C2) ^ (C1&C2)
@@ -3334,6 +3335,10 @@ Instruction *InstCombinerImpl::visitXor(BinaryOperator &I) {
   if (match(Op0, m_c_And(m_Value(A), m_Not(m_Value(B)))) &&
       match(Op1, m_Not(m_Specific(A))))
     return BinaryOperator::CreateNot(Builder.CreateAnd(A, B));
+
+  // (~A & B) ^ A --> A | B -- There are 4 commuted variants.
+  if (match(&I, m_c_Xor(m_c_And(m_Not(m_Value(A)), m_Value(B)), m_Deferred(A))))
+    return BinaryOperator::CreateOr(A, B);
 
   // (A | B) ^ (A | C) --> (B ^ C) & ~A -- There are 4 commuted variants.
   // TODO: Loosen one-use restriction if common operand is a constant.

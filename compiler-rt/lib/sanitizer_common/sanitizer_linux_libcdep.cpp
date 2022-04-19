@@ -14,7 +14,7 @@
 #include "sanitizer_platform.h"
 
 #if SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_NETBSD || \
-    SANITIZER_OPENBSD || SANITIZER_SOLARIS
+    SANITIZER_SOLARIS
 
 #include "sanitizer_allocator_internal.h"
 #include "sanitizer_atomic.h"
@@ -48,11 +48,6 @@
 #include <osreldate.h>
 #include <sys/sysctl.h>
 #define pthread_getattr_np pthread_attr_get_np
-#endif
-
-#if SANITIZER_OPENBSD
-#include <pthread_np.h>
-#include <sys/sysctl.h>
 #endif
 
 #if SANITIZER_NETBSD
@@ -143,12 +138,7 @@ void GetThreadStackTopAndBottom(bool at_initialization, uptr *stack_top,
   CHECK_EQ(thr_stksegment(&ss), 0);
   stacksize = ss.ss_size;
   stackaddr = (char *)ss.ss_sp - stacksize;
-#elif SANITIZER_OPENBSD
-  stack_t sattr;
-  CHECK_EQ(pthread_stackseg_np(pthread_self(), &sattr), 0);
-  stackaddr = sattr.ss_sp;
-  stacksize = sattr.ss_size;
-#else   // !SANITIZER_SOLARIS
+#else  // !SANITIZER_SOLARIS
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   CHECK_EQ(pthread_getattr_np(pthread_self(), &attr), 0);
@@ -195,7 +185,7 @@ __attribute__((unused)) static bool GetLibcVersion(int *major, int *minor,
 }
 
 #if !SANITIZER_FREEBSD && !SANITIZER_ANDROID && !SANITIZER_GO && \
-    !SANITIZER_NETBSD && !SANITIZER_OPENBSD && !SANITIZER_SOLARIS
+    !SANITIZER_NETBSD && !SANITIZER_SOLARIS
 static usize g_tls_size;
 
 #ifdef __i386__
@@ -384,12 +374,9 @@ uptr ThreadSelf() {
   descr_addr = reinterpret_cast<uptr>(__builtin_thread_pointer()) -
                                       ThreadDescriptorSize();
 #elif SANITIZER_RISCV64
-  uptr tcb_end;
-  asm volatile("mv %0, tp;\n" : "=r"(tcb_end));
   // https://github.com/riscv/riscv-elf-psabi-doc/issues/53
-  const uptr kTlsTcbOffset = 0x800;
-  descr_addr =
-      reinterpret_cast<uptr>(tcb_end - kTlsTcbOffset - TlsPreTcbSize());
+  uptr thread_pointer = reinterpret_cast<uptr>(__builtin_thread_pointer());
+  descr_addr = thread_pointer - TlsPreTcbSize();
 #elif defined(__s390__)
   descr_addr = reinterpret_cast<uptr>(__builtin_thread_pointer());
 #elif defined(__powerpc64__)
@@ -539,9 +526,6 @@ static void GetTls(uptr *addr, usize *size) {
       *addr = (uptr)tcb->tcb_dtv[1];
     }
   }
-#elif SANITIZER_OPENBSD
-  *addr = 0;
-  *size = 0;
 #elif SANITIZER_ANDROID
   *addr = 0;
   *size = 0;
@@ -558,7 +542,7 @@ static void GetTls(uptr *addr, usize *size) {
 #if !SANITIZER_GO
 usize GetTlsSize() {
 #if SANITIZER_FREEBSD || SANITIZER_ANDROID || SANITIZER_NETBSD || \
-    SANITIZER_OPENBSD || SANITIZER_SOLARIS
+    SANITIZER_SOLARIS
   uptr addr;
   usize size;
   GetTls(&addr, &size);
@@ -596,13 +580,13 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, usize *stk_size,
 #endif
 }
 
-#if !SANITIZER_FREEBSD && !SANITIZER_OPENBSD
+#if !SANITIZER_FREEBSD
 typedef ElfW(Phdr) Elf_Phdr;
 #elif SANITIZER_WORDSIZE == 32 && __FreeBSD_version <= 902001  // v9.2
 #define Elf_Phdr XElf32_Phdr
 #define dl_phdr_info xdl_phdr_info
 #define dl_iterate_phdr(c, b) xdl_iterate_phdr((c), (b))
-#endif  // !SANITIZER_FREEBSD && !SANITIZER_OPENBSD
+#endif  // !SANITIZER_FREEBSD
 
 struct DlIteratePhdrData {
   InternalMmapVectorNoCtor<LoadedModule> *modules;
@@ -722,7 +706,7 @@ usize GetRSS() {
 // sysconf(_SC_NPROCESSORS_{CONF,ONLN}) cannot be used on most platforms as
 // they allocate memory.
 u32 GetNumberOfCPUs() {
-#if SANITIZER_FREEBSD || SANITIZER_NETBSD || SANITIZER_OPENBSD
+#if SANITIZER_FREEBSD || SANITIZER_NETBSD
   u32 ncpu;
   int req[2];
   usize len = sizeof(ncpu);
@@ -879,7 +863,6 @@ u64 MonotonicNanoTime() {
 }
 #endif  // SANITIZER_LINUX && !SANITIZER_GO
 
-#if !SANITIZER_OPENBSD
 void ReExec() {
   const char *pathname = "/proc/self/exe";
 
@@ -911,7 +894,6 @@ void ReExec() {
   Printf("execve failed, errno %d\n", rverrno);
   Die();
 }
-#endif  // !SANITIZER_OPENBSD
 
 void UnmapFromTo(uptr from, uptr to) {
   if (to == from)
