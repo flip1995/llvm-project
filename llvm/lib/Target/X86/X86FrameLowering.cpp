@@ -2061,8 +2061,7 @@ bool X86FrameLowering::assignCalleeSavedSpillSlots(
 
 bool X86FrameLowering::spillCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
-    const std::vector<CalleeSavedInfo> &CSI,
-    const TargetRegisterInfo *TRI) const {
+    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
   DebugLoc DL = MBB.findDebugLoc(MI);
 
   // Don't save CSRs in 32-bit EH funclets. The caller saves EBX, EBP, ESI, EDI
@@ -3218,4 +3217,25 @@ void X86FrameLowering::processFunctionBeforeFrameFinalized(
   addFrameReference(BuildMI(MBB, MBBI, DL, TII.get(X86::MOV64mi32)),
                     UnwindHelpFI)
       .addImm(-2);
+}
+
+void X86FrameLowering::processFunctionBeforeFrameIndicesReplaced(
+    MachineFunction &MF, RegScavenger *RS) const {
+  if (STI.is32Bit() && MF.hasEHFunclets())
+    restoreWinEHStackPointersInParent(MF);
+}
+
+void X86FrameLowering::restoreWinEHStackPointersInParent(
+    MachineFunction &MF) const {
+  // 32-bit functions have to restore stack pointers when control is transferred
+  // back to the parent function. These blocks are identified as eh pads that
+  // are not funclet entries.
+  bool IsSEH = isAsynchronousEHPersonality(
+      classifyEHPersonality(MF.getFunction().getPersonalityFn()));
+  for (MachineBasicBlock &MBB : MF) {
+    bool NeedsRestore = MBB.isEHPad() && !MBB.isEHFuncletEntry();
+    if (NeedsRestore)
+      restoreWin32EHStackPointers(MBB, MBB.begin(), DebugLoc(),
+                                  /*RestoreSP=*/IsSEH);
+  }
 }

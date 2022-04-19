@@ -960,7 +960,7 @@ bool isGCN3Encoding(const MCSubtargetInfo &STI) {
 
 bool isSGPR(unsigned Reg, const MCRegisterInfo* TRI) {
   const MCRegisterClass SGPRClass = TRI->getRegClass(AMDGPU::SReg_32RegClassID);
-  const unsigned FirstSubReg = TRI->getSubReg(Reg, 1);
+  const unsigned FirstSubReg = TRI->getSubReg(Reg, AMDGPU::sub0);
   return SGPRClass.contains(FirstSubReg != 0 ? FirstSubReg : Reg) ||
     Reg == AMDGPU::SCC;
 }
@@ -1345,8 +1345,11 @@ SIModeRegisterDefaults::SIModeRegisterDefaults(const Function &F,
   if (!DX10ClampAttr.empty())
     DX10Clamp = DX10ClampAttr == "true";
 
-  FP32Denormals = ST.hasFP32Denormals(F);
-  FP64FP16Denormals = ST.hasFP64FP16Denormals(F);
+  // FIXME: Split this when denormal-fp-math is used
+  FP32InputDenormals = ST.hasFP32Denormals(F);
+  FP32OutputDenormals = FP32InputDenormals;
+  FP64FP16InputDenormals = ST.hasFP64FP16Denormals(F);
+  FP64FP16OutputDenormals = FP64FP16InputDenormals;
 }
 
 namespace {

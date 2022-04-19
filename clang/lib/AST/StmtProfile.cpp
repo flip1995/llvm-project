@@ -517,6 +517,8 @@ void OMPClauseProfiler::VisitOMPCaptureClause(const OMPCaptureClause *) {}
 
 void OMPClauseProfiler::VisitOMPSeqCstClause(const OMPSeqCstClause *) {}
 
+void OMPClauseProfiler::VisitOMPAcqRelClause(const OMPAcqRelClause *) {}
+
 void OMPClauseProfiler::VisitOMPThreadsClause(const OMPThreadsClause *) {}
 
 void OMPClauseProfiler::VisitOMPSIMDClause(const OMPSIMDClause *) {}
@@ -1540,8 +1542,8 @@ static Stmt::StmtClass DecodeOperatorCall(const CXXOperatorCallExpr *S,
     return Stmt::BinaryOperatorClass;
 
   case OO_Spaceship:
-    // FIXME: Update this once we support <=> expressions.
-    llvm_unreachable("<=> expressions not supported yet");
+    BinaryOp = BO_Cmp;
+    return Stmt::BinaryOperatorClass;
 
   case OO_AmpAmp:
     BinaryOp = BO_LAnd;

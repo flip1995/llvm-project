@@ -307,10 +307,9 @@ static void getWebAssemblyTargetFeatures(const ArgList &Args,
   handleTargetFeaturesGroup(Args, Features, options::OPT_m_wasm_Features_Group);
 }
 
-static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
+static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
                               const ArgList &Args, ArgStringList &CmdArgs,
-                              bool ForAS) {
-  const Driver &D = TC.getDriver();
+                              bool ForAS, bool IsAux = false) {
   std::vector<StringRef> Features;
   switch (Triple.getArch()) {
   default:
@@ -327,7 +326,7 @@ static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
   case llvm::Triple::armeb:
   case llvm::Triple::thumb:
   case llvm::Triple::thumbeb:
-    arm::getARMTargetFeatures(TC, Triple, Args, CmdArgs, Features, ForAS);
+    arm::getARMTargetFeatures(D, Triple, Args, CmdArgs, Features, ForAS);
     break;
 
   case llvm::Triple::ppc:
@@ -340,7 +339,7 @@ static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
     riscv::getRISCVTargetFeatures(D, Triple, Args, Features);
     break;
   case llvm::Triple::systemz:
-    systemz::getSystemZTargetFeatures(Args, Features);
+    systemz::getSystemZTargetFeatures(D, Args, Features);
     break;
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_32:
@@ -388,7 +387,7 @@ static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
     if (Last != I)
       continue;
 
-    CmdArgs.push_back("-target-feature");
+    CmdArgs.push_back(IsAux ? "-aux-target-feature" : "-target-feature");
     CmdArgs.push_back(Name.data());
   }
 }
@@ -1598,7 +1597,7 @@ void Clang::RenderTargetOptions(const llvm::Triple &EffectiveTriple,
   const ToolChain &TC = getToolChain();
 
   // Add the target features
-  getTargetFeatures(TC, EffectiveTriple, Args, CmdArgs, false);
+  getTargetFeatures(TC.getDriver(), EffectiveTriple, Args, CmdArgs, false);
 
   // Add target specific flags.
   switch (TC.getArch()) {
@@ -2078,6 +2077,16 @@ void Clang::AddSystemZTargetArgs(const ArgList &Args,
     CmdArgs.push_back("-mbackchain");
   if (HasPackedStack)
     CmdArgs.push_back("-mpacked-stack");
+
+  systemz::FloatABI FloatABI =
+      systemz::getSystemZFloatABI(getToolChain().getDriver(), Args);
+
+  if (FloatABI == systemz::FloatABI::Soft) {
+    // Floating point operations and argument passing are soft.
+    CmdArgs.push_back("-msoft-float");
+    CmdArgs.push_back("-mfloat-abi");
+    CmdArgs.push_back("soft");
+  }
 }
 
 static void addX86AlignBranchArgs(const Driver &D, const ArgList &Args,
@@ -2697,7 +2706,7 @@ static void RenderFloatingPointOptions(const ToolChain &TC, const Driver &D,
 
     case options::OPT_fdenormal_fp_math_EQ:
       DenormalFPMath = llvm::parseDenormalFPAttribute(A->getValue());
-      if (DenormalFPMath == llvm::DenormalMode::Invalid) {
+      if (!DenormalFPMath.isValid()) {
         D.Diag(diag::err_drv_invalid_value)
             << A->getAsString(Args) << A->getValue();
       }
@@ -2705,7 +2714,7 @@ static void RenderFloatingPointOptions(const ToolChain &TC, const Driver &D,
 
     case options::OPT_fdenormal_fp_math_f32_EQ:
       DenormalFP32Math = llvm::parseDenormalFPAttribute(A->getValue());
-      if (DenormalFP32Math == llvm::DenormalMode::Invalid) {
+      if (!DenormalFP32Math.isValid()) {
         D.Diag(diag::err_drv_invalid_value)
             << A->getAsString(Args) << A->getValue();
       }
@@ -2824,7 +2833,7 @@ static void RenderFloatingPointOptions(const ToolChain &TC, const Driver &D,
       if (HonorINFs && HonorNaNs &&
         !AssociativeMath && !ReciprocalMath &&
         SignedZeros && TrappingMath && RoundingFPMath &&
-        DenormalFPMath != llvm::DenormalMode::IEEE &&
+        DenormalFPMath != llvm::DenormalMode::getIEEE() &&
         FPContract.empty())
         // OK: Current Arg doesn't conflict with -ffp-model=strict
         ;
@@ -2872,14 +2881,18 @@ static void RenderFloatingPointOptions(const ToolChain &TC, const Driver &D,
     CmdArgs.push_back("-fno-trapping-math");
 
   // TODO: Omit flag for the default IEEE instead
-  if (DenormalFPMath != llvm::DenormalMode::Invalid) {
-    CmdArgs.push_back(Args.MakeArgString(
-        "-fdenormal-fp-math=" + llvm::denormalModeName(DenormalFPMath)));
+  if (DenormalFPMath.isValid()) {
+    llvm::SmallString<64> DenormFlag;
+    llvm::raw_svector_ostream ArgStr(DenormFlag);
+    ArgStr << "-fdenormal-fp-math=" << DenormalFPMath;
+    CmdArgs.push_back(Args.MakeArgString(ArgStr.str()));
   }
 
-  if (DenormalFP32Math != llvm::DenormalMode::Invalid) {
-    CmdArgs.push_back(Args.MakeArgString(
-        "-fdenormal-fp-math-f32=" + llvm::denormalModeName(DenormalFP32Math)));
+  if (DenormalFP32Math.isValid()) {
+    llvm::SmallString<64> DenormFlag;
+    llvm::raw_svector_ostream ArgStr(DenormFlag);
+    ArgStr << "-fdenormal-fp-math-f32=" << DenormalFP32Math;
+    CmdArgs.push_back(Args.MakeArgString(ArgStr.str()));
   }
 
   if (!FPContract.empty())
@@ -4081,6 +4094,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(NormalizedTriple));
   }
 
+  if (Args.hasFlag(options::OPT_fsycl, options::OPT_fno_sycl, false))
+    CmdArgs.push_back("-fsycl-is-device");
+
   if (IsOpenMPDevice) {
     // We have to pass the triple of the host if compiling for an OpenMP device.
     std::string NormalizedTriple =
@@ -4684,6 +4700,23 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasFlag(options::OPT_funwind_tables, options::OPT_fno_unwind_tables,
                    AsynchronousUnwindTables))
     CmdArgs.push_back("-munwind-tables");
+
+  // Prepare `-aux-target-cpu` and `-aux-target-feature` unless
+  // `--gpu-use-aux-triple-only` is specified.
+  if (!Args.getLastArg(options::OPT_gpu_use_aux_triple_only) &&
+      ((IsCuda && JA.isDeviceOffloading(Action::OFK_Cuda)) ||
+       (IsHIP && JA.isDeviceOffloading(Action::OFK_HIP)))) {
+    const ArgList &HostArgs =
+        C.getArgsForToolChain(nullptr, StringRef(), Action::OFK_None);
+    std::string HostCPU =
+        getCPUName(HostArgs, *TC.getAuxTriple(), /*FromAs*/ false);
+    if (!HostCPU.empty()) {
+      CmdArgs.push_back("-aux-target-cpu");
+      CmdArgs.push_back(Args.MakeArgString(HostCPU));
+    }
+    getTargetFeatures(D, *TC.getAuxTriple(), HostArgs, CmdArgs,
+                      /*ForAS*/ false, /*IsAux*/ true);
+  }
 
   TC.addClangTargetOptions(Args, CmdArgs, JA.getOffloadingDeviceKind());
 
@@ -5805,7 +5838,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_dM);
   Args.AddLastArg(CmdArgs, options::OPT_dD);
 
-  Args.AddLastArg(CmdArgs, options::OPT_fmax_tokens);
+  Args.AddLastArg(CmdArgs, options::OPT_fmax_tokens_EQ);
 
   // Handle serialized diagnostics.
   if (Arg *A = Args.getLastArg(options::OPT__serialize_diags)) {
@@ -6747,7 +6780,7 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   // Add the target features
-  getTargetFeatures(getToolChain(), Triple, Args, CmdArgs, true);
+  getTargetFeatures(D, Triple, Args, CmdArgs, true);
 
   // Ignore explicit -force_cpusubtype_ALL option.
   (void)Args.hasArg(options::OPT_force__cpusubtype__ALL);

@@ -161,15 +161,35 @@ public:
   }
 
   uint64_t size() const { return Size; }
-  uint64_t getDstAlign() const {
-    return DstAlignCanChange ? 0 : DstAlign.value();
+  Align getDstAlign() const {
+    assert(!DstAlignCanChange);
+    return DstAlign;
   }
+  bool isFixedDstAlign() const { return !DstAlignCanChange; }
   bool allowOverlap() const { return AllowOverlap; }
   bool isMemset() const { return IsMemset; }
   bool isMemcpy() const { return !IsMemset; }
-  bool isZeroMemset() const { return ZeroMemset; }
-  bool isMemcpyStrSrc() const { return MemcpyStrSrc; }
-  uint64_t getSrcAlign() const { return isMemset() ? 0 : SrcAlign.value(); }
+  bool isMemcpyWithFixedDstAlign() const {
+    return isMemcpy() && !DstAlignCanChange;
+  }
+  bool isZeroMemset() const { return isMemset() && ZeroMemset; }
+  bool isMemcpyStrSrc() const {
+    assert(isMemcpy() && "Must be a memcpy");
+    return MemcpyStrSrc;
+  }
+  Align getSrcAlign() const {
+    assert(isMemcpy() && "Must be a memcpy");
+    return SrcAlign;
+  }
+  bool isSrcAligned(Align AlignCheck) const {
+    return isMemset() || llvm::isAligned(AlignCheck, SrcAlign.value());
+  }
+  bool isDstAligned(Align AlignCheck) const {
+    return DstAlignCanChange || llvm::isAligned(AlignCheck, DstAlign.value());
+  }
+  bool isAligned(Align AlignCheck) const {
+    return isSrcAligned(AlignCheck) && isDstAligned(AlignCheck);
+  }
 };
 
 /// This base class for TargetLowering contains the SelectionDAG-independent
@@ -3497,20 +3517,6 @@ public:
   virtual bool isDesirableToCommuteWithShift(const SDNode *N,
                                              CombineLevel Level) const {
     return true;
-  }
-
-  // Return true if it is profitable to combine a BUILD_VECTOR with a stride-pattern
-  // to a shuffle and a truncate.
-  // Example of such a combine:
-  // v4i32 build_vector((extract_elt V, 1),
-  //                    (extract_elt V, 3),
-  //                    (extract_elt V, 5),
-  //                    (extract_elt V, 7))
-  //  -->
-  // v4i32 truncate (bitcast (shuffle<1,u,3,u,5,u,7,u> V, u) to v4i64)
-  virtual bool isDesirableToCombineBuildVectorToShuffleTruncate(
-      ArrayRef<int> ShuffleMask, EVT SrcVT, EVT TruncVT) const {
-    return false;
   }
 
   /// Return true if the target has native support for the specified value type

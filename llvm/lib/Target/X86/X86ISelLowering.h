@@ -541,12 +541,6 @@ namespace llvm {
       MEMBARRIER,
       MFENCE,
 
-      // Store FP status word into i16 register.
-      FNSTSW16r,
-
-      // Store contents of %ah into %eflags.
-      SAHF,
-
       // Get a random integer and indicate whether it is valid in CF.
       RDRAND,
 
@@ -794,19 +788,6 @@ namespace llvm {
                             SelectionDAG &DAG) const override;
 
     SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
-
-    // Return true if it is profitable to combine a BUILD_VECTOR with a
-    // stride-pattern to a shuffle and a truncate.
-    // Example of such a combine:
-    // v4i32 build_vector((extract_elt V, 1),
-    //                    (extract_elt V, 3),
-    //                    (extract_elt V, 5),
-    //                    (extract_elt V, 7))
-    //  -->
-    // v4i32 truncate (bitcast (shuffle<1,u,3,u,4,u,5,u,6,u,7,u> V, u) to
-    // v4i64)
-    bool isDesirableToCombineBuildVectorToShuffleTruncate(
-        ArrayRef<int> ShuffleMask, EVT SrcVT, EVT TruncVT) const override;
 
     /// Return true if the target has native support for
     /// the specified value type and it is 'desirable' to use the type for the
@@ -1334,6 +1315,7 @@ namespace llvm {
 
     SDValue FP_TO_INTHelper(SDValue Op, SelectionDAG &DAG, bool isSigned,
                             SDValue &Chain) const;
+    SDValue LRINT_LLRINTHelper(SDNode *N, SelectionDAG &DAG) const;
 
     SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerVSELECT(SDValue Op, SelectionDAG &DAG) const;
@@ -1357,6 +1339,7 @@ namespace llvm {
     SDValue LowerUINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerTRUNCATE(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFP_TO_INT(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerLRINT_LLRINT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSETCC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSTRICT_FSETCC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerSETCCCARRY(SDValue Op, SelectionDAG &DAG) const;
@@ -1462,9 +1445,6 @@ namespace llvm {
     MachineBasicBlock *EmitLoweredCatchRet(MachineInstr &MI,
                                            MachineBasicBlock *BB) const;
 
-    MachineBasicBlock *EmitLoweredCatchPad(MachineInstr &MI,
-                                           MachineBasicBlock *BB) const;
-
     MachineBasicBlock *EmitLoweredSegAlloca(MachineInstr &MI,
                                             MachineBasicBlock *BB) const;
 
@@ -1494,9 +1474,6 @@ namespace llvm {
 
     MachineBasicBlock *EmitSjLjDispatchBlock(MachineInstr &MI,
                                              MachineBasicBlock *MBB) const;
-
-    /// Convert a comparison if required by the subtarget.
-    SDValue ConvertCmpIfNecessary(SDValue Cmp, SelectionDAG &DAG) const;
 
     /// Emit flags for the given setcc condition and operands. Also returns the
     /// corresponding X86 condition code constant in X86CC.
