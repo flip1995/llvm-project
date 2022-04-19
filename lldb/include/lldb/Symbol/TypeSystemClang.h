@@ -26,6 +26,7 @@
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include "Plugins/ExpressionParser/Clang/ClangPersistentVariables.h"
 #include "lldb/Core/ClangForward.h"
 #include "lldb/Expression/ExpressionVariable.h"
 #include "lldb/Symbol/CompilerType.h"
@@ -405,6 +406,16 @@ public:
           &base_offsets,
       llvm::DenseMap<const clang::CXXRecordDecl *, clang::CharUnits>
           &vbase_offsets);
+
+  /// Creates a CompilerDecl from the given Decl with the current
+  /// TypeSystemClang instance as its typesystem.
+  /// The Decl has to come from the ASTContext of this
+  /// TypeSystemClang.
+  CompilerDecl GetCompilerDecl(clang::Decl *decl) {
+    assert(&decl->getASTContext() == &getASTContext() &&
+           "CreateCompilerDecl for Decl from wrong ASTContext?");
+    return CompilerDecl(this, decl);
+  }
 
   // CompilerDecl override functions
   ConstString DeclGetName(void *opaque_decl) override;
@@ -1007,7 +1018,7 @@ public:
   PersistentExpressionState *GetPersistentExpressionState() override;
 private:
   lldb::TargetWP m_target_wp;
-  std::unique_ptr<PersistentExpressionState>
+  std::unique_ptr<ClangPersistentVariables>
       m_persistent_variables; // These are the persistent variables associated
                               // with this process for the expression parser
   std::unique_ptr<ClangASTSource> m_scratch_ast_source_up;

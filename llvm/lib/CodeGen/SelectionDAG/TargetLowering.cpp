@@ -177,17 +177,9 @@ TargetLowering::makeLibCall(SelectionDAG &DAG, RTLIB::Libcall LC, EVT RetVT,
   return LowerCallTo(CLI);
 }
 
-bool
-TargetLowering::findOptimalMemOpLowering(std::vector<EVT> &MemOps,
-                                         unsigned Limit, uint64_t Size,
-                                         unsigned DstAlign, unsigned SrcAlign,
-                                         bool IsMemset,
-                                         bool ZeroMemset,
-                                         bool MemcpyStrSrc,
-                                         bool AllowOverlap,
-                                         bool MustPreserveCheriCapabilities,
-                                         unsigned DstAS, unsigned SrcAS,
-                                         const AttributeList &FuncAttributes) const {
+bool TargetLowering::findOptimalMemOpLowering(
+    std::vector<EVT> &MemOps, unsigned Limit, const MemOp &Op, unsigned DstAS,
+    unsigned SrcAS, const AttributeList &FuncAttributes) const {
   // If 'SrcAlign' is zero, that means the memory operation does not need to
   // load the value, i.e. memset or memcpy from constant string. Otherwise,
   // it's the inferred alignment of the source. 'DstAlign', on the other hand,
@@ -195,12 +187,11 @@ TargetLowering::findOptimalMemOpLowering(std::vector<EVT> &MemOps,
   // means it's possible to change the alignment of the destination.
   // 'MemcpyStrSrc' indicates whether the memcpy source is constant so it does
   // not need to be loaded.
-  if (!(SrcAlign == 0 || SrcAlign >= DstAlign))
+  if (!(Op.SrcAlign == 0 || Op.SrcAlign >= Op.DstAlign))
     return false;
 
-  EVT VT = getOptimalMemOpType(Size, DstAlign, SrcAlign,
-                               IsMemset, ZeroMemset, MemcpyStrSrc,
-                               FuncAttributes);
+  EVT VT = getOptimalMemOpType(Op, FuncAttributes);
+
   // XXXAR: (ab)use MVT::isVoid to indicate that a memcpy call must be made
   if (VT == MVT::isVoid) {
     return false; // cannot lower as memops
@@ -220,8 +211,8 @@ TargetLowering::findOptimalMemOpLowering(std::vector<EVT> &MemOps,
     // We only need to check DstAlign here as SrcAlign is always greater or
     // equal to DstAlign (or zero).
     VT = MVT::i64;
-    while (DstAlign && DstAlign < VT.getSizeInBits() / 8 &&
-           !allowsMisalignedMemoryAccesses(VT, DstAS, DstAlign))
+    while (Op.DstAlign && Op.DstAlign < VT.getSizeInBits() / 8 &&
+           !allowsMisalignedMemoryAccesses(VT, DstAS, Op.DstAlign))
       VT = (MVT::SimpleValueType)(VT.getSimpleVT().SimpleTy - 1);
     assert(VT.isInteger());
 
@@ -238,6 +229,7 @@ TargetLowering::findOptimalMemOpLowering(std::vector<EVT> &MemOps,
   }
 
   unsigned NumMemOps = 0;
+  auto Size = Op.Size;
   while (Size != 0) {
     unsigned VTSize = VT.getSizeInBits() / 8;
     while (VTSize > Size) {
@@ -276,8 +268,8 @@ TargetLowering::findOptimalMemOpLowering(std::vector<EVT> &MemOps,
       // If the new VT cannot cover all of the remaining bits, then consider
       // issuing a (or a pair of) unaligned and overlapping load / store.
       bool Fast;
-      if (NumMemOps && AllowOverlap && NewVTSize < Size &&
-          allowsMisalignedMemoryAccesses(VT, DstAS, DstAlign,
+      if (NumMemOps && Op.AllowOverlap && NewVTSize < Size &&
+          allowsMisalignedMemoryAccesses(VT, DstAS, Op.DstAlign,
                                          MachineMemOperand::MONone, &Fast) &&
           Fast)
         VTSize = Size;
@@ -995,6 +987,17 @@ bool TargetLowering::SimplifyDemandedBits(
     }
     if (SimplifyDemandedBits(Src, DemandedBits, SrcElts, Known, TLO, Depth + 1))
       return true;
+
+    // Attempt to avoid multi-use src if we don't need anything from it.
+    if (!DemandedBits.isAllOnesValue() || !SrcElts.isAllOnesValue()) {
+      SDValue DemandedSrc = SimplifyMultipleUseDemandedBits(
+          Src, DemandedBits, SrcElts, TLO.DAG, Depth + 1);
+      if (DemandedSrc) {
+        SDValue NewOp = TLO.DAG.getNode(Op.getOpcode(), dl, VT, DemandedSrc,
+                                        Op.getOperand(1));
+        return TLO.CombineTo(Op, NewOp);
+      }
+    }
     break;
   }
   case ISD::CONCAT_VECTORS: {
@@ -1503,6 +1506,13 @@ bool TargetLowering::SimplifyDemandedBits(
     SDValue Op0 = Op.getOperand(0);
     SDValue Op1 = Op.getOperand(1);
 
+    // If we only want bits that already match the signbit then we don't need
+    // to shift.
+    unsigned NumHiDemandedBits = BitWidth - DemandedBits.countTrailingZeros();
+    if (TLO.DAG.ComputeNumSignBits(Op0, DemandedElts, Depth + 1) >=
+        NumHiDemandedBits)
+      return TLO.CombineTo(Op, Op0);
+
     // If this is an arithmetic shift right and only the low-bit is set, we can
     // always convert this into a logical shr, even if the shift amount is
     // variable.  The low bit of the shift cannot be an input sign bit unless
@@ -1647,7 +1657,8 @@ bool TargetLowering::SimplifyDemandedBits(
 
     // If we only care about the highest bit, don't bother shifting right.
     if (DemandedBits.isSignMask()) {
-      unsigned NumSignBits = TLO.DAG.ComputeNumSignBits(Op0);
+      unsigned NumSignBits =
+          TLO.DAG.ComputeNumSignBits(Op0, DemandedElts, Depth + 1);
       bool AlreadySignExtended = NumSignBits >= BitWidth - ExVTBits + 1;
       // However if the input is already sign extended we expect the sign
       // extension to be dropped altogether later and do not simplify.

@@ -1,6 +1,6 @@
 //===- TargetAndABI.cpp - SPIR-V target and ABI utilities -----------------===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -9,6 +9,7 @@
 #include "mlir/Dialect/SPIRV/TargetAndABI.h"
 #include "mlir/Dialect/SPIRV/SPIRVTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/FunctionSupport.h"
 #include "mlir/IR/Operation.h"
 
 using namespace mlir;
@@ -61,4 +62,17 @@ spirv::TargetEnvAttr spirv::lookupTargetEnvOrDefault(Operation *op) {
           spirv::getTargetEnvAttrName()))
     return attr;
   return getDefaultTargetEnv(op->getContext());
+}
+
+DenseIntElementsAttr spirv::lookupLocalWorkGroupSize(Operation *op) {
+  while (op && !op->hasTrait<OpTrait::FunctionLike>())
+    op = op->getParentOp();
+  if (!op)
+    return {};
+
+  if (auto attr = op->getAttrOfType<spirv::EntryPointABIAttr>(
+          spirv::getEntryPointABIAttrName()))
+    return attr.local_size();
+
+  return {};
 }
