@@ -77,8 +77,8 @@
 #ifndef PT_LWPSTATUS
 #define PT_LWPSTATUS 24
 #endif
-#ifndef PT_LWPSTATUS
-#define PT_LWPSTATUS 25
+#ifndef PT_LWPNEXT
+#define PT_LWPNEXT 25
 #endif
 
 #include <sys/resource.h>
@@ -2413,5 +2413,43 @@ CHECK_SIZE_AND_OFFSET(modctl_load_t, ml_filename);
 CHECK_SIZE_AND_OFFSET(modctl_load_t, ml_flags);
 CHECK_SIZE_AND_OFFSET(modctl_load_t, ml_props);
 CHECK_SIZE_AND_OFFSET(modctl_load_t, ml_propslen);
+
+// Compat with 9.0
+struct statvfs90 {
+  unsigned long f_flag;
+  unsigned long f_bsize;
+  unsigned long f_frsize;
+  unsigned long f_iosize;
+
+  u64 f_blocks;
+  u64 f_bfree;
+  u64 f_bavail;
+  u64 f_bresvd;
+
+  u64 f_files;
+  u64 f_ffree;
+  u64 f_favail;
+  u64 f_fresvd;
+
+  u64 f_syncreads;
+  u64 f_syncwrites;
+
+  u64 f_asyncreads;
+  u64 f_asyncwrites;
+
+  struct {
+    s32 __fsid_val[2];
+  } f_fsidx;
+  unsigned long f_fsid;
+  unsigned long f_namemax;
+  u32 f_owner;
+
+  u32 f_spare[4];
+
+  char f_fstypename[32];
+  char f_mntonname[32];
+  char f_mntfromname[32];
+};
+unsigned struct_statvfs90_sz = sizeof(struct statvfs90);
 
 #endif  // SANITIZER_NETBSD

@@ -146,9 +146,7 @@ AppleObjCDeclVendor::AppleObjCDeclVendor(ObjCLanguageRuntime &runtime)
       m_ast_ctx(runtime.GetProcess()
                     ->GetTarget()
                     .GetArchitecture()
-                    .GetTriple()
-                    .getTriple()
-                    .c_str()),
+                    .GetTriple()),
       m_type_realizer_sp(m_runtime.GetEncodingToType()) {
   m_external_source = new AppleObjCExternalASTSource(*this);
   llvm::IntrusiveRefCntPtr<clang::ExternalASTSource> external_source_owning_ptr(
@@ -311,7 +309,8 @@ public:
   }
 
   clang::ObjCMethodDecl *
-  BuildMethod(clang::ObjCInterfaceDecl *interface_decl, const char *name,
+  BuildMethod(ClangASTContext &clang_ast_ctxt,
+              clang::ObjCInterfaceDecl *interface_decl, const char *name,
               bool instance,
               ObjCLanguageRuntime::EncodingToTypeSP type_realizer_sp) {
     if (!m_is_valid || m_type_vector.size() < 3)
@@ -360,8 +359,7 @@ public:
 
     clang::QualType ret_type =
         ClangUtil::GetQualType(type_realizer_sp->RealizeType(
-            interface_decl->getASTContext(), m_type_vector[0].c_str(),
-            for_expression));
+            clang_ast_ctxt, m_type_vector[0].c_str(), for_expression));
 
     if (ret_type.isNull())
       return nullptr;
@@ -378,7 +376,7 @@ public:
       const bool for_expression = true;
       clang::QualType arg_type =
           ClangUtil::GetQualType(type_realizer_sp->RealizeType(
-              ast_ctx, m_type_vector[ai].c_str(), for_expression));
+              clang_ast_ctxt, m_type_vector[ai].c_str(), for_expression));
 
       if (arg_type.isNull())
         return nullptr; // well, we just wasted a bunch of time.  Wish we could
@@ -455,8 +453,8 @@ bool AppleObjCDeclVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl) {
 
     ObjCRuntimeMethodType method_type(types);
 
-    clang::ObjCMethodDecl *method_decl =
-        method_type.BuildMethod(interface_decl, name, true, m_type_realizer_sp);
+    clang::ObjCMethodDecl *method_decl = method_type.BuildMethod(
+        m_ast_ctx, interface_decl, name, true, m_type_realizer_sp);
 
     LLDB_LOGF(log, "[  AOTV::FD] Instance method [%s] [%s]", name, types);
 
@@ -474,7 +472,7 @@ bool AppleObjCDeclVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl) {
     ObjCRuntimeMethodType method_type(types);
 
     clang::ObjCMethodDecl *method_decl = method_type.BuildMethod(
-        interface_decl, name, false, m_type_realizer_sp);
+        m_ast_ctx, interface_decl, name, false, m_type_realizer_sp);
 
     LLDB_LOGF(log, "[  AOTV::FD] Class method [%s] [%s]", name, types);
 
@@ -537,10 +535,9 @@ bool AppleObjCDeclVendor::FinishDecl(clang::ObjCInterfaceDecl *interface_decl) {
   return true;
 }
 
-uint32_t
-AppleObjCDeclVendor::FindDecls(ConstString name, bool append,
-                               uint32_t max_matches,
-                               std::vector<clang::NamedDecl *> &decls) {
+uint32_t AppleObjCDeclVendor::FindDecls(ConstString name, bool append,
+                                        uint32_t max_matches,
+                                        std::vector<CompilerDecl> &decls) {
   static unsigned int invocation_id = 0;
   unsigned int current_id = invocation_id++;
 
@@ -587,7 +584,7 @@ AppleObjCDeclVendor::FindDecls(ConstString name, bool append,
                    current_id, result_iface_type.getAsString(), isa_value);
         }
 
-        decls.push_back(result_iface_decl);
+        decls.push_back(CompilerDecl(&m_ast_ctx, result_iface_decl));
         ret++;
         break;
       } else {
@@ -630,7 +627,7 @@ AppleObjCDeclVendor::FindDecls(ConstString name, bool append,
                new_iface_type.getAsString(), (uint64_t)isa);
     }
 
-    decls.push_back(iface_decl);
+    decls.push_back(CompilerDecl(&m_ast_ctx, iface_decl));
     ret++;
     break;
   } while (false);

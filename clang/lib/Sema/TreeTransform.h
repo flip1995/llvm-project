@@ -1616,7 +1616,7 @@ public:
   ///
   /// By default, performs semantic analysis to build the new OpenMP clause.
   /// Subclasses may override this routine to provide different behavior.
-  OMPClause *RebuildOMPProcBindClause(OpenMPProcBindClauseKind Kind,
+  OMPClause *RebuildOMPProcBindClause(ProcBindKind Kind,
                                       SourceLocation KindKwLoc,
                                       SourceLocation StartLoc,
                                       SourceLocation LParenLoc,
@@ -11588,6 +11588,13 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                                         NewCallOpType);
   }
 
+  // Transform the trailing requires clause
+  ExprResult NewTrailingRequiresClause;
+  if (Expr *TRC = E->getCallOperator()->getTrailingRequiresClause())
+    // FIXME: Concepts: Substitution into requires clause should only happen
+    //                  when checking satisfaction.
+    NewTrailingRequiresClause = getDerived().TransformExpr(TRC);
+
   // Create the local class that will describe the lambda.
   CXXRecordDecl *OldClass = E->getLambdaClass();
   CXXRecordDecl *Class
@@ -11608,7 +11615,8 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
       Class, E->getIntroducerRange(), NewCallOpTSI,
       E->getCallOperator()->getEndLoc(),
       NewCallOpTSI->getTypeLoc().castAs<FunctionProtoTypeLoc>().getParams(),
-      E->getCallOperator()->getConstexprKind());
+      E->getCallOperator()->getConstexprKind(),
+      NewTrailingRequiresClause.get());
 
   LSI->CallOperator = NewCallOperator;
 

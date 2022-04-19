@@ -1979,8 +1979,7 @@ def err_lvalue_reference_bind_to_unrelated : Error<
   "cannot bind to a value of unrelated type}1,2">;
 def err_reference_bind_drops_quals : Error<
   "binding reference %diff{of type $ to value of type $|to value}0,1 "
-  "%select{drops %3 qualifier%plural{1:|2:|4:|:s}4|changes address space|"
-  "not permitted due to incompatible qualifiers}2">;
+  "%select{drops %3 qualifier%plural{1:|2:|4:|:s}4|changes address space}2">;
 def err_reference_bind_failed : Error<
   "reference %diff{to %select{type|incomplete type}1 $ could not bind to an "
   "%select{rvalue|lvalue}2 of type $|could not bind to %select{rvalue|lvalue}2 of "
@@ -2643,6 +2642,18 @@ def note_single_arg_concept_specialization_constraint_evaluated_to_false : Note<
   "%select{and |because }0%1 does not satisfy %2">;
 def note_atomic_constraint_evaluated_to_false_elaborated : Note<
   "%select{and |because }0'%1' (%2 %3 %4) evaluated to false">;
+def err_constrained_virtual_method : Error<
+  "virtual function cannot have a requires clause">;
+def err_trailing_requires_clause_on_deduction_guide : Error<
+  "deduction guide cannot have a requires clause">;
+def err_reference_to_function_with_unsatisfied_constraints : Error<
+  "invalid reference to function %0: constraints not satisfied">;
+def note_ambiguous_atomic_constraints : Note<
+  "similar constraint expressions not considered equivalent; constraint "
+  "expressions cannot be considered equivalent unless they originate from the "
+  "same concept">;
+def note_ambiguous_atomic_constraints_similar_expression : Note<
+  "similar constraint expression here">;
 
 def err_template_different_requires_clause : Error<
   "requires clause differs in template redeclaration">;
@@ -2678,7 +2689,7 @@ def err_nsobject_attribute : Error<
 def err_attributes_are_not_compatible : Error<
   "%0 and %1 attributes are not compatible">;
 def err_attribute_invalid_argument : Error<
-  "%select{'void'|a reference type|an array type|a non-vector or "
+  "%select{a reference type|an array type|a non-vector or "
   "non-vectorizable scalar type}0 is an invalid argument to attribute %1">;
 def err_attribute_wrong_number_arguments : Error<
   "%0 attribute %plural{0:takes no arguments|1:takes one argument|"
@@ -2960,13 +2971,9 @@ def err_alignment_not_power_of_two : Error<
 def err_alignment_dependent_typedef_name : Error<
   "requested alignment is dependent but declaration is not dependent">;
 
-def err_alignment_power_of_two_out_of_range : Error<
-  "requested power-of-two alignment %0 is not a value between %1 and %2">;
 def warn_alignment_builtin_useless : Warning<
-  "%select{aligning a value|checking whether a value is aligned}0 to 1 byte is"
-   " %select{a no-op|always true}0">, InGroup<TautologicalCompare>;
-
-
+  "%select{aligning a value|the result of checking whether a value is aligned}0"
+  " to 1 byte is %select{a no-op|always true}0">, InGroup<TautologicalCompare>;
 def err_attribute_aligned_too_great : Error<
   "requested alignment must be %0 bytes or smaller">;
 def warn_assume_aligned_too_great
@@ -3938,12 +3945,14 @@ def note_ovl_candidate_bad_deduction : Note<
     "candidate template ignored: failed template argument deduction">;
 def note_ovl_candidate_incomplete_deduction : Note<"candidate template ignored: "
     "couldn't infer template argument %0">;
-def note_ovl_candidate_incomplete_deduction_pack : Note<"candidate template ignored: "
+def note_ovl_candidate_incomplete_deduction_pack : Note<
+    "candidate template ignored: "
     "deduced too few arguments for expanded pack %0; no argument for %ordinal1 "
     "expanded parameter in deduced argument pack %2">;
 def note_ovl_candidate_inconsistent_deduction : Note<
-    "candidate template ignored: deduced conflicting %select{types|values|"
-    "templates}0 for parameter %1%diff{ ($ vs. $)|}2,3">;
+    "candidate template ignored: deduced %select{conflicting types|"
+    "conflicting values|conflicting templates|packs of different lengths}0 "
+    "for parameter %1%diff{ ($ vs. $)|}2,3">;
 def note_ovl_candidate_inconsistent_deduction_types : Note<
     "candidate template ignored: deduced values %diff{"
     "of conflicting types for parameter %0 (%1 of type $ vs. %3 of type $)|"
@@ -3981,6 +3990,9 @@ def note_ovl_candidate_disabled_by_extension : Note<
 def err_addrof_function_disabled_by_enable_if_attr : Error<
     "cannot take address of function %0 because it has one or more "
     "non-tautological enable_if conditions">;
+def err_addrof_function_constraints_not_satisfied : Error<
+    "cannot take address of function %0 because its constraints are not "
+    "satisfied">;
 def note_addrof_ovl_candidate_disabled_by_enable_if_attr : Note<
     "candidate function made ineligible by enable_if">;
 def note_ovl_candidate_deduced_mismatch : Note<
@@ -4094,6 +4106,9 @@ def note_ovl_candidate_bad_target : Note<
     "call to "
     "%select{__device__|__global__|__host__|__host__ __device__|invalid}3 function from"
     " %select{__device__|__global__|__host__|__host__ __device__|invalid}4 function">;
+def note_ovl_candidate_constraints_not_satisfied : Note<
+    "candidate %sub{select_ovl_candidate_kind}0,1,2 not viable: constraints "
+    "not satisfied">;
 def note_implicit_member_target_infer_collision : Note<
     "implicit %sub{select_special_member_kind}0 inferred target collision: call to both "
     "%select{__device__|__global__|__host__|__host__ __device__}1 and "
@@ -9832,6 +9847,8 @@ def err_omp_depend_sink_expected_plus_minus : Error<
   "expected '+' or '-' operation">;
 def err_omp_depend_sink_source_not_allowed : Error<
   "'depend(%select{source|sink:vec}0)' clause%select{|s}0 cannot be mixed with 'depend(%select{sink:vec|source}0)' clause%select{s|}0">;
+def err_omp_depend_zero_length_array_section_not_allowed : Error<
+  "zero-length array section is not allowed in 'depend' clause">;
 def err_omp_linear_ordered : Error<
   "'linear' clause cannot be specified along with 'ordered' clause with a parameter">;
 def err_omp_unexpected_schedule_modifier : Error<
