@@ -1646,6 +1646,7 @@ bool LLParser::ParseOptionalParamAttrs(AttrBuilder &B) {
     case lltok::kw_nest:            B.addAttribute(Attribute::Nest); break;
     case lltok::kw_noalias:         B.addAttribute(Attribute::NoAlias); break;
     case lltok::kw_nocapture:       B.addAttribute(Attribute::NoCapture); break;
+    case lltok::kw_nofree:          B.addAttribute(Attribute::NoFree); break;
     case lltok::kw_nonnull:         B.addAttribute(Attribute::NonNull); break;
     case lltok::kw_readnone:        B.addAttribute(Attribute::ReadNone); break;
     case lltok::kw_readonly:        B.addAttribute(Attribute::ReadOnly); break;
@@ -3427,7 +3428,8 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
   }
 
   // Unary Operators.
-  case lltok::kw_fneg: {
+  case lltok::kw_fneg:
+  case lltok::kw_freeze: {
     unsigned Opc = Lex.getUIntVal();
     Constant *Val;
     Lex.Lex();
@@ -3441,6 +3443,8 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
     case Instruction::FNeg:
       if (!Val->getType()->isFPOrFPVectorTy())
         return Error(ID.Loc, "constexpr requires fp operands");
+      break;
+    case Instruction::Freeze:
       break;
     default: llvm_unreachable("Unknown unary operator!");
     }
@@ -5737,6 +5741,7 @@ int LLParser::ParseInstruction(Instruction *&Inst, BasicBlock *BB,
       Inst->setFastMathFlags(FMF);
     return false;
   }
+  case lltok::kw_freeze: return ParseUnaryOp(Inst, PFS, KeywordVal, false);
   // Binary Operators.
   case lltok::kw_add:
   case lltok::kw_sub:
@@ -6340,16 +6345,14 @@ bool LLParser::ParseCleanupPad(Instruction *&Inst, PerFunctionState &PFS) {
 /// ParseUnaryOp
 ///  ::= UnaryOp TypeAndValue ',' Value
 ///
-/// If IsFP is false, then any integer operand is allowed, if it is true, any fp
-/// operand is allowed.
+/// If IsFP is true, then fp operand is only allowed.
 bool LLParser::ParseUnaryOp(Instruction *&Inst, PerFunctionState &PFS,
                             unsigned Opc, bool IsFP) {
   LocTy Loc; Value *LHS;
   if (ParseTypeAndValue(LHS, Loc, PFS))
     return true;
 
-  bool Valid = IsFP ? LHS->getType()->isFPOrFPVectorTy()
-                    : LHS->getType()->isIntOrIntVectorTy();
+  bool Valid = !IsFP || LHS->getType()->isFPOrFPVectorTy();
 
   if (!Valid)
     return Error(Loc, "invalid operand type for instruction");
