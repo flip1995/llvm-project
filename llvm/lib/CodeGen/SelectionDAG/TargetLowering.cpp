@@ -775,6 +775,18 @@ SDValue TargetLowering::SimplifyMultipleUseDemandedBits(
       return Vec;
     break;
   }
+  case ISD::INSERT_SUBVECTOR: {
+    // If we don't demand the inserted subvector, return the base vector.
+    SDValue Vec = Op.getOperand(0);
+    SDValue Sub = Op.getOperand(1);
+    auto *CIdx = dyn_cast<ConstantSDNode>(Op.getOperand(2));
+    unsigned NumVecElts = Vec.getValueType().getVectorNumElements();
+    unsigned NumSubElts = Sub.getValueType().getVectorNumElements();
+    if (CIdx && CIdx->getAPIntValue().ule(NumVecElts - NumSubElts))
+      if (DemandedElts.extractBits(NumSubElts, CIdx->getZExtValue()) == 0)
+        return Vec;
+    break;
+  }
   case ISD::VECTOR_SHUFFLE: {
     ArrayRef<int> ShuffleMask = cast<ShuffleVectorSDNode>(Op)->getMask();
 
@@ -972,6 +984,22 @@ bool TargetLowering::SimplifyDemandedBits(
     if (!!BaseElts) {
         Known.One &= KnownBase.One;
         Known.Zero &= KnownBase.Zero;
+    }
+
+    // Attempt to avoid multi-use src if we don't need anything from it.
+    if (!DemandedBits.isAllOnesValue() || !SubElts.isAllOnesValue() ||
+        !BaseElts.isAllOnesValue()) {
+      SDValue NewSub = SimplifyMultipleUseDemandedBits(
+          Sub, DemandedBits, SubElts, TLO.DAG, Depth + 1);
+      SDValue NewBase = SimplifyMultipleUseDemandedBits(
+          Base, DemandedBits, BaseElts, TLO.DAG, Depth + 1);
+      if (NewSub || NewBase) {
+        NewSub = NewSub ? NewSub : Sub;
+        NewBase = NewBase ? NewBase : Base;
+        SDValue NewOp = TLO.DAG.getNode(Op.getOpcode(), dl, VT, NewBase, NewSub,
+                                        Op.getOperand(2));
+        return TLO.CombineTo(Op, NewOp);
+      }
     }
     break;
   }
