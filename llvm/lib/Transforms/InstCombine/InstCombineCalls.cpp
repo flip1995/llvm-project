@@ -162,9 +162,10 @@ Instruction *InstCombiner::SimplifyAnyMemTransfer(AnyMemTransferInst *MI) {
     if (!DL.isFatPointer(200))
       return nullptr;  // If not 1/2/4/8 bytes, exit.
     uint64_t PtrCpySize = DL.getPointerSize(200);
-    uint64_t PtrCpyAlign = DL.getPointerPrefAlignment(200).value();
-    if ((Size > PtrCpySize) || (CopyDstAlign < PtrCpyAlign) ||
-        (CopySrcAlign < PtrCpyAlign))
+    Align PtrCpyAlign = DL.getPointerPrefAlignment(200);
+    if ((Size > PtrCpySize) ||
+        (CopyDstAlign.hasValue() && *CopyDstAlign < PtrCpyAlign) ||
+        (CopySrcAlign.hasValue() && *CopySrcAlign < PtrCpyAlign))
       return nullptr;
     CpyTy = Type::getInt8PtrTy(MI->getContext(), 200);
   }
@@ -854,7 +855,7 @@ static Value *simplifyX86extrq(IntrinsicInst &II, Value *Op0,
       Index /= 8;
 
       Type *IntTy8 = Type::getInt8Ty(II.getContext());
-      VectorType *ShufTy = VectorType::get(IntTy8, 16);
+      auto *ShufTy = FixedVectorType::get(IntTy8, 16);
 
       SmallVector<int, 16> ShuffleMask;
       for (int i = 0; i != (int)Length; ++i)
@@ -931,7 +932,7 @@ static Value *simplifyX86insertq(IntrinsicInst &II, Value *Op0, Value *Op1,
     Index /= 8;
 
     Type *IntTy8 = Type::getInt8Ty(II.getContext());
-    VectorType *ShufTy = VectorType::get(IntTy8, 16);
+    auto *ShufTy = FixedVectorType::get(IntTy8, 16);
 
     SmallVector<int, 16> ShuffleMask;
     for (int i = 0; i != (int)Index; ++i)
@@ -3147,8 +3148,9 @@ Instruction *InstCombiner::visitCallInst(CallInst &CI) {
         // We don't need a select if we know the mask bit is a 1.
         if (!C || !C->getValue()[0]) {
           // Cast the mask to an i1 vector and then extract the lowest element.
-          auto *MaskTy = VectorType::get(Builder.getInt1Ty(),
-                             cast<IntegerType>(Mask->getType())->getBitWidth());
+          auto *MaskTy = FixedVectorType::get(
+              Builder.getInt1Ty(),
+              cast<IntegerType>(Mask->getType())->getBitWidth());
           Mask = Builder.CreateBitCast(Mask, MaskTy);
           Mask = Builder.CreateExtractElement(Mask, (uint64_t)0);
           // Extract the lowest element from the passthru operand.
@@ -4685,7 +4687,8 @@ static bool isSafeToEliminateVarargsCast(const CallBase &Call,
   // TODO: This is probably something which should be expanded to all
   // intrinsics since the entire point of intrinsics is that
   // they are understandable by the optimizer.
-  if (isStatepoint(&Call) || isGCRelocate(&Call) || isGCResult(&Call))
+  if (isa<GCStatepointInst>(Call) || isa<GCRelocateInst>(Call) ||
+      isa<GCResultInst>(Call))
     return false;
 
   // The size of ByVal or InAlloca arguments is derived from the type, so we

@@ -390,9 +390,8 @@ static FilterResult checkSectionFilter(object::SectionRef S) {
           /*IncrementIndex=*/true};
 }
 
-namespace llvm {
-
-SectionFilter ToolSectionFilter(object::ObjectFile const &O, uint64_t *Idx) {
+SectionFilter objdump::ToolSectionFilter(object::ObjectFile const &O,
+                                         uint64_t *Idx) {
   // Start at UINT64_MAX so that the first index returned after an increment is
   // zero (after the unsigned wrap).
   if (Idx)
@@ -407,8 +406,8 @@ SectionFilter ToolSectionFilter(object::ObjectFile const &O, uint64_t *Idx) {
       O);
 }
 
-std::string getFileNameForError(const object::Archive::Child &C,
-                                unsigned Index) {
+std::string objdump::getFileNameForError(const object::Archive::Child &C,
+                                         unsigned Index) {
   Expected<StringRef> NameOrErr = C.getName();
   if (NameOrErr)
     return std::string(NameOrErr.get());
@@ -418,24 +417,26 @@ std::string getFileNameForError(const object::Archive::Child &C,
   return "<file index: " + std::to_string(Index) + ">";
 }
 
-void reportWarning(Twine Message, StringRef File) {
+void objdump::reportWarning(Twine Message, StringRef File) {
   // Output order between errs() and outs() matters especially for archive
   // files where the output is per member object.
   outs().flush();
   WithColor::warning(errs(), ToolName)
       << "'" << File << "': " << Message << "\n";
-  errs().flush();
 }
 
-LLVM_ATTRIBUTE_NORETURN void reportError(StringRef File, Twine Message) {
+LLVM_ATTRIBUTE_NORETURN void objdump::reportError(StringRef File,
+                                                  Twine Message) {
+  outs().flush();
   WithColor::error(errs(), ToolName) << "'" << File << "': " << Message << "\n";
   exit(1);
 }
 
-LLVM_ATTRIBUTE_NORETURN void reportError(Error E, StringRef FileName,
-                                         StringRef ArchiveName,
-                                         StringRef ArchitectureName) {
+LLVM_ATTRIBUTE_NORETURN void objdump::reportError(Error E, StringRef FileName,
+                                                  StringRef ArchiveName,
+                                                  StringRef ArchitectureName) {
   assert(E);
+  outs().flush();
   WithColor::error(errs(), ToolName);
   if (ArchiveName != "")
     errs() << ArchiveName << "(" << FileName << ")";
@@ -443,11 +444,8 @@ LLVM_ATTRIBUTE_NORETURN void reportError(Error E, StringRef FileName,
     errs() << "'" << FileName << "'";
   if (!ArchitectureName.empty())
     errs() << " (for architecture " << ArchitectureName << ")";
-  std::string Buf;
-  raw_string_ostream OS(Buf);
-  logAllUnhandledErrors(std::move(E), OS);
-  OS.flush();
-  errs() << ": " << Buf;
+  errs() << ": ";
+  logAllUnhandledErrors(std::move(E), errs());
   exit(1);
 }
 
@@ -501,7 +499,7 @@ static const Target *getTarget(const ObjectFile *Obj) {
   return TheTarget;
 }
 
-bool isRelocAddressLess(RelocationRef A, RelocationRef B) {
+bool objdump::isRelocAddressLess(RelocationRef A, RelocationRef B) {
   return A.getOffset() < B.getOffset();
 }
 
@@ -1155,7 +1153,8 @@ static void dumpELFData(uint64_t SectionAddr, uint64_t Index, uint64_t End,
   }
 }
 
-SymbolInfoTy createSymbolInfo(const ObjectFile *Obj, const SymbolRef &Symbol) {
+SymbolInfoTy objdump::createSymbolInfo(const ObjectFile *Obj,
+                                       const SymbolRef &Symbol) {
   const StringRef FileName = Obj->getFileName();
   const uint64_t Addr = unwrapOrError(Symbol.getAddress(), FileName);
   const StringRef Name = unwrapOrError(Symbol.getName(), FileName);
@@ -1175,8 +1174,9 @@ SymbolInfoTy createSymbolInfo(const ObjectFile *Obj, const SymbolRef &Symbol) {
                                      : (uint8_t)ELF::STT_NOTYPE);
 }
 
-SymbolInfoTy createDummySymbolInfo(const ObjectFile *Obj, const uint64_t Addr,
-                                   StringRef &Name, uint8_t Type) {
+static SymbolInfoTy createDummySymbolInfo(const ObjectFile *Obj,
+                                          const uint64_t Addr, StringRef &Name,
+                                          uint8_t Type) {
   if (Obj->isXCOFF() && SymbolDescription)
     return SymbolInfoTy(Addr, Name, None, None, false);
   else
@@ -1872,7 +1872,7 @@ static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
                     SP, InlineRelocs);
 }
 
-void printRelocations(const ObjectFile *Obj) {
+void objdump::printRelocations(const ObjectFile *Obj) {
   StringRef Fmt = Obj->getBytesInAddress() > 4 ? "%016" PRIx64 :
                                                  "%08" PRIx64;
   // Regular objdump doesn't print relocations in non-relocatable object
@@ -1926,7 +1926,7 @@ void printRelocations(const ObjectFile *Obj) {
   }
 }
 
-void printDynamicRelocations(const ObjectFile *Obj) {
+void objdump::printDynamicRelocations(const ObjectFile *Obj) {
   // For the moment, this option is for ELF only
   if (!Obj->isELF())
     return;
@@ -1978,7 +1978,7 @@ static size_t getMaxSectionNameWidth(const ObjectFile *Obj) {
   return MaxWidth;
 }
 
-void printSectionHeaders(const ObjectFile *Obj) {
+void objdump::printSectionHeaders(const ObjectFile *Obj) {
   size_t NameWidth = getMaxSectionNameWidth(Obj);
   size_t AddressWidth = 2 * Obj->getBytesInAddress();
   bool HasLMAColumn = shouldDisplayLMA(Obj);
@@ -2023,7 +2023,7 @@ void printSectionHeaders(const ObjectFile *Obj) {
   outs() << "\n";
 }
 
-void printSectionContents(const ObjectFile *Obj) {
+void objdump::printSectionContents(const ObjectFile *Obj) {
   for (const SectionRef &Section : ToolSectionFilter(*Obj)) {
     StringRef Name = unwrapOrError(Section.getName(), Obj->getFileName());
     uint64_t BaseAddr = Section.getAddress();
@@ -2067,8 +2067,8 @@ void printSectionContents(const ObjectFile *Obj) {
   }
 }
 
-void printSymbolTable(const ObjectFile *O, StringRef ArchiveName,
-                      StringRef ArchitectureName, bool DumpDynamic) {
+void objdump::printSymbolTable(const ObjectFile *O, StringRef ArchiveName,
+                               StringRef ArchitectureName, bool DumpDynamic) {
   if (O->isCOFF() && !DumpDynamic) {
     outs() << "SYMBOL TABLE:\n";
     printCOFFSymbolTable(cast<const COFFObjectFile>(O));
@@ -2098,9 +2098,9 @@ void printSymbolTable(const ObjectFile *O, StringRef ArchiveName,
     printSymbol(O, *I, FileName, ArchiveName, ArchitectureName, DumpDynamic);
 }
 
-void printSymbol(const ObjectFile *O, const SymbolRef &Symbol,
-                 StringRef FileName, StringRef ArchiveName,
-                 StringRef ArchitectureName, bool DumpDynamic) {
+void objdump::printSymbol(const ObjectFile *O, const SymbolRef &Symbol,
+                          StringRef FileName, StringRef ArchiveName,
+                          StringRef ArchitectureName, bool DumpDynamic) {
   const MachOObjectFile *MachO = dyn_cast<const MachOObjectFile>(O);
   uint64_t Address = unwrapOrError(Symbol.getAddress(), FileName, ArchiveName,
                                    ArchitectureName);
@@ -2248,7 +2248,7 @@ static void printUnwindInfo(const ObjectFile *O) {
 
 /// Dump the raw contents of the __clangast section so the output can be piped
 /// into llvm-bcanalyzer.
-void printRawClangAST(const ObjectFile *Obj) {
+static void printRawClangAST(const ObjectFile *Obj) {
   if (outs().is_displayed()) {
     WithColor::error(errs(), ToolName)
         << "The -raw-clang-ast option will dump the raw binary contents of "
@@ -2579,7 +2579,6 @@ static void dumpInput(StringRef file) {
   else
     reportError(errorCodeToError(object_error::invalid_file_type), file);
 }
-} // namespace llvm
 
 int main(int argc, char **argv) {
   using namespace llvm;

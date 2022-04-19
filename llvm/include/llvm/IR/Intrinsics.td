@@ -81,6 +81,11 @@ class NoAlias<AttrIndex idx> : IntrinsicProperty {
   int ArgNo = idx.Value;
 }
 
+class Align<AttrIndex idx, int align> : IntrinsicProperty {
+  int ArgNo = idx.Value;
+  int Align = align;
+}
+
 // Returned - The specified argument is always the return value of the
 // intrinsic.
 class Returned<AttrIndex idx> : IntrinsicProperty {
@@ -1301,6 +1306,10 @@ let IntrProperties = [IntrNoMem, IntrNoSync, IntrWillReturn] in {
 
 }
 
+def int_get_active_lane_mask:
+  Intrinsic<[llvm_anyvector_ty],
+            [llvm_anyint_ty, LLVMMatchType<1>],
+            [IntrNoMem, IntrNoSync, IntrWillReturn]>;
 
 //===-------------------------- Masked Intrinsics -------------------------===//
 //

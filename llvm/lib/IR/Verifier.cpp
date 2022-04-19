@@ -911,12 +911,30 @@ void Verifier::visitDIScope(const DIScope &N) {
 
 void Verifier::visitDISubrange(const DISubrange &N) {
   AssertDI(N.getTag() == dwarf::DW_TAG_subrange_type, "invalid tag", &N);
+  AssertDI(N.getRawCountNode() || N.getRawUpperBound(),
+           "Subrange must contain count or upperBound", &N);
+  AssertDI(!N.getRawCountNode() || !N.getRawUpperBound(),
+           "Subrange can have any one of count or upperBound", &N);
+  AssertDI(!N.getRawCountNode() || N.getCount(),
+           "Count must either be a signed constant or a DIVariable", &N);
   auto Count = N.getCount();
-  AssertDI(Count, "Count must either be a signed constant or a DIVariable",
-           &N);
-  AssertDI(!Count.is<ConstantInt*>() ||
-               Count.get<ConstantInt*>()->getSExtValue() >= -1,
+  AssertDI(!Count || !Count.is<ConstantInt *>() ||
+               Count.get<ConstantInt *>()->getSExtValue() >= -1,
            "invalid subrange count", &N);
+  auto *LBound = N.getRawLowerBound();
+  AssertDI(!LBound || isa<ConstantAsMetadata>(LBound) ||
+               isa<DIVariable>(LBound) || isa<DIExpression>(LBound),
+           "LowerBound must be signed constant or DIVariable or DIExpression",
+           &N);
+  auto *UBound = N.getRawUpperBound();
+  AssertDI(!UBound || isa<ConstantAsMetadata>(UBound) ||
+               isa<DIVariable>(UBound) || isa<DIExpression>(UBound),
+           "UpperBound must be signed constant or DIVariable or DIExpression",
+           &N);
+  auto *Stride = N.getRawStride();
+  AssertDI(!Stride || isa<ConstantAsMetadata>(Stride) ||
+               isa<DIVariable>(Stride) || isa<DIExpression>(Stride),
+           "Stride must be signed constant or DIVariable or DIExpression", &N);
 }
 
 void Verifier::visitDIEnumerator(const DIEnumerator &N) {
@@ -3439,16 +3457,16 @@ void Verifier::visitGetElementPtrInst(GetElementPtrInst &GEP) {
 
   if (auto *GEPVTy = dyn_cast<VectorType>(GEP.getType())) {
     // Additional checks for vector GEPs.
-    unsigned GEPWidth = GEPVTy->getNumElements();
+    ElementCount GEPWidth = GEPVTy->getElementCount();
     if (GEP.getPointerOperandType()->isVectorTy())
       Assert(
           GEPWidth ==
-              cast<VectorType>(GEP.getPointerOperandType())->getNumElements(),
+              cast<VectorType>(GEP.getPointerOperandType())->getElementCount(),
           "Vector GEP result width doesn't match operand's", &GEP);
     for (Value *Idx : Idxs) {
       Type *IndexTy = Idx->getType();
       if (auto *IndexVTy = dyn_cast<VectorType>(IndexTy)) {
-        unsigned IndexWidth = IndexVTy->getNumElements();
+        ElementCount IndexWidth = IndexVTy->getElementCount();
         Assert(IndexWidth == GEPWidth, "Invalid GEP index vector width", &GEP);
       }
       Assert(IndexTy->isIntOrIntVectorTy(),
@@ -4731,20 +4749,20 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
              LandingPad->getParent());
       Assert(InvokeBB->getTerminator(), "safepoint block should be well formed",
              InvokeBB);
-      Assert(isStatepoint(InvokeBB->getTerminator()),
+      Assert(isa<GCStatepointInst>(InvokeBB->getTerminator()),
              "gc relocate should be linked to a statepoint", InvokeBB);
     } else {
       // In all other cases relocate should be tied to the statepoint directly.
       // This covers relocates on a normal return path of invoke statepoint and
       // relocates of a call statepoint.
       auto Token = Call.getArgOperand(0);
-      Assert(isa<Instruction>(Token) && isStatepoint(cast<Instruction>(Token)),
+      Assert(isa<GCStatepointInst>(Token),
              "gc relocate is incorrectly tied to the statepoint", Call, Token);
     }
 
     // Verify rest of the relocate arguments.
     const CallBase &StatepointCall =
-        *cast<CallBase>(cast<GCRelocateInst>(Call).getStatepoint());
+      *cast<GCRelocateInst>(Call).getStatepoint();
 
     // Both the base and derived must be piped through the safepoint.
     Value *Base = Call.getArgOperand(1);
@@ -4821,6 +4839,14 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
   case Intrinsic::eh_exceptionpointer: {
     Assert(isa<CatchPadInst>(Call.getArgOperand(0)),
            "eh.exceptionpointer argument must be a catchpad", Call);
+    break;
+  }
+  case Intrinsic::get_active_lane_mask: {
+    Assert(Call.getType()->isVectorTy(), "get_active_lane_mask: must return a "
+           "vector", Call);
+    auto *ElemTy = Call.getType()->getScalarType();
+    Assert(ElemTy->isIntegerTy(1), "get_active_lane_mask: element type is not "
+           "i1", Call);
     break;
   }
   case Intrinsic::masked_load: {

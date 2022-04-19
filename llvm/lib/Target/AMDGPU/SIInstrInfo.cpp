@@ -264,16 +264,27 @@ static bool isStride64(unsigned Opc) {
   }
 }
 
-bool SIInstrInfo::getMemOperandsWithOffset(
+unsigned SIInstrInfo::getOperandSizeInBytes(const MachineInstr &LdSt,
+                                            const MachineOperand *MOp) const {
+  assert(MOp && "Unexpected null machine operand!");
+  const MachineRegisterInfo &MRI = LdSt.getParent()->getParent()->getRegInfo();
+  const Register Reg = MOp->getReg();
+  const TargetRegisterClass *DstRC = Register::isVirtualRegister(Reg)
+                                         ? MRI.getRegClass(Reg)
+                                         : RI.getPhysRegClass(Reg);
+  return (RI.getRegSizeInBits(*DstRC) / 8);
+}
+
+bool SIInstrInfo::getMemOperandsWithOffsetWidth(
     const MachineInstr &LdSt, SmallVectorImpl<const MachineOperand *> &BaseOps,
-    int64_t &Offset, bool &OffsetIsScalable, const TargetRegisterInfo *TRI)
-    const {
+    int64_t &Offset, bool &OffsetIsScalable, unsigned &Width,
+    const TargetRegisterInfo *TRI) const {
   if (!LdSt.mayLoadOrStore())
     return false;
 
   unsigned Opc = LdSt.getOpcode();
   OffsetIsScalable = false;
-  const MachineOperand *BaseOp, *OffsetOp;
+  const MachineOperand *BaseOp, *OffsetOp, *MOp;
 
   if (isDS(LdSt)) {
     BaseOp = getNamedOperand(LdSt, AMDGPU::OpName::addr);
@@ -287,6 +298,11 @@ bool SIInstrInfo::getMemOperandsWithOffset(
       }
       BaseOps.push_back(BaseOp);
       Offset = OffsetOp->getImm();
+      // Get appropriate operand, and compute width accordingly.
+      MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdst);
+      if (!MOp)
+        MOp = getNamedOperand(LdSt, AMDGPU::OpName::data0);
+      Width = getOperandSizeInBytes(LdSt, MOp);
     } else {
       // The 2 offset instructions use offset0 and offset1 instead. We can treat
       // these as a load with a single offset if the 2 offsets are consecutive.
@@ -318,6 +334,16 @@ bool SIInstrInfo::getMemOperandsWithOffset(
 
       BaseOps.push_back(BaseOp);
       Offset = EltSize * Offset0;
+      // Get appropriate operand(s), and compute width accordingly.
+      MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdst);
+      if (!MOp) {
+        MOp = getNamedOperand(LdSt, AMDGPU::OpName::data0);
+        Width = getOperandSizeInBytes(LdSt, MOp);
+        MOp = getNamedOperand(LdSt, AMDGPU::OpName::data1);
+        Width += getOperandSizeInBytes(LdSt, MOp);
+      } else {
+        Width = getOperandSizeInBytes(LdSt, MOp);
+      }
     }
     return true;
   }
@@ -342,6 +368,11 @@ bool SIInstrInfo::getMemOperandsWithOffset(
       BaseOps.push_back(RSrc);
       BaseOps.push_back(SOffset);
       Offset = OffsetImm->getImm();
+      // Get appropriate operand, and compute width accordingly.
+      MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdst);
+      if (!MOp)
+        MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdata);
+      Width = getOperandSizeInBytes(LdSt, MOp);
       return true;
     }
 
@@ -359,6 +390,11 @@ bool SIInstrInfo::getMemOperandsWithOffset(
     Offset = OffsetImm->getImm();
     if (SOffset) // soffset can be an inline immediate.
       Offset += SOffset->getImm();
+    // Get appropriate operand, and compute width accordingly.
+    MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdst);
+    if (!MOp)
+      MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdata);
+    Width = getOperandSizeInBytes(LdSt, MOp);
     return true;
   }
 
@@ -369,6 +405,9 @@ bool SIInstrInfo::getMemOperandsWithOffset(
     BaseOps.push_back(BaseOp);
     OffsetOp = getNamedOperand(LdSt, AMDGPU::OpName::offset);
     Offset = OffsetOp ? OffsetOp->getImm() : 0;
+    // Get appropriate operand, and compute width accordingly.
+    MOp = getNamedOperand(LdSt, AMDGPU::OpName::sdst);
+    Width = getOperandSizeInBytes(LdSt, MOp);
     return true;
   }
 
@@ -381,6 +420,11 @@ bool SIInstrInfo::getMemOperandsWithOffset(
     if (BaseOp)
       BaseOps.push_back(BaseOp);
     Offset = getNamedOperand(LdSt, AMDGPU::OpName::offset)->getImm();
+    // Get appropriate operand, and compute width accordingly.
+    MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdst);
+    if (!MOp)
+      MOp = getNamedOperand(LdSt, AMDGPU::OpName::vdata);
+    Width = getOperandSizeInBytes(LdSt, MOp);
     return true;
   }
 
@@ -430,7 +474,8 @@ static bool memOpsHaveSameBasePtr(const MachineInstr &MI1,
 
 bool SIInstrInfo::shouldClusterMemOps(ArrayRef<const MachineOperand *> BaseOps1,
                                       ArrayRef<const MachineOperand *> BaseOps2,
-                                      unsigned NumLoads) const {
+                                      unsigned NumLoads,
+                                      unsigned NumBytes) const {
   assert(!BaseOps1.empty() && !BaseOps2.empty());
   const MachineInstr &FirstLdSt = *BaseOps1.front()->getParent();
   const MachineInstr &SecondLdSt = *BaseOps2.front()->getParent();
@@ -1069,66 +1114,60 @@ unsigned SIInstrInfo::getMovOpcode(const TargetRegisterClass *DstRC) const {
 }
 
 static unsigned getIndirectVGPRWritePseudoOpc(unsigned VecSize) {
-  switch (VecSize) {
-  case 32: // 4 bytes
+  if (VecSize <= 32) // 4 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V1;
-  case 64: // 8 bytes
+  if (VecSize <= 64) // 8 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V2;
-  case 96: // 12 bytes
+  if (VecSize <= 96) // 12 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V3;
-  case 128: // 16 bytes
+  if (VecSize <= 128) // 16 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V4;
-  case 160: // 20 bytes
+  if (VecSize <= 160) // 20 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V5;
-  case 256: // 32 bytes
+  if (VecSize <= 256) // 32 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V8;
-  case 512: // 64 bytes
+  if (VecSize <= 512) // 64 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V16;
-  case 1024: // 128 bytes
+  if (VecSize <= 1024) // 128 bytes
     return AMDGPU::V_INDIRECT_REG_WRITE_B32_V32;
-  default:
-    llvm_unreachable("unsupported size for IndirectRegWrite pseudos");
-  }
+
+  llvm_unreachable("unsupported size for IndirectRegWrite pseudos");
 }
 
 static unsigned getIndirectSGPRWritePseudo32(unsigned VecSize) {
-  switch (VecSize) {
-  case 32: // 4 bytes
+  if (VecSize <= 32) // 4 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V1;
-  case 64: // 8 bytes
+  if (VecSize <= 64) // 8 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V2;
-  case 96: // 12 bytes
+  if (VecSize <= 96) // 12 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V3;
-  case 128: // 16 bytes
+  if (VecSize <= 128) // 16 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V4;
-  case 160: // 20 bytes
+  if (VecSize <= 160) // 20 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V5;
-  case 256: // 32 bytes
+  if (VecSize <= 256) // 32 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V8;
-  case 512: // 64 bytes
+  if (VecSize <= 512) // 64 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V16;
-  case 1024: // 128 bytes
+  if (VecSize <= 1024) // 128 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B32_V32;
-  default:
-    llvm_unreachable("unsupported size for IndirectRegWrite pseudos");
-  }
+
+  llvm_unreachable("unsupported size for IndirectRegWrite pseudos");
 }
 
 static unsigned getIndirectSGPRWritePseudo64(unsigned VecSize) {
-  switch (VecSize) {
-  case 64: // 8 bytes
+  if (VecSize <= 64) // 8 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B64_V1;
-  case 128: // 16 bytes
+  if (VecSize <= 128) // 16 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B64_V2;
-  case 256: // 32 bytes
+  if (VecSize <= 256) // 32 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B64_V4;
-  case 512: // 64 bytes
+  if (VecSize <= 512) // 64 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B64_V8;
-  case 1024: // 128 bytes
+  if (VecSize <= 1024) // 128 bytes
     return AMDGPU::S_INDIRECT_REG_WRITE_B64_V16;
-  default:
-    llvm_unreachable("unsupported size for IndirectRegWrite pseudos");
-  }
+
+  llvm_unreachable("unsupported size for IndirectRegWrite pseudos");
 }
 
 const MCInstrDesc &SIInstrInfo::getIndirectRegWritePseudo(
@@ -2740,9 +2779,12 @@ bool SIInstrInfo::checkInstOffsetsDoNotOverlap(const MachineInstr &MIa,
                                                const MachineInstr &MIb) const {
   SmallVector<const MachineOperand *, 4> BaseOps0, BaseOps1;
   int64_t Offset0, Offset1;
+  unsigned Dummy0, Dummy1;
   bool Offset0IsScalable, Offset1IsScalable;
-  if (!getMemOperandsWithOffset(MIa, BaseOps0, Offset0, Offset0IsScalable, &RI) ||
-      !getMemOperandsWithOffset(MIb, BaseOps1, Offset1, Offset1IsScalable, &RI))
+  if (!getMemOperandsWithOffsetWidth(MIa, BaseOps0, Offset0, Offset0IsScalable,
+                                     Dummy0, &RI) ||
+      !getMemOperandsWithOffsetWidth(MIb, BaseOps1, Offset1, Offset1IsScalable,
+                                     Dummy1, &RI))
     return false;
 
   if (!memOpsHaveSameBaseOperands(BaseOps0, BaseOps1))
@@ -2954,10 +2996,12 @@ bool SIInstrInfo::isSchedulingBoundary(const MachineInstr &MI,
   // Target-independent instructions do not have an implicit-use of EXEC, even
   // when they operate on VGPRs. Treating EXEC modifications as scheduling
   // boundaries prevents incorrect movements of such instructions.
+
+  // TODO: Don't treat setreg with known constant that only changes MODE as
+  // barrier.
   return MI.modifiesRegister(AMDGPU::EXEC, &RI) ||
          MI.getOpcode() == AMDGPU::S_SETREG_IMM32_B32 ||
          MI.getOpcode() == AMDGPU::S_SETREG_B32 ||
-         MI.getOpcode() == AMDGPU::S_DENORM_MODE ||
          changesVGPRIndexingMode(MI);
 }
 
@@ -3454,6 +3498,11 @@ bool SIInstrInfo::verifyInstruction(const MachineInstr &MI,
     }
 
     return true;
+  }
+
+  if (isMIMG(MI) && MI.memoperands_empty() && MI.mayLoadOrStore()) {
+    ErrInfo = "missing memory operand from MIMG instruction.";
+    return false;
   }
 
   // Make sure the register classes are correct.

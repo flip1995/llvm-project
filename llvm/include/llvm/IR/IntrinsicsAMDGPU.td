@@ -142,22 +142,22 @@ defm int_amdgcn_workgroup_id : AMDGPUReadPreloadRegisterIntrinsic_xyz_named
 
 def int_amdgcn_dispatch_ptr :
   Intrinsic<[LLVMQualPointerType<llvm_i8_ty, 4>], [],
-  [IntrNoMem, IntrSpeculatable]>;
+  [Align<RetIndex, 4>, IntrNoMem, IntrSpeculatable]>;
 
 def int_amdgcn_queue_ptr :
   GCCBuiltin<"__builtin_amdgcn_queue_ptr">,
   Intrinsic<[LLVMQualPointerType<llvm_i8_ty, 4>], [],
-  [IntrNoMem, IntrSpeculatable]>;
+  [Align<RetIndex, 4>, IntrNoMem, IntrSpeculatable]>;
 
 def int_amdgcn_kernarg_segment_ptr :
   GCCBuiltin<"__builtin_amdgcn_kernarg_segment_ptr">,
   Intrinsic<[LLVMQualPointerType<llvm_i8_ty, 4>], [],
-  [IntrNoMem, IntrSpeculatable]>;
+  [Align<RetIndex, 4>, IntrNoMem, IntrSpeculatable]>;
 
 def int_amdgcn_implicitarg_ptr :
   GCCBuiltin<"__builtin_amdgcn_implicitarg_ptr">,
   Intrinsic<[LLVMQualPointerType<llvm_i8_ty, 4>], [],
-  [IntrNoMem, IntrSpeculatable]>;
+  [Align<RetIndex, 4>, IntrNoMem, IntrSpeculatable]>;
 
 def int_amdgcn_groupstaticsize :
   GCCBuiltin<"__builtin_amdgcn_groupstaticsize">,
@@ -170,7 +170,7 @@ def int_amdgcn_dispatch_id :
 def int_amdgcn_implicit_buffer_ptr :
   GCCBuiltin<"__builtin_amdgcn_implicit_buffer_ptr">,
   Intrinsic<[LLVMQualPointerType<llvm_i8_ty, 4>], [],
-  [IntrNoMem, IntrSpeculatable]>;
+  [Align<RetIndex, 4>, IntrNoMem, IntrSpeculatable]>;
 
 // Set EXEC to the 64-bit value given.
 // This is always moved to the beginning of the basic block.
@@ -1205,6 +1205,16 @@ def int_amdgcn_s_getreg :
   GCCBuiltin<"__builtin_amdgcn_s_getreg">,
   Intrinsic<[llvm_i32_ty], [llvm_i32_ty],
   [IntrInaccessibleMemOnly, IntrReadMem, IntrSpeculatable, ImmArg<ArgIndex<0>>]
+>;
+
+// Note this can be used to set FP environment properties that are
+// unsafe to change in non-strictfp functions. The register properties
+// available (and value required to access them) may differ per
+// subtarget. llvm.amdgcn.s.setreg(hwmode, value)
+def int_amdgcn_s_setreg :
+  GCCBuiltin<"__builtin_amdgcn_s_setreg">,
+  Intrinsic<[], [llvm_i32_ty, llvm_i32_ty],
+  [IntrNoMem, IntrHasSideEffects, ImmArg<ArgIndex<0>>]
 >;
 
 // int_amdgcn_s_getpc is provided to allow a specific style of position
