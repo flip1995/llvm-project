@@ -170,11 +170,12 @@ static bool getShuffleDemandedElts(const ShuffleVectorInst *Shuf,
                                    APInt &DemandedLHS, APInt &DemandedRHS) {
   // The length of scalable vectors is unknown at compile time, thus we
   // cannot check their values
-  if (Shuf->getType()->getVectorElementCount().Scalable)
+  if (Shuf->getType()->isScalable())
     return false;
 
-  int NumElts = Shuf->getOperand(0)->getType()->getVectorNumElements();
-  int NumMaskElts = Shuf->getType()->getVectorNumElements();
+  int NumElts =
+      cast<VectorType>(Shuf->getOperand(0)->getType())->getNumElements();
+  int NumMaskElts = Shuf->getType()->getNumElements();
   DemandedLHS = DemandedRHS = APInt::getNullValue(NumElts);
   if (DemandedElts.isNullValue())
     return true;
@@ -208,9 +209,10 @@ static void computeKnownBits(const Value *V, const APInt &DemandedElts,
 static void computeKnownBits(const Value *V, KnownBits &Known, unsigned Depth,
                              const Query &Q) {
   Type *Ty = V->getType();
-  APInt DemandedElts = Ty->isVectorTy()
-                           ? APInt::getAllOnesValue(Ty->getVectorNumElements())
-                           : APInt(1, 1);
+  APInt DemandedElts =
+      Ty->isVectorTy()
+          ? APInt::getAllOnesValue(cast<VectorType>(Ty)->getNumElements())
+          : APInt(1, 1);
   computeKnownBits(V, DemandedElts, Known, Depth, Q);
 }
 
@@ -469,9 +471,10 @@ static unsigned ComputeNumSignBits(const Value *V, const APInt &DemandedElts,
 static unsigned ComputeNumSignBits(const Value *V, unsigned Depth,
                                    const Query &Q) {
   Type *Ty = V->getType();
-  APInt DemandedElts = Ty->isVectorTy()
-                           ? APInt::getAllOnesValue(Ty->getVectorNumElements())
-                           : APInt(1, 1);
+  APInt DemandedElts =
+      Ty->isVectorTy()
+          ? APInt::getAllOnesValue(cast<VectorType>(Ty)->getNumElements())
+          : APInt(1, 1);
   return ComputeNumSignBits(V, DemandedElts, Depth, Q);
 }
 
@@ -1217,7 +1220,7 @@ static void computeKnownBitsFromOperator(const Operator *I,
                                          const Query &Q) {
   unsigned BitWidth = Known.getBitWidth();
 
-  KnownBits Known2(Known);
+  KnownBits Known2(BitWidth);
   switch (I->getOpcode()) {
   default: break;
   case Instruction::Load:
@@ -1230,10 +1233,7 @@ static void computeKnownBitsFromOperator(const Operator *I,
     computeKnownBits(I->getOperand(1), DemandedElts, Known, Depth + 1, Q);
     computeKnownBits(I->getOperand(0), DemandedElts, Known2, Depth + 1, Q);
 
-    // Output known-1 bits are only known if set in both the LHS & RHS.
-    Known.One &= Known2.One;
-    // Output known-0 are known to be clear if zero in either the LHS | RHS.
-    Known.Zero |= Known2.Zero;
+    Known &= Known2;
 
     // and(x, add (x, -1)) is a common idiom that always clears the low bit;
     // here we handle the more general case of adding any odd number by
@@ -1254,22 +1254,14 @@ static void computeKnownBitsFromOperator(const Operator *I,
     computeKnownBits(I->getOperand(1), DemandedElts, Known, Depth + 1, Q);
     computeKnownBits(I->getOperand(0), DemandedElts, Known2, Depth + 1, Q);
 
-    // Output known-0 bits are only known if clear in both the LHS & RHS.
-    Known.Zero &= Known2.Zero;
-    // Output known-1 are known to be set if set in either the LHS | RHS.
-    Known.One |= Known2.One;
+    Known |= Known2;
     break;
-  case Instruction::Xor: {
+  case Instruction::Xor:
     computeKnownBits(I->getOperand(1), DemandedElts, Known, Depth + 1, Q);
     computeKnownBits(I->getOperand(0), DemandedElts, Known2, Depth + 1, Q);
 
-    // Output known-0 bits are known if clear or set in both the LHS & RHS.
-    APInt KnownZeroOut = (Known.Zero & Known2.Zero) | (Known.One & Known2.One);
-    // Output known-1 are known to be set if set in only one of the LHS, RHS.
-    Known.One = (Known.Zero & Known2.One) | (Known.One & Known2.Zero);
-    Known.Zero = std::move(KnownZeroOut);
+    Known ^= Known2;
     break;
-  }
   case Instruction::Mul: {
     bool NSW = Q.IIQ.hasNoSignedWrap(cast<OverflowingBinaryOperator>(I));
     computeKnownBitsMul(I->getOperand(0), I->getOperand(1), NSW, DemandedElts,
@@ -1656,7 +1648,7 @@ static void computeKnownBitsFromOperator(const Operator *I,
           computeKnownBits(R, Known2, Depth + 1, RecQ);
 
           // We need to take the minimum number of known bits
-          KnownBits Known3(Known);
+          KnownBits Known3(BitWidth);
           RecQ.CxtI = LInst;
           computeKnownBits(L, Known3, Depth + 1, RecQ);
 
@@ -1827,7 +1819,7 @@ static void computeKnownBitsFromOperator(const Operator *I,
         if (II->getIntrinsicID() == Intrinsic::fshr)
           ShiftAmt = BitWidth - ShiftAmt;
 
-        KnownBits Known3(Known);
+        KnownBits Known3(BitWidth);
         computeKnownBits(I->getOperand(0), Known2, Depth + 1, Q);
         computeKnownBits(I->getOperand(1), Known3, Depth + 1, Q);
 
@@ -1941,7 +1933,7 @@ static void computeKnownBitsFromOperator(const Operator *I,
     const Value *Vec = I->getOperand(0);
     const Value *Idx = I->getOperand(1);
     auto *CIdx = dyn_cast<ConstantInt>(Idx);
-    unsigned NumElts = Vec->getType()->getVectorNumElements();
+    unsigned NumElts = cast<VectorType>(Vec->getType())->getNumElements();
     APInt DemandedVecElts = APInt::getAllOnesValue(NumElts);
     if (CIdx && CIdx->getValue().ult(NumElts))
       DemandedVecElts = APInt::getOneBitSet(NumElts, CIdx->getZExtValue());
@@ -2020,8 +2012,8 @@ void computeKnownBits(const Value *V, const APInt &DemandedElts,
   Type *Ty = V->getType();
   assert((Ty->isIntOrIntVectorTy(BitWidth) || Ty->isPtrOrPtrVectorTy()) &&
          "Not integer or pointer type!");
-  assert(((Ty->isVectorTy() &&
-           Ty->getVectorNumElements() == DemandedElts.getBitWidth()) ||
+  assert(((Ty->isVectorTy() && cast<VectorType>(Ty)->getNumElements() ==
+                                   DemandedElts.getBitWidth()) ||
           (!Ty->isVectorTy() && DemandedElts == APInt(1, 1))) &&
          "Unexpected vector size");
 
@@ -2666,7 +2658,7 @@ bool isKnownNonZero(const Value *V, const APInt &DemandedElts, unsigned Depth,
     const Value *Vec = EEI->getVectorOperand();
     const Value *Idx = EEI->getIndexOperand();
     auto *CIdx = dyn_cast<ConstantInt>(Idx);
-    unsigned NumElts = Vec->getType()->getVectorNumElements();
+    unsigned NumElts = cast<VectorType>(Vec->getType())->getNumElements();
     APInt DemandedVecElts = APInt::getAllOnesValue(NumElts);
     if (CIdx && CIdx->getValue().ult(NumElts))
       DemandedVecElts = APInt::getOneBitSet(NumElts, CIdx->getZExtValue());
@@ -2680,9 +2672,10 @@ bool isKnownNonZero(const Value *V, const APInt &DemandedElts, unsigned Depth,
 
 bool isKnownNonZero(const Value* V, unsigned Depth, const Query& Q) {
   Type *Ty = V->getType();
-  APInt DemandedElts = Ty->isVectorTy()
-                           ? APInt::getAllOnesValue(Ty->getVectorNumElements())
-                           : APInt(1, 1);
+  APInt DemandedElts =
+      Ty->isVectorTy()
+          ? APInt::getAllOnesValue(cast<VectorType>(Ty)->getNumElements())
+          : APInt(1, 1);
   return isKnownNonZero(V, DemandedElts, Depth, Q);
 }
 
@@ -2783,7 +2776,7 @@ static unsigned computeNumSignBitsVectorConstant(const Value *V,
     return 0;
 
   unsigned MinSignBits = TyBits;
-  unsigned NumElts = CV->getType()->getVectorNumElements();
+  unsigned NumElts = cast<VectorType>(CV->getType())->getNumElements();
   for (unsigned i = 0; i != NumElts; ++i) {
     if (!DemandedElts[i])
       continue;
@@ -2826,8 +2819,8 @@ static unsigned ComputeNumSignBitsImpl(const Value *V,
   // same behavior for poison though -- that's a FIXME today.
 
   Type *Ty = V->getType();
-  assert(((Ty->isVectorTy() &&
-           Ty->getVectorNumElements() == DemandedElts.getBitWidth()) ||
+  assert(((Ty->isVectorTy() && cast<VectorType>(Ty)->getNumElements() ==
+                                   DemandedElts.getBitWidth()) ||
           (!Ty->isVectorTy() && DemandedElts == APInt(1, 1))) &&
          "Unexpected vector size");
 
@@ -3402,8 +3395,8 @@ static bool cannotBeOrderedLessThanZeroImpl(const Value *V,
 
   // Handle vector of constants.
   if (auto *CV = dyn_cast<Constant>(V)) {
-    if (CV->getType()->isVectorTy()) {
-      unsigned NumElts = CV->getType()->getVectorNumElements();
+    if (auto *CVVTy = dyn_cast<VectorType>(CV->getType())) {
+      unsigned NumElts = CVVTy->getNumElements();
       for (unsigned i = 0; i != NumElts; ++i) {
         auto *CFP = dyn_cast_or_null<ConstantFP>(CV->getAggregateElement(i));
         if (!CFP)
@@ -3579,7 +3572,7 @@ bool llvm::isKnownNeverInfinity(const Value *V, const TargetLibraryInfo *TLI,
     return false;
 
   // For vectors, verify that each element is not infinity.
-  unsigned NumElts = V->getType()->getVectorNumElements();
+  unsigned NumElts = cast<VectorType>(V->getType())->getNumElements();
   for (unsigned i = 0; i != NumElts; ++i) {
     Constant *Elt = cast<Constant>(V)->getAggregateElement(i);
     if (!Elt)
@@ -3680,7 +3673,7 @@ bool llvm::isKnownNeverNaN(const Value *V, const TargetLibraryInfo *TLI,
     return false;
 
   // For vectors, verify that each element is not NaN.
-  unsigned NumElts = V->getType()->getVectorNumElements();
+  unsigned NumElts = cast<VectorType>(V->getType())->getNumElements();
   for (unsigned i = 0; i != NumElts; ++i) {
     Constant *Elt = cast<Constant>(V)->getAggregateElement(i);
     if (!Elt)
