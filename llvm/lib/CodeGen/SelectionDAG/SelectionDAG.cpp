@@ -1008,12 +1008,12 @@ SDNode *SelectionDAG::FindModifiedNodeSlot(SDNode *N, ArrayRef<SDValue> Ops,
   return Node;
 }
 
-unsigned SelectionDAG::getEVTAlignment(EVT VT) const {
+Align SelectionDAG::getEVTAlign(EVT VT) const {
   Type *Ty = VT == MVT::iPTR ?
                    PointerType::get(Type::getInt8Ty(*getContext()), 0) :
                    VT.getTypeForEVT(*getContext());
 
-  return getDataLayout().getABITypeAlignment(Ty);
+  return getDataLayout().getABITypeAlign(Ty);
 }
 
 // EntryNode could meaningfully have debug info if we can find it...
@@ -1961,6 +1961,10 @@ SDValue SelectionDAG::getAddrSpaceCast(const SDLoc &dl, EVT VT, SDValue Ptr,
   CSEMap.InsertNode(N, IP);
   InsertNode(N);
   return SDValue(N, 0);
+}
+
+SDValue SelectionDAG::getFreeze(SDValue V) {
+  return getNode(ISD::FREEZE, SDLoc(V), V.getValueType(), V);
 }
 
 /// getShiftAmountOperand - Return the specified value casted to
@@ -4590,6 +4594,9 @@ SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, EVT VT,
 
   unsigned OpOpcode = Operand.getNode()->getOpcode();
   switch (Opcode) {
+  case ISD::FREEZE:
+    assert(VT == Operand.getValueType() && "Unexpected VT!");
+    break;
   case ISD::TokenFactor:
   case ISD::MERGE_VALUES:
   case ISD::CONCAT_VECTORS:
@@ -5996,7 +6003,7 @@ static SDValue getMemcpyLoadsAndStores(
   FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Dst);
   if (FI && !MFI.isFixedObjectIndex(FI->getIndex()))
     DstAlignCanChange = true;
-  MaybeAlign SrcAlign(DAG.InferPtrAlignment(Src));
+  MaybeAlign SrcAlign = DAG.InferPtrAlign(Src);
   if (!SrcAlign || Alignment > *SrcAlign)
     SrcAlign = Alignment;
   assert(SrcAlign && "SrcAlign must be set");
@@ -6217,7 +6224,7 @@ static SDValue getMemmoveLoadsAndStores(
   FrameIndexSDNode *FI = dyn_cast<FrameIndexSDNode>(Dst);
   if (FI && !MFI.isFixedObjectIndex(FI->getIndex()))
     DstAlignCanChange = true;
-  MaybeAlign SrcAlign(DAG.InferPtrAlignment(Src));
+  MaybeAlign SrcAlign = DAG.InferPtrAlign(Src);
   if (!SrcAlign || Alignment > *SrcAlign)
     SrcAlign = Alignment;
   assert(SrcAlign && "SrcAlign must be set");
@@ -6868,11 +6875,8 @@ SDValue SelectionDAG::getMergeValues(ArrayRef<SDValue> Ops, const SDLoc &dl) {
 
 SDValue SelectionDAG::getMemIntrinsicNode(
     unsigned Opcode, const SDLoc &dl, SDVTList VTList, ArrayRef<SDValue> Ops,
-    EVT MemVT, MachinePointerInfo PtrInfo, unsigned Align,
+    EVT MemVT, MachinePointerInfo PtrInfo, Align Alignment,
     MachineMemOperand::Flags Flags, uint64_t Size, const AAMDNodes &AAInfo) {
-  if (Align == 0)  // Ensure that codegen never sees alignment 0
-    Align = getEVTAlignment(MemVT);
-
   if (!Size && MemVT.isScalableVector())
     Size = MemoryLocation::UnknownSize;
   else if (!Size)
@@ -6880,7 +6884,7 @@ SDValue SelectionDAG::getMemIntrinsicNode(
 
   MachineFunction &MF = getMachineFunction();
   MachineMemOperand *MMO =
-      MF.getMachineMemOperand(PtrInfo, Flags, Size, Align, AAInfo);
+      MF.getMachineMemOperand(PtrInfo, Flags, Size, Alignment, AAInfo);
 
   return getMemIntrinsicNode(Opcode, dl, VTList, Ops, MemVT, MMO);
 }
@@ -6999,13 +7003,11 @@ SDValue SelectionDAG::getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
                               EVT VT, const SDLoc &dl, SDValue Chain,
                               SDValue Ptr, SDValue Offset,
                               MachinePointerInfo PtrInfo, EVT MemVT,
-                              unsigned Alignment,
+                              Align Alignment,
                               MachineMemOperand::Flags MMOFlags,
                               const AAMDNodes &AAInfo, const MDNode *Ranges) {
   assert(Chain.getValueType() == MVT::Other &&
         "Invalid chain type");
-  if (Alignment == 0)  // Ensure that codegen never sees alignment 0
-    Alignment = getEVTAlignment(MemVT);
 
   MMOFlags |= MachineMemOperand::MOLoad;
   assert((MMOFlags & MachineMemOperand::MOStore) == 0);
@@ -7016,8 +7018,8 @@ SDValue SelectionDAG::getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
 
   uint64_t Size = MemoryLocation::getSizeOrUnknown(MemVT.getStoreSize());
   MachineFunction &MF = getMachineFunction();
-  MachineMemOperand *MMO = MF.getMachineMemOperand(
-      PtrInfo, MMOFlags, Size, Alignment, AAInfo, Ranges);
+  MachineMemOperand *MMO = MF.getMachineMemOperand(PtrInfo, MMOFlags, Size,
+                                                   Alignment, AAInfo, Ranges);
   return getLoad(AM, ExtType, VT, dl, Chain, Ptr, Offset, MemVT, MMO);
 }
 
@@ -7072,7 +7074,7 @@ SDValue SelectionDAG::getLoad(ISD::MemIndexedMode AM, ISD::LoadExtType ExtType,
 
 SDValue SelectionDAG::getLoad(EVT VT, const SDLoc &dl, SDValue Chain,
                               SDValue Ptr, MachinePointerInfo PtrInfo,
-                              unsigned Alignment,
+                              MaybeAlign Alignment,
                               MachineMemOperand::Flags MMOFlags,
                               const AAMDNodes &AAInfo, const MDNode *Ranges) {
   SDValue Undef = getUNDEF(Ptr.getValueType());
@@ -7090,7 +7092,7 @@ SDValue SelectionDAG::getLoad(EVT VT, const SDLoc &dl, SDValue Chain,
 SDValue SelectionDAG::getExtLoad(ISD::LoadExtType ExtType, const SDLoc &dl,
                                  EVT VT, SDValue Chain, SDValue Ptr,
                                  MachinePointerInfo PtrInfo, EVT MemVT,
-                                 unsigned Alignment,
+                                 MaybeAlign Alignment,
                                  MachineMemOperand::Flags MMOFlags,
                                  const AAMDNodes &AAInfo) {
   SDValue Undef = getUNDEF(Ptr.getValueType());
@@ -7123,12 +7125,10 @@ SDValue SelectionDAG::getIndexedLoad(SDValue OrigLoad, const SDLoc &dl,
 
 SDValue SelectionDAG::getStore(SDValue Chain, const SDLoc &dl, SDValue Val,
                                SDValue Ptr, MachinePointerInfo PtrInfo,
-                               unsigned Alignment,
+                               Align Alignment,
                                MachineMemOperand::Flags MMOFlags,
                                const AAMDNodes &AAInfo) {
   assert(Chain.getValueType() == MVT::Other && "Invalid chain type");
-  if (Alignment == 0)  // Ensure that codegen never sees alignment 0
-    Alignment = getEVTAlignment(Val.getValueType());
 
   MMOFlags |= MachineMemOperand::MOStore;
   assert((MMOFlags & MachineMemOperand::MOLoad) == 0);
@@ -7176,13 +7176,11 @@ SDValue SelectionDAG::getStore(SDValue Chain, const SDLoc &dl, SDValue Val,
 
 SDValue SelectionDAG::getTruncStore(SDValue Chain, const SDLoc &dl, SDValue Val,
                                     SDValue Ptr, MachinePointerInfo PtrInfo,
-                                    EVT SVT, unsigned Alignment,
+                                    EVT SVT, Align Alignment,
                                     MachineMemOperand::Flags MMOFlags,
                                     const AAMDNodes &AAInfo) {
   assert(Chain.getValueType() == MVT::Other &&
         "Invalid chain type");
-  if (Alignment == 0)  // Ensure that codegen never sees alignment 0
-    Alignment = getEVTAlignment(SVT);
 
   MMOFlags |= MachineMemOperand::MOStore;
   assert((MMOFlags & MachineMemOperand::MOLoad) == 0);
@@ -9616,9 +9614,9 @@ bool SelectionDAG::areNonVolatileConsecutiveLoads(LoadSDNode *LD,
   return false;
 }
 
-/// InferPtrAlignment - Infer alignment of a load / store address. Return 0 if
-/// it cannot be inferred.
-unsigned SelectionDAG::InferPtrAlignment(SDValue Ptr) const {
+/// InferPtrAlignment - Infer alignment of a load / store address. Return None
+/// if it cannot be inferred.
+MaybeAlign SelectionDAG::InferPtrAlign(SDValue Ptr) const {
   // If this is a GlobalAddress + cst, return the alignment.
   const GlobalValue *GV = nullptr;
   int64_t GVOffset = 0;
@@ -9627,9 +9625,8 @@ unsigned SelectionDAG::InferPtrAlignment(SDValue Ptr) const {
     KnownBits Known(PtrWidth);
     llvm::computeKnownBits(GV, Known, getDataLayout());
     unsigned AlignBits = Known.countMinTrailingZeros();
-    unsigned Align = AlignBits ? 1 << std::min(31U, AlignBits) : 0;
-    if (Align)
-      return MinAlign(Align, GVOffset);
+    if (AlignBits)
+      return commonAlignment(Align(1ull << std::min(31U, AlignBits)), GVOffset);
   }
 
   // If this is a direct reference to a stack slot, use information about the
@@ -9647,12 +9644,10 @@ unsigned SelectionDAG::InferPtrAlignment(SDValue Ptr) const {
 
   if (FrameIdx != INT_MIN) {
     const MachineFrameInfo &MFI = getMachineFunction().getFrameInfo();
-    unsigned FIInfoAlign = MinAlign(MFI.getObjectAlignment(FrameIdx),
-                                    FrameOffset);
-    return FIInfoAlign;
+    return commonAlignment(MFI.getObjectAlign(FrameIdx), FrameOffset);
   }
 
-  return 0;
+  return None;
 }
 
 /// GetSplitDestVTs - Compute the VTs needed for the low/hi parts of a type

@@ -4372,6 +4372,9 @@ class OMPDependClause final
   /// Set colon location.
   void setColonLoc(SourceLocation Loc) { ColonLoc = Loc; }
 
+  /// Sets optional dependency modifier.
+  void setModifier(Expr *DepModifier);
+
 public:
   /// Creates clause with a list of variables \a VL.
   ///
@@ -4387,7 +4390,7 @@ public:
   /// clause.
   static OMPDependClause *Create(const ASTContext &C, SourceLocation StartLoc,
                                  SourceLocation LParenLoc,
-                                 SourceLocation EndLoc,
+                                 SourceLocation EndLoc, Expr *DepModifier,
                                  OpenMPDependClauseKind DepKind,
                                  SourceLocation DepLoc, SourceLocation ColonLoc,
                                  ArrayRef<Expr *> VL, unsigned NumLoops);
@@ -4403,6 +4406,12 @@ public:
 
   /// Get dependency type.
   OpenMPDependClauseKind getDependencyKind() const { return DepKind; }
+
+  /// Return optional depend modifier.
+  Expr *getModifier();
+  const Expr *getModifier() const {
+    return const_cast<OMPDependClause *>(this)->getModifier();
+  }
 
   /// Get dependency type location.
   SourceLocation getDependencyLoc() const { return DepLoc; }
@@ -7146,6 +7155,9 @@ class OMPTraitInfo {
   friend class ASTContext;
 
 public:
+  /// Reconstruct a (partial) OMPTraitInfo object from a mangled name.
+  OMPTraitInfo(StringRef MangledName);
+
   struct OMPTraitProperty {
     llvm::omp::TraitProperty Kind = llvm::omp::TraitProperty::invalid;
   };
@@ -7178,9 +7190,14 @@ public:
   /// former is a flat representation the actual main difference is that the
   /// latter uses clang::Expr to store the score/condition while the former is
   /// independent of clang. Thus, expressions and conditions are evaluated in
-  /// this method.
+  /// this method. If \p DeviceSetOnly is true, only the device selector set, if
+  /// present, is put in \p VMI, otherwise all selector sets are put in \p VMI.
   void getAsVariantMatchInfo(ASTContext &ASTCtx,
-                             llvm::omp::VariantMatchInfo &VMI) const;
+                             llvm::omp::VariantMatchInfo &VMI,
+                             bool DeviceSetOnly) const;
+
+  /// Return a string representation identifying this context selector.
+  std::string getMangledName() const;
 
   /// Print a human readable representation into \p OS.
   void print(llvm::raw_ostream &OS, const PrintingPolicy &Policy) const;

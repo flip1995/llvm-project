@@ -495,6 +495,9 @@ bool CodeGenPrepare::runOnFunction(Function &F) {
     if (!LargeOffsetGEPMap.empty())
       MadeChange |= splitLargeGEPOffsets();
 
+    if (MadeChange)
+      eliminateFallThrough(F);
+
     // Really free removed instructions during promotion.
     for (Instruction *I : RemovedInsts)
       I->deleteValue();
@@ -1965,6 +1968,11 @@ bool CodeGenPrepare::optimizeCallInst(CallInst *CI, bool &ModifiedDT) {
   if (II) {
     switch (II->getIntrinsicID()) {
     default: break;
+    case Intrinsic::assume: {
+      II->eraseFromParent();
+      return true;
+    }
+
     case Intrinsic::experimental_widenable_condition: {
       // Give up on future widening oppurtunties so that we can fold away dead
       // paths and merge blocks before going into block-local instruction
@@ -6250,7 +6258,7 @@ bool CodeGenPrepare::optimizeSelectInst(SelectInst *SI) {
 }
 
 static bool isBroadcastShuffle(ShuffleVectorInst *SVI) {
-  SmallVector<int, 16> Mask(SVI->getShuffleMask());
+  ArrayRef<int> Mask(SVI->getShuffleMask());
   int SplatElem = -1;
   for (unsigned i = 0; i < Mask.size(); ++i) {
     if (SplatElem != -1 && Mask[i] != -1 && Mask[i] != SplatElem)
@@ -6300,7 +6308,7 @@ bool CodeGenPrepare::optimizeShuffleVectorInst(ShuffleVectorInst *SVI) {
       assert(InsertPt != UserBB->end());
       InsertedShuffle =
           new ShuffleVectorInst(SVI->getOperand(0), SVI->getOperand(1),
-                                SVI->getOperand(2), "", &*InsertPt);
+                                SVI->getShuffleMask(), "", &*InsertPt);
       InsertedShuffle->setDebugLoc(SVI->getDebugLoc());
     }
 
@@ -7201,7 +7209,7 @@ bool CodeGenPrepare::optimizeInst(Instruction *I, bool &ModifiedDT) {
   }
 
   if (FreezeInst *FI = dyn_cast<FreezeInst>(I)) {
-    // br(freeze(icmp a, const)) -> br(icmp (freeze a), const)
+    // freeze(icmp a, const)) -> icmp (freeze a), const
     // This helps generate efficient conditional jumps.
     Instruction *CmpI = nullptr;
     if (ICmpInst *II = dyn_cast<ICmpInst>(FI->getOperand(0)))
