@@ -338,6 +338,7 @@ public:
   bool isSectionText(DataRefImpl Sec) const override;
   bool isSectionData(DataRefImpl Sec) const override;
   bool isSectionBSS(DataRefImpl Sec) const override;
+  bool isDebugSection(DataRefImpl Sec) const override;
 
   bool isSectionVirtual(DataRefImpl Sec) const override;
   relocation_iterator section_rel_begin(DataRefImpl Sec) const override;
@@ -370,7 +371,7 @@ public:
   const void *getPointerToSymbolTable() const { return SymbolTblPtr; }
 
   Expected<StringRef> getSymbolSectionName(XCOFFSymbolRef Ref) const;
-
+  unsigned getSymbolSectionID(SymbolRef Sym) const;
   XCOFFSymbolRef toSymbolRef(DataRefImpl Ref) const;
 
   // File header related interfaces.
@@ -537,20 +538,19 @@ private:
 };
 
 class TBVectorExt {
-  friend class XCOFFTracebackTable;
-
   uint16_t Data;
-  uint32_t VecParmsInfo;
+  SmallString<32> VecParmsInfo;
 
-  TBVectorExt(StringRef TBvectorStrRef);
+  TBVectorExt(StringRef TBvectorStrRef, Error &Err);
 
 public:
+  static Expected<TBVectorExt> create(StringRef TBvectorStrRef);
   uint8_t getNumberOfVRSaved() const;
   bool isVRSavedOnStack() const;
   bool hasVarArgs() const;
   uint8_t getNumberOfVectorParms() const;
   bool hasVMXInstruction() const;
-  SmallString<32> getVectorParmsInfoString() const;
+  SmallString<32> getVectorParmsInfo() const { return VecParmsInfo; };
 };
 
 /// This class provides methods to extract traceback table data from a buffer.

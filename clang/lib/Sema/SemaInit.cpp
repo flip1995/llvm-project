@@ -2911,7 +2911,7 @@ InitListChecker::CheckDesignatedInitializer(const InitializedEntity &Entity,
       if (!VerifyOnly)
         SemaRef.Diag(IndexExpr->getBeginLoc(),
                      diag::err_array_designator_too_large)
-            << DesignatedEndIndex.toString(10) << MaxElements.toString(10)
+            << toString(DesignatedEndIndex, 10) << toString(MaxElements, 10)
             << IndexExpr->getSourceRange();
       ++Index;
       return true;
@@ -3205,7 +3205,7 @@ CheckArrayDesignatorExpr(Sema &S, Expr *Index, llvm::APSInt &Value) {
 
   if (Value.isSigned() && Value.isNegative())
     return S.Diag(Loc, diag::err_array_designator_negative)
-      << Value.toString(10) << Index->getSourceRange();
+           << toString(Value, 10) << Index->getSourceRange();
 
   Value.setIsUnsigned(true);
   return Result;
@@ -3274,7 +3274,7 @@ ExprResult Sema::ActOnDesignatedInitializer(Designation &Desig,
 
         if (!StartDependent && !EndDependent && EndValue < StartValue) {
           Diag(D.getEllipsisLoc(), diag::err_array_designator_empty_range)
-            << StartValue.toString(10) << EndValue.toString(10)
+            << toString(StartValue, 10) << toString(EndValue, 10)
             << StartIndex->getSourceRange() << EndIndex->getSourceRange();
           Invalid = true;
         } else {
@@ -3495,7 +3495,7 @@ LLVM_DUMP_METHOD void InitializedEntity::dump() const {
 void InitializationSequence::Step::Destroy() {
   switch (Kind) {
   case SK_ResolveAddressOfOverloadedFunction:
-  case SK_CastDerivedToBaseRValue:
+  case SK_CastDerivedToBasePRValue:
   case SK_CastDerivedToBaseXValue:
   case SK_CastDerivedToBaseLValue:
   case SK_BindReference:
@@ -3626,7 +3626,7 @@ void InitializationSequence::AddDerivedToBaseCastStep(QualType BaseType,
   Step S;
   switch (VK) {
   case VK_PRValue:
-    S.Kind = SK_CastDerivedToBaseRValue;
+    S.Kind = SK_CastDerivedToBasePRValue;
     break;
   case VK_XValue: S.Kind = SK_CastDerivedToBaseXValue; break;
   case VK_LValue: S.Kind = SK_CastDerivedToBaseLValue; break;
@@ -8218,7 +8218,7 @@ ExprResult InitializationSequence::Perform(Sema &S,
   // initializer.
   switch (Steps.front().Kind) {
   case SK_ResolveAddressOfOverloadedFunction:
-  case SK_CastDerivedToBaseRValue:
+  case SK_CastDerivedToBasePRValue:
   case SK_CastDerivedToBaseXValue:
   case SK_CastDerivedToBaseLValue:
   case SK_BindReference:
@@ -8303,7 +8303,7 @@ ExprResult InitializationSequence::Perform(Sema &S,
                                                  Step->Function.Function);
       break;
 
-    case SK_CastDerivedToBaseRValue:
+    case SK_CastDerivedToBasePRValue:
     case SK_CastDerivedToBaseXValue:
     case SK_CastDerivedToBaseLValue: {
       // We have a derived-to-base cast that produces either an rvalue or an
@@ -9773,8 +9773,8 @@ void InitializationSequence::dump(raw_ostream &OS) const {
       OS << "resolve address of overloaded function";
       break;
 
-    case SK_CastDerivedToBaseRValue:
-      OS << "derived-to-base (rvalue)";
+    case SK_CastDerivedToBasePRValue:
+      OS << "derived-to-base (prvalue)";
       break;
 
     case SK_CastDerivedToBaseXValue:

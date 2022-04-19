@@ -14,12 +14,11 @@ typedef struct kmp_depend_info {
   kmp_intptr_t base_addr;
   size_t len;
   union {
-    int flag;
+    unsigned char flag;
     struct {
-      unsigned in : 1;
-      unsigned out : 1;
-      unsigned mtx : 1;
-      unsigned reserved : 29; // 32 bits in total
+      bool in : 1;
+      bool out : 1;
+      bool mtx : 1;
     } flags;
   };
 } kmp_depend_info_t;

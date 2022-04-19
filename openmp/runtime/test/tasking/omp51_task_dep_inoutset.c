@@ -40,7 +40,7 @@ static int err = 0;
 typedef struct DEP {
   size_t addr;
   size_t len;
-  int flags;
+  unsigned char flags;
 } dep;
 typedef struct task {
   void** shareds;

@@ -18,6 +18,7 @@
 
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
@@ -4809,12 +4810,16 @@ static Constant *propagateNaN(Constant *In) {
 }
 
 /// Perform folds that are common to any floating-point operation. This implies
-/// transforms based on undef/NaN because the operation itself makes no
+/// transforms based on poison/undef/NaN because the operation itself makes no
 /// difference to the result.
-static Constant *simplifyFPOp(ArrayRef<Value *> Ops,
-                              FastMathFlags FMF,
+static Constant *simplifyFPOp(ArrayRef<Value *> Ops, FastMathFlags FMF,
                               const SimplifyQuery &Q) {
   for (Value *V : Ops) {
+    // Poison is independent of anything else. It always propagates from an
+    // operand to a math result.
+    if (match(V, m_Poison()))
+      return PoisonValue::get(V->getType());
+
     bool IsNan = match(V, m_NaN());
     bool IsInf = match(V, m_Inf());
     bool IsUndef = Q.isUndefValue(V);
@@ -6082,9 +6087,13 @@ Value *llvm::SimplifyFreezeInst(Value *Op0, const SimplifyQuery &Q) {
 
 static Constant *ConstructLoadOperandConstant(Value *Op) {
   SmallVector<Value *, 4> Worklist;
+  // Invalid IR in unreachable code may contain self-referential values. Don't infinitely loop.
+  SmallPtrSet<Value *, 4> Visited;
   Worklist.push_back(Op);
   while (true) {
     Value *CurOp = Worklist.back();
+    if (!Visited.insert(CurOp).second)
+      return nullptr;
     if (isa<Constant>(CurOp))
       break;
     if (auto *BC = dyn_cast<BitCastOperator>(CurOp)) {
