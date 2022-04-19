@@ -1499,7 +1499,8 @@ ASTNodeImporter::VisitPackExpansionType(const PackExpansionType *T) {
     return ToPatternOrErr.takeError();
 
   return Importer.getToContext().getPackExpansionType(*ToPatternOrErr,
-                                                      T->getNumExpansions());
+                                                      T->getNumExpansions(),
+                                                      /*ExpactPack=*/false);
 }
 
 ExpectedType ASTNodeImporter::VisitDependentTemplateSpecializationType(
@@ -1901,7 +1902,8 @@ Error ASTNodeImporter::ImportDefinition(
           else
             return ToCaptureOrErr.takeError();
         }
-        cast<CXXRecordDecl>(To)->setCaptures(ToCaptures);
+        cast<CXXRecordDecl>(To)->setCaptures(Importer.getToContext(),
+                                             ToCaptures);
       }
 
       Error Result = ImportDeclContext(From, /*ForceImport=*/true);
@@ -4759,11 +4761,10 @@ Error ASTNodeImporter::ImportDefinition(
       return ToImplOrErr.takeError();
   }
 
-  if (shouldForceImportDeclContext(Kind)) {
-    // Import all of the members of this class.
-    if (Error Err = ImportDeclContext(From, /*ForceImport=*/true))
-      return Err;
-  }
+  // Import all of the members of this class.
+  if (Error Err = ImportDeclContext(From, /*ForceImport=*/true))
+    return Err;
+
   return Error::success();
 }
 
@@ -7352,7 +7353,8 @@ ExpectedStmt ASTNodeImporter::VisitCXXMemberCallExpr(CXXMemberCallExpr *E) {
     return std::move(Err);
 
   return CXXMemberCallExpr::Create(Importer.getToContext(), ToCallee, ToArgs,
-                                   ToType, E->getValueKind(), ToRParenLoc);
+                                   ToType, E->getValueKind(), ToRParenLoc,
+                                   E->getFPFeatures());
 }
 
 ExpectedStmt ASTNodeImporter::VisitCXXThisExpr(CXXThisExpr *E) {
@@ -7662,8 +7664,8 @@ ExpectedStmt ASTNodeImporter::VisitCallExpr(CallExpr *E) {
   }
 
   return CallExpr::Create(Importer.getToContext(), ToCallee, ToArgs, ToType,
-                          E->getValueKind(), ToRParenLoc, /*MinNumArgs=*/0,
-                          E->getADLCallKind());
+                          E->getValueKind(), ToRParenLoc, E->getFPFeatures(),
+                          /*MinNumArgs=*/0, E->getADLCallKind());
 }
 
 ExpectedStmt ASTNodeImporter::VisitLambdaExpr(LambdaExpr *E) {

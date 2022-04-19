@@ -191,6 +191,10 @@ enum NodeType : unsigned {
   SADDV,
   UADDV,
 
+  // Vector halving addition
+  SHADD,
+  UHADD,
+
   // Vector rounding halving addition
   SRHADD,
   URHADD,
@@ -462,12 +466,6 @@ public:
   const char *getTargetNodeName(unsigned Opcode) const override;
 
   SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
-
-  /// Returns true if a cast between SrcAS and DestAS is a noop.
-  bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
-    // Addrspacecasts are always noops.
-    return true;
-  }
 
   /// This method returns a target specific FastISel object, or null if the
   /// target does not support "fast" ISel.

@@ -1458,6 +1458,19 @@ void CGOpenMPRuntime::clearLocThreadIdInsertPt(CodeGenFunction &CGF) {
   }
 }
 
+static StringRef getIdentStringFromSourceLocation(CodeGenFunction &CGF,
+                                                  SourceLocation Loc,
+                                                  SmallString<128> &Buffer) {
+  llvm::raw_svector_ostream OS(Buffer);
+  // Build debug location
+  PresumedLoc PLoc = CGF.getContext().getSourceManager().getPresumedLoc(Loc);
+  OS << ";" << PLoc.getFilename() << ";";
+  if (const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl))
+    OS << FD->getQualifiedNameAsString();
+  OS << ";" << PLoc.getLine() << ";" << PLoc.getColumn() << ";;";
+  return OS.str();
+}
+
 llvm::Value *CGOpenMPRuntime::emitUpdateLocation(CodeGenFunction &CGF,
                                                  SourceLocation Loc,
                                                  unsigned Flags) {
@@ -1466,6 +1479,16 @@ llvm::Value *CGOpenMPRuntime::emitUpdateLocation(CodeGenFunction &CGF,
   if (CGM.getCodeGenOpts().getDebugInfo() == codegenoptions::NoDebugInfo ||
       Loc.isInvalid())
     return getOrCreateDefaultLocation(Flags).getPointer();
+
+  // If the OpenMPIRBuilder is used we need to use it for all location handling
+  // as the clang invariants used below might be broken.
+  if (CGM.getLangOpts().OpenMPIRBuilder) {
+    SmallString<128> Buffer;
+    OMPBuilder.updateToLocation(CGF.Builder.saveIP());
+    auto *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(
+        getIdentStringFromSourceLocation(CGF, Loc, Buffer));
+    return OMPBuilder.getOrCreateIdent(SrcLocStr, IdentFlag(Flags));
+  }
 
   assert(CGF.CurFn && "No function in current CodeGenFunction.");
 
@@ -1500,15 +1523,9 @@ llvm::Value *CGOpenMPRuntime::emitUpdateLocation(CodeGenFunction &CGF,
 
   llvm::Value *OMPDebugLoc = OpenMPDebugLocMap.lookup(Loc.getRawEncoding());
   if (OMPDebugLoc == nullptr) {
-    SmallString<128> Buffer2;
-    llvm::raw_svector_ostream OS2(Buffer2);
-    // Build debug location
-    PresumedLoc PLoc = CGF.getContext().getSourceManager().getPresumedLoc(Loc);
-    OS2 << ";" << PLoc.getFilename() << ";";
-    if (const auto *FD = dyn_cast_or_null<FunctionDecl>(CGF.CurFuncDecl))
-      OS2 << FD->getQualifiedNameAsString();
-    OS2 << ";" << PLoc.getLine() << ";" << PLoc.getColumn() << ";;";
-    OMPDebugLoc = CGF.Builder.CreateGlobalStringPtr(OS2.str());
+    SmallString<128> Buffer;
+    OMPDebugLoc = CGF.Builder.CreateGlobalStringPtr(
+        getIdentStringFromSourceLocation(CGF, Loc, Buffer));
     OpenMPDebugLocMap[Loc.getRawEncoding()] = OMPDebugLoc;
   }
   // *psource = ";<File>;<Function>;<Line>;<Column>;;";
@@ -1522,6 +1539,16 @@ llvm::Value *CGOpenMPRuntime::emitUpdateLocation(CodeGenFunction &CGF,
 llvm::Value *CGOpenMPRuntime::getThreadID(CodeGenFunction &CGF,
                                           SourceLocation Loc) {
   assert(CGF.CurFn && "No function in current CodeGenFunction.");
+  // If the OpenMPIRBuilder is used we need to use it for all thread id calls as
+  // the clang invariants used below might be broken.
+  if (CGM.getLangOpts().OpenMPIRBuilder) {
+    SmallString<128> Buffer;
+    OMPBuilder.updateToLocation(CGF.Builder.saveIP());
+    auto *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(
+        getIdentStringFromSourceLocation(CGF, Loc, Buffer));
+    return OMPBuilder.getOrCreateThreadID(
+        OMPBuilder.getOrCreateIdent(SrcLocStr));
+  }
 
   llvm::Value *ThreadID = nullptr;
   // Check whether we've already cached a load of the thread id in this
@@ -7050,6 +7077,9 @@ public:
     /// Close is a hint to the runtime to allocate memory close to
     /// the target device.
     OMP_MAP_CLOSE = 0x400,
+    /// 0x800 is reserved for compatibility with XLC.
+    /// Produce a runtime error if the data is not already allocated.
+    OMP_MAP_PRESENT = 0x1000,
     /// The 16 MSBs of the flags indicate whether the entry is member of some
     /// struct/class.
     OMP_MAP_MEMBER_OF = 0xffff000000000000,
@@ -7126,6 +7156,7 @@ private:
     OMPClauseMappableExprCommon::MappableExprComponentListRef Components;
     OpenMPMapClauseKind MapType = OMPC_MAP_unknown;
     ArrayRef<OpenMPMapModifierKind> MapModifiers;
+    ArrayRef<OpenMPMotionModifierKind> MotionModifiers;
     bool ReturnDevicePointer = false;
     bool IsImplicit = false;
     const ValueDecl *Mapper = nullptr;
@@ -7135,10 +7166,12 @@ private:
     MapInfo(
         OMPClauseMappableExprCommon::MappableExprComponentListRef Components,
         OpenMPMapClauseKind MapType,
-        ArrayRef<OpenMPMapModifierKind> MapModifiers, bool ReturnDevicePointer,
-        bool IsImplicit, const ValueDecl *Mapper = nullptr,
-        bool ForDeviceAddr = false)
+        ArrayRef<OpenMPMapModifierKind> MapModifiers,
+        ArrayRef<OpenMPMotionModifierKind> MotionModifiers,
+        bool ReturnDevicePointer, bool IsImplicit,
+        const ValueDecl *Mapper = nullptr, bool ForDeviceAddr = false)
         : Components(Components), MapType(MapType), MapModifiers(MapModifiers),
+          MotionModifiers(MotionModifiers),
           ReturnDevicePointer(ReturnDevicePointer), IsImplicit(IsImplicit),
           Mapper(Mapper), ForDeviceAddr(ForDeviceAddr) {}
   };
@@ -7258,7 +7291,8 @@ private:
   /// expression.
   OpenMPOffloadMappingFlags getMapTypeBits(
       OpenMPMapClauseKind MapType, ArrayRef<OpenMPMapModifierKind> MapModifiers,
-      bool IsImplicit, bool AddPtrFlag, bool AddIsTargetParamFlag) const {
+      ArrayRef<OpenMPMotionModifierKind> MotionModifiers, bool IsImplicit,
+      bool AddPtrFlag, bool AddIsTargetParamFlag) const {
     OpenMPOffloadMappingFlags Bits =
         IsImplicit ? OMP_MAP_IMPLICIT : OMP_MAP_NONE;
     switch (MapType) {
@@ -7294,6 +7328,12 @@ private:
     if (llvm::find(MapModifiers, OMPC_MAP_MODIFIER_close)
         != MapModifiers.end())
       Bits |= OMP_MAP_CLOSE;
+    if (llvm::find(MapModifiers, OMPC_MAP_MODIFIER_present)
+        != MapModifiers.end())
+      Bits |= OMP_MAP_PRESENT;
+    if (llvm::find(MotionModifiers, OMPC_MOTION_MODIFIER_present)
+        != MotionModifiers.end())
+      Bits |= OMP_MAP_PRESENT;
     return Bits;
   }
 
@@ -7338,11 +7378,12 @@ private:
 
   /// Generate the base pointers, section pointers, sizes, map type bits, and
   /// user-defined mappers (all included in \a CombinedInfo) for the provided
-  /// map type, map modifier, and expression components. \a IsFirstComponent
-  /// should be set to true if the provided set of components is the first
-  /// associated with a capture.
+  /// map type, map or motion modifiers, and expression components.
+  /// \a IsFirstComponent should be set to true if the provided set of
+  /// components is the first associated with a capture.
   void generateInfoForComponentList(
       OpenMPMapClauseKind MapType, ArrayRef<OpenMPMapModifierKind> MapModifiers,
+      ArrayRef<OpenMPMotionModifierKind> MotionModifiers,
       OMPClauseMappableExprCommon::MappableExprComponentListRef Components,
       MapCombinedInfoTy &CombinedInfo, StructRangeInfoTy &PartialStruct,
       bool IsFirstComponentList, bool IsImplicit,
@@ -7385,6 +7426,8 @@ private:
     // &p, &p, sizeof(float*), TARGET_PARAM | TO | FROM
     //
     // map(p[1:24])
+    // &p, &p[1], 24*sizeof(float), TARGET_PARAM | TO | FROM | PTR_AND_OBJ
+    // in unified shared memory mode or for local pointers
     // p, &p[1], 24*sizeof(float), TARGET_PARAM | TO | FROM
     //
     // map(s)
@@ -7520,6 +7563,7 @@ private:
     // Track if the map information being generated is the first for a list of
     // components.
     bool IsExpressionFirstInfo = true;
+    bool FirstPointerInComplexData = false;
     Address BP = Address::invalid();
     const Expr *AssocExpr = I->getAssociatedExpression();
     const auto *AE = dyn_cast<ArraySubscriptExpr>(AssocExpr);
@@ -7562,10 +7606,15 @@ private:
       QualType Ty =
           I->getAssociatedDeclaration()->getType().getNonReferenceType();
       if (Ty->isAnyPointerType() && std::next(I) != CE) {
-        BP = CGF.EmitLoadOfPointer(BP, Ty->castAs<PointerType>());
-
-        // We do not need to generate individual map information for the
-        // pointer, it can be associated with the combined storage.
+        // No need to generate individual map information for the pointer, it
+        // can be associated with the combined storage if shared memory mode is
+        // active or the base declaration is not global variable.
+        const auto *VD = dyn_cast<VarDecl>(I->getAssociatedDeclaration());
+        if (CGF.CGM.getOpenMPRuntime().hasRequiresUnifiedSharedMemory() ||
+            !VD || VD->hasLocalStorage())
+          BP = CGF.EmitLoadOfPointer(BP, Ty->castAs<PointerType>());
+        else
+          FirstPointerInComplexData = true;
         ++I;
       }
     }
@@ -7601,8 +7650,19 @@ private:
         EncounteredME = dyn_cast<MemberExpr>(I->getAssociatedExpression());
         // If we encounter a PTR_AND_OBJ entry from now on it should be marked
         // as MEMBER_OF the parent struct.
-        if (EncounteredME)
+        if (EncounteredME) {
           ShouldBeMemberOf = true;
+          // Do not emit as complex pointer if this is actually not array-like
+          // expression.
+          if (FirstPointerInComplexData) {
+            QualType Ty = std::prev(I)
+                              ->getAssociatedDeclaration()
+                              ->getType()
+                              .getNonReferenceType();
+            BP = CGF.EmitLoadOfPointer(BP, Ty->castAs<PointerType>());
+            FirstPointerInComplexData = false;
+          }
+        }
       }
 
       auto Next = std::next(I);
@@ -7640,6 +7700,7 @@ private:
                 isa<MemberExpr>(Next->getAssociatedExpression()) ||
                 isa<ArraySubscriptExpr>(Next->getAssociatedExpression()) ||
                 isa<OMPArraySectionExpr>(Next->getAssociatedExpression()) ||
+                isa<OMPArrayShapingExpr>(Next->getAssociatedExpression()) ||
                 isa<UnaryOperator>(Next->getAssociatedExpression()) ||
                 isa<BinaryOperator>(Next->getAssociatedExpression())) &&
                "Unexpected expression");
@@ -7685,7 +7746,7 @@ private:
           // Emit data for non-overlapped data.
           OpenMPOffloadMappingFlags Flags =
               OMP_MAP_MEMBER_OF |
-              getMapTypeBits(MapType, MapModifiers, IsImplicit,
+              getMapTypeBits(MapType, MapModifiers, MotionModifiers, IsImplicit,
                              /*AddPtrFlag=*/false,
                              /*AddIsTargetParamFlag=*/false);
           LB = BP;
@@ -7741,10 +7802,11 @@ private:
           // same expression except for the first one. We also need to signal
           // this map is the first one that relates with the current capture
           // (there is a set of entries for each capture).
-          OpenMPOffloadMappingFlags Flags = getMapTypeBits(
-              MapType, MapModifiers, IsImplicit,
-              !IsExpressionFirstInfo || RequiresReference,
-              IsCaptureFirstInfo && !RequiresReference);
+          OpenMPOffloadMappingFlags Flags =
+              getMapTypeBits(MapType, MapModifiers, MotionModifiers, IsImplicit,
+                             !IsExpressionFirstInfo || RequiresReference ||
+                                 FirstPointerInComplexData,
+                             IsCaptureFirstInfo && !RequiresReference);
 
           if (!IsExpressionFirstInfo) {
             // If we have a PTR_AND_OBJ pair where the OBJ is a pointer as well,
@@ -7802,6 +7864,7 @@ private:
 
         IsExpressionFirstInfo = false;
         IsCaptureFirstInfo = false;
+        FirstPointerInComplexData = false;
       }
     }
   }
@@ -7967,6 +8030,13 @@ public:
     CombinedInfo.Sizes.push_back(Size);
     // Map type is always TARGET_PARAM
     CombinedInfo.Types.push_back(OMP_MAP_TARGET_PARAM);
+    // If any element has the present modifier, then make sure the runtime
+    // doesn't attempt to allocate the struct.
+    if (CurTypes.end() !=
+        llvm::find_if(CurTypes, [](OpenMPOffloadMappingFlags Type) {
+          return Type & OMP_MAP_PRESENT;
+        }))
+      CombinedInfo.Types.back() |= OMP_MAP_PRESENT;
     // Remove TARGET_PARAM flag from the first element
     (*CurTypes.begin()) &= ~OMP_MAP_TARGET_PARAM;
 
@@ -7984,7 +8054,10 @@ public:
   /// CombinedInfo). Also, for each item that relates with a device pointer, a
   /// pair of the relevant declaration and index where it occurs is appended to
   /// the device pointers info array.
-  void generateAllInfo(MapCombinedInfoTy &CombinedInfo) const {
+  void generateAllInfo(
+      MapCombinedInfoTy &CombinedInfo,
+      const llvm::DenseSet<CanonicalDeclPtr<const Decl>> &SkipVarSet =
+          llvm::DenseSet<CanonicalDeclPtr<const Decl>>()) const {
     // We have to process the component lists that relate with the same
     // declaration in a single chunk so that we can generate the map flags
     // correctly. Therefore, we organize all lists in a map.
@@ -7993,16 +8066,21 @@ public:
     // Helper function to fill the information map for the different supported
     // clauses.
     auto &&InfoGen =
-        [&Info](const ValueDecl *D,
-                OMPClauseMappableExprCommon::MappableExprComponentListRef L,
-                OpenMPMapClauseKind MapType,
-                ArrayRef<OpenMPMapModifierKind> MapModifiers,
-                bool ReturnDevicePointer, bool IsImplicit,
-                const ValueDecl *Mapper, bool ForDeviceAddr = false) {
+        [&Info, &SkipVarSet](
+            const ValueDecl *D,
+            OMPClauseMappableExprCommon::MappableExprComponentListRef L,
+            OpenMPMapClauseKind MapType,
+            ArrayRef<OpenMPMapModifierKind> MapModifiers,
+            ArrayRef<OpenMPMotionModifierKind> MotionModifiers,
+            bool ReturnDevicePointer, bool IsImplicit, const ValueDecl *Mapper,
+            bool ForDeviceAddr = false) {
           const ValueDecl *VD =
               D ? cast<ValueDecl>(D->getCanonicalDecl()) : nullptr;
-          Info[VD].emplace_back(L, MapType, MapModifiers, ReturnDevicePointer,
-                                IsImplicit, Mapper, ForDeviceAddr);
+          if (SkipVarSet.count(VD))
+            return;
+          Info[VD].emplace_back(L, MapType, MapModifiers, MotionModifiers,
+                                ReturnDevicePointer, IsImplicit, Mapper,
+                                ForDeviceAddr);
         };
 
     assert(CurDir.is<const OMPExecutableDirective *>() &&
@@ -8011,18 +8089,20 @@ public:
     for (const auto *C : CurExecDir->getClausesOfKind<OMPMapClause>())
       for (const auto L : C->component_lists()) {
         InfoGen(std::get<0>(L), std::get<1>(L), C->getMapType(),
-                C->getMapTypeModifiers(), /*ReturnDevicePointer=*/false,
-                C->isImplicit(), std::get<2>(L));
+                C->getMapTypeModifiers(), llvm::None,
+                /*ReturnDevicePointer=*/false, C->isImplicit(), std::get<2>(L));
       }
     for (const auto *C : CurExecDir->getClausesOfKind<OMPToClause>())
       for (const auto L : C->component_lists()) {
         InfoGen(std::get<0>(L), std::get<1>(L), OMPC_MAP_to, llvm::None,
-                /*ReturnDevicePointer=*/false, C->isImplicit(), std::get<2>(L));
+                C->getMotionModifiers(), /*ReturnDevicePointer=*/false,
+                C->isImplicit(), std::get<2>(L));
       }
     for (const auto *C : CurExecDir->getClausesOfKind<OMPFromClause>())
       for (const auto L : C->component_lists()) {
         InfoGen(std::get<0>(L), std::get<1>(L), OMPC_MAP_from, llvm::None,
-                /*ReturnDevicePointer=*/false, C->isImplicit(), std::get<2>(L));
+                C->getMotionModifiers(), /*ReturnDevicePointer=*/false,
+                C->isImplicit(), std::get<2>(L));
       }
 
     // Look at the use_device_ptr clause information and mark the existing map
@@ -8033,6 +8113,7 @@ public:
     // emission of that entry until the whole struct has been processed.
     llvm::MapVector<const ValueDecl *, SmallVector<DeferredDevicePtrEntryTy, 4>>
         DeferredInfo;
+    MapCombinedInfoTy UseDevicePtrCombinedInfo;
 
     for (const auto *C :
          CurExecDir->getClausesOfKind<OMPUseDevicePtrClause>()) {
@@ -8052,15 +8133,27 @@ public:
         // We potentially have map information for this declaration already.
         // Look for the first set of components that refer to it.
         if (It != Info.end()) {
-          auto CI = std::find_if(
-              It->second.begin(), It->second.end(), [VD](const MapInfo &MI) {
-                return MI.Components.back().getAssociatedDeclaration() == VD;
-              });
+          auto *CI = llvm::find_if(It->second, [VD](const MapInfo &MI) {
+            return MI.Components.back().getAssociatedDeclaration() == VD;
+          });
           // If we found a map entry, signal that the pointer has to be returned
           // and move on to the next declaration.
+          // Exclude cases where the base pointer is mapped as array subscript,
+          // array section or array shaping. The base address is passed as a
+          // pointer to base in this case and cannot be used as a base for
+          // use_device_ptr list item.
           if (CI != It->second.end()) {
-            CI->ReturnDevicePointer = true;
-            continue;
+            auto PrevCI = std::next(CI->Components.rbegin());
+            const auto *VarD = dyn_cast<VarDecl>(VD);
+            if (CGF.CGM.getOpenMPRuntime().hasRequiresUnifiedSharedMemory() ||
+                isa<MemberExpr>(IE) ||
+                !VD->getType().getNonReferenceType()->isPointerType() ||
+                PrevCI == CI->Components.rend() ||
+                isa<MemberExpr>(PrevCI->getAssociatedExpression()) || !VarD ||
+                VarD->hasLocalStorage()) {
+              CI->ReturnDevicePointer = true;
+              continue;
+            }
           }
         }
 
@@ -8075,19 +8168,19 @@ public:
           // Nonetheless, generateInfoForComponentList must be called to take
           // the pointer into account for the calculation of the range of the
           // partial struct.
-          InfoGen(nullptr, Components, OMPC_MAP_unknown, llvm::None,
+          InfoGen(nullptr, Components, OMPC_MAP_unknown, llvm::None, llvm::None,
                   /*ReturnDevicePointer=*/false, C->isImplicit(), nullptr);
           DeferredInfo[nullptr].emplace_back(IE, VD, /*ForDeviceAddr=*/false);
         } else {
           llvm::Value *Ptr =
               CGF.EmitLoadOfScalar(CGF.EmitLValue(IE), IE->getExprLoc());
-          CombinedInfo.BasePointers.emplace_back(Ptr, VD);
-          CombinedInfo.Pointers.push_back(Ptr);
-          CombinedInfo.Sizes.push_back(
+          UseDevicePtrCombinedInfo.BasePointers.emplace_back(Ptr, VD);
+          UseDevicePtrCombinedInfo.Pointers.push_back(Ptr);
+          UseDevicePtrCombinedInfo.Sizes.push_back(
               llvm::Constant::getNullValue(CGF.Int64Ty));
-          CombinedInfo.Types.push_back(OMP_MAP_RETURN_PARAM |
-                                       OMP_MAP_TARGET_PARAM);
-          CombinedInfo.Mappers.push_back(nullptr);
+          UseDevicePtrCombinedInfo.Types.push_back(OMP_MAP_RETURN_PARAM |
+                                                   OMP_MAP_TARGET_PARAM);
+          UseDevicePtrCombinedInfo.Mappers.push_back(nullptr);
         }
       }
     }
@@ -8140,8 +8233,8 @@ public:
           // the pointer into account for the calculation of the range of the
           // partial struct.
           InfoGen(nullptr, std::get<1>(L), OMPC_MAP_unknown, llvm::None,
-                  /*ReturnDevicePointer=*/false, C->isImplicit(), nullptr,
-                  /*ForDeviceAddr=*/true);
+                  llvm::None, /*ReturnDevicePointer=*/false, C->isImplicit(),
+                  nullptr, /*ForDeviceAddr=*/true);
           DeferredInfo[nullptr].emplace_back(IE, VD, /*ForDeviceAddr=*/true);
         } else {
           llvm::Value *Ptr;
@@ -8173,9 +8266,10 @@ public:
 
         // Remember the current base pointer index.
         unsigned CurrentBasePointersIdx = CurInfo.BasePointers.size();
-        generateInfoForComponentList(
-            L.MapType, L.MapModifiers, L.Components, CurInfo, PartialStruct,
-            IsFirstComponentList, L.IsImplicit, L.Mapper, L.ForDeviceAddr);
+        generateInfoForComponentList(L.MapType, L.MapModifiers,
+                                     L.MotionModifiers, L.Components, CurInfo,
+                                     PartialStruct, IsFirstComponentList,
+                                     L.IsImplicit, L.Mapper, L.ForDeviceAddr);
 
         // If this entry relates with a device pointer, set the relevant
         // declaration and add the 'return pointer' flag.
@@ -8238,6 +8332,8 @@ public:
       // We need to append the results of this capture to what we already have.
       CombinedInfo.append(CurInfo);
     }
+    // Append data for use_device_ptr clauses.
+    CombinedInfo.append(UseDevicePtrCombinedInfo);
   }
 
   /// Generate all the base pointers, section pointers, sizes, map types, and
@@ -8260,9 +8356,10 @@ public:
             std::get<0>(L) ? cast<ValueDecl>(std::get<0>(L)->getCanonicalDecl())
                            : nullptr;
         // Get the corresponding user-defined mapper.
-        Info[VD].emplace_back(
-            std::get<1>(L), MC->getMapType(), MC->getMapTypeModifiers(),
-            /*ReturnDevicePointer=*/false, MC->isImplicit(), std::get<2>(L));
+        Info[VD].emplace_back(std::get<1>(L), MC->getMapType(),
+                              MC->getMapTypeModifiers(), llvm::None,
+                              /*ReturnDevicePointer=*/false, MC->isImplicit(),
+                              std::get<2>(L));
       }
     }
 
@@ -8278,9 +8375,10 @@ public:
       for (const MapInfo &L : M.second) {
         assert(!L.Components.empty() &&
                "Not expecting declaration with no component lists.");
-        generateInfoForComponentList(
-            L.MapType, L.MapModifiers, L.Components, CurInfo, PartialStruct,
-            IsFirstComponentList, L.IsImplicit, L.Mapper, L.ForDeviceAddr);
+        generateInfoForComponentList(L.MapType, L.MapModifiers,
+                                     L.MotionModifiers, L.Components, CurInfo,
+                                     PartialStruct, IsFirstComponentList,
+                                     L.IsImplicit, L.Mapper, L.ForDeviceAddr);
         IsFirstComponentList = false;
       }
 
@@ -8546,9 +8644,9 @@ public:
           OverlappedComponents = Pair.getSecond();
       bool IsFirstComponentList = true;
       generateInfoForComponentList(
-          MapType, MapModifiers, Components, CombinedInfo, PartialStruct,
-          IsFirstComponentList, IsImplicit, Mapper, /*ForDeviceAddr=*/false,
-          OverlappedComponents);
+          MapType, MapModifiers, llvm::None, Components, CombinedInfo,
+          PartialStruct, IsFirstComponentList, IsImplicit, Mapper,
+          /*ForDeviceAddr=*/false, OverlappedComponents);
     }
     // Go through other elements without overlapped elements.
     bool IsFirstComponentList = OverlappedData.empty();
@@ -8561,42 +8659,10 @@ public:
       std::tie(Components, MapType, MapModifiers, IsImplicit, Mapper) = L;
       auto It = OverlappedData.find(&L);
       if (It == OverlappedData.end())
-        generateInfoForComponentList(MapType, MapModifiers, Components,
-                                     CombinedInfo, PartialStruct,
+        generateInfoForComponentList(MapType, MapModifiers, llvm::None,
+                                     Components, CombinedInfo, PartialStruct,
                                      IsFirstComponentList, IsImplicit, Mapper);
       IsFirstComponentList = false;
-    }
-  }
-
-  /// Generate the base pointers, section pointers, sizes, map types, and
-  /// mappers associated with the declare target link variables (all included in
-  /// \a CombinedInfo).
-  void generateInfoForDeclareTargetLink(MapCombinedInfoTy &CombinedInfo) const {
-    assert(CurDir.is<const OMPExecutableDirective *>() &&
-           "Expect a executable directive");
-    const auto *CurExecDir = CurDir.get<const OMPExecutableDirective *>();
-    // Map other list items in the map clause which are not captured variables
-    // but "declare target link" global variables.
-    for (const auto *C : CurExecDir->getClausesOfKind<OMPMapClause>()) {
-      for (const auto L : C->component_lists()) {
-        if (!std::get<0>(L))
-          continue;
-        const auto *VD = dyn_cast_or_null<VarDecl>(std::get<0>(L));
-        if (!VD)
-          continue;
-        llvm::Optional<OMPDeclareTargetDeclAttr::MapTypeTy> Res =
-            OMPDeclareTargetDeclAttr::isDeclareTargetDeclaration(VD);
-        if (CGF.CGM.getOpenMPRuntime().hasRequiresUnifiedSharedMemory() ||
-            !Res || *Res != OMPDeclareTargetDeclAttr::MT_Link)
-          continue;
-        StructRangeInfoTy PartialStruct;
-        generateInfoForComponentList(
-            C->getMapType(), C->getMapTypeModifiers(), std::get<1>(L),
-            CombinedInfo, PartialStruct, /*IsFirstComponentList=*/true,
-            C->isImplicit());
-        assert(!PartialStruct.Base.isValid() &&
-               "No partial structs for declare target link expected.");
-      }
     }
   }
 
@@ -9529,6 +9595,7 @@ void CGOpenMPRuntime::emitTargetCall(
     // Get mappable expression information.
     MappableExprsHandler MEHandler(D, CGF);
     llvm::DenseMap<llvm::Value *, llvm::Value *> LambdaPointers;
+    llvm::DenseSet<CanonicalDeclPtr<const Decl>> MappedVarSet;
 
     auto RI = CS.getCapturedRecordDecl()->field_begin();
     auto CV = CapturedVars.begin();
@@ -9554,6 +9621,10 @@ void CGOpenMPRuntime::emitTargetCall(
         // If we have any information in the map clause, we use it, otherwise we
         // just do a default mapping.
         MEHandler.generateInfoForCapture(CI, *CV, CurInfo, PartialStruct);
+        if (!CI->capturesThis())
+          MappedVarSet.insert(CI->getCapturedVar());
+        else
+          MappedVarSet.insert(nullptr);
         if (CurInfo.BasePointers.empty())
           MEHandler.generateDefaultMapInfo(*CI, **RI, *CV, CurInfo);
         // Generate correct mapping for variables captured by reference in
@@ -9583,9 +9654,9 @@ void CGOpenMPRuntime::emitTargetCall(
     MEHandler.adjustMemberOfForLambdaCaptures(
         LambdaPointers, CombinedInfo.BasePointers, CombinedInfo.Pointers,
         CombinedInfo.Types);
-    // Map other list items in the map clause which are not captured variables
-    // but "declare target link" global variables.
-    MEHandler.generateInfoForDeclareTargetLink(CombinedInfo);
+    // Map any list items in a map clause that were not captures because they
+    // weren't referenced within the construct.
+    MEHandler.generateAllInfo(CombinedInfo, MappedVarSet);
 
     TargetDataInfo Info;
     // Fill up the arrays and create the arguments.

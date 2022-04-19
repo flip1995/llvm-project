@@ -6,7 +6,7 @@ endif()
 # Setup Project
 #===============================================================================
 
-cmake_minimum_required(VERSION 3.4.3)
+cmake_minimum_required(VERSION 3.13.4)
 
 if (POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW) # Set MACOSX_RPATH=YES by default
@@ -86,6 +86,7 @@ option(LIBUNWIND_WEAK_PTHREAD_LIB "Use weak references to refer to pthread funct
 option(LIBUNWIND_USE_COMPILER_RT "Use compiler-rt instead of libgcc" OFF)
 option(LIBUNWIND_INCLUDE_DOCS "Build the libunwind documentation." ${LLVM_INCLUDE_DOCS})
 option(LIBUNWIND_INCLUDE_TESTS "Build the libunwind tests." ${LLVM_INCLUDE_TESTS})
+option(LIBUNWIND_IS_BAREMETAL "Build libunwind for baremetal targets." OFF)
 
 set(LIBUNWIND_LIBDIR_SUFFIX "${LLVM_LIBDIR_SUFFIX}" CACHE STRING
     "Define suffix of library directory name (32/64)")
@@ -232,6 +233,8 @@ add_compile_flags_if_supported(-Wunused-variable)
 add_compile_flags_if_supported(-Wwrite-strings)
 add_compile_flags_if_supported(-Wundef)
 
+add_compile_flags_if_supported(-Wno-suggest-override)
+
 if (LIBUNWIND_ENABLE_WERROR)
   add_compile_flags_if_supported(-Werror)
   add_compile_flags_if_supported(-WX)
@@ -320,6 +323,10 @@ if (LIBUNWIND_ENABLE_ARM_WMMX)
   # provide the option to explicitly enable support for WMMX registers in the
   # unwinder.
   add_compile_flags(-D__ARM_WMMX)
+endif()
+
+if(LIBUNWIND_IS_BAREMETAL)
+  add_compile_definitions(_LIBUNWIND_IS_BAREMETAL)
 endif()
 
 # This is the _ONLY_ place where add_definitions is called.

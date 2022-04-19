@@ -1834,6 +1834,10 @@ SDValue DAGCombiner::visitTokenFactor(SDNode *N) {
   if (OptLevel == CodeGenOpt::None)
     return SDValue();
 
+  // Don't simplify the token factor if the node itself has too many operands.
+  if (N->getNumOperands() > TokenFactorInlineLimit)
+    return SDValue();
+
   // If the sole user is a token factor, we should make sure we have a
   // chance to merge them together. This prevents TF chains from inhibiting
   // optimizations.
@@ -11218,6 +11222,22 @@ SDValue DAGCombiner::visitSIGN_EXTEND_INREG(SDNode *N) {
     return SDValue(N, 0);   // Return N so it doesn't get rechecked!
   }
 
+  // fold (sext_inreg (masked_load x)) -> (sext_masked_load x)
+  // ignore it if the masked load is already sign extended
+  if (MaskedLoadSDNode *Ld = dyn_cast<MaskedLoadSDNode>(N0)) {
+    if (ExtVT == Ld->getMemoryVT() && N0.hasOneUse() &&
+        Ld->getExtensionType() != ISD::LoadExtType::NON_EXTLOAD &&
+        TLI.isLoadExtLegal(ISD::SEXTLOAD, VT, ExtVT)) {
+      SDValue ExtMaskedLoad = DAG.getMaskedLoad(
+          VT, SDLoc(N), Ld->getChain(), Ld->getBasePtr(), Ld->getOffset(),
+          Ld->getMask(), Ld->getPassThru(), ExtVT, Ld->getMemOperand(),
+          Ld->getAddressingMode(), ISD::SEXTLOAD, Ld->isExpandingLoad());
+      CombineTo(N, ExtMaskedLoad);
+      CombineTo(N0.getNode(), ExtMaskedLoad, ExtMaskedLoad.getValue(1));
+      return SDValue(N, 0); // Return N so it doesn't get rechecked!
+    }
+  }
+
   // Form (sext_inreg (bswap >> 16)) or (sext_inreg (rotl (bswap) 16))
   if (ExtVTBits <= 16 && N0.getOpcode() == ISD::OR) {
     if (SDValue BSwap = MatchBSwapHWordLow(N0.getNode(), N0.getOperand(0),
@@ -11465,9 +11485,10 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
       // Stop if more than one members are non-undef.
       if (NumDefs > 1)
         break;
+
       VTs.push_back(EVT::getVectorVT(*DAG.getContext(),
                                      VT.getVectorElementType(),
-                                     X.getValueType().getVectorNumElements()));
+                                     X.getValueType().getVectorElementCount()));
     }
 
     if (NumDefs == 0)
@@ -18964,6 +18985,11 @@ static SDValue combineConcatVectorOfScalars(SDNode *N, SelectionDAG &DAG) {
 static SDValue combineConcatVectorOfExtracts(SDNode *N, SelectionDAG &DAG) {
   EVT VT = N->getValueType(0);
   EVT OpVT = N->getOperand(0).getValueType();
+
+  // We currently can't generate an appropriate shuffle for a scalable vector.
+  if (VT.isScalableVector())
+    return SDValue();
+
   int NumElts = VT.getVectorNumElements();
   int NumOpElts = OpVT.getVectorNumElements();
 
@@ -19224,11 +19250,14 @@ SDValue DAGCombiner::visitCONCAT_VECTORS(SDNode *N) {
     return V;
 
   // Type legalization of vectors and DAG canonicalization of SHUFFLE_VECTOR
-  // nodes often generate nop CONCAT_VECTOR nodes.
-  // Scan the CONCAT_VECTOR operands and look for a CONCAT operations that
-  // place the incoming vectors at the exact same location.
+  // nodes often generate nop CONCAT_VECTOR nodes. Scan the CONCAT_VECTOR
+  // operands and look for a CONCAT operations that place the incoming vectors
+  // at the exact same location.
+  //
+  // For scalable vectors, EXTRACT_SUBVECTOR indexes are implicitly scaled.
   SDValue SingleSource = SDValue();
-  unsigned PartNumElem = N->getOperand(0).getValueType().getVectorNumElements();
+  unsigned PartNumElem =
+      N->getOperand(0).getValueType().getVectorMinNumElements();
 
   for (unsigned i = 0, e = N->getNumOperands(); i != e; ++i) {
     SDValue Op = N->getOperand(i);
@@ -19350,7 +19379,10 @@ static SDValue narrowExtractedVectorBinOp(SDNode *Extract, SelectionDAG &DAG) {
 
   // The binop must be a vector type, so we can extract some fraction of it.
   EVT WideBVT = BinOp.getValueType();
-  if (!WideBVT.isVector())
+  // The optimisations below currently assume we are dealing with fixed length
+  // vectors. It is possible to add support for scalable vectors, but at the
+  // moment we've done no analysis to prove whether they are profitable or not.
+  if (!WideBVT.isFixedLengthVector())
     return SDValue();
 
   EVT VT = Extract->getValueType(0);

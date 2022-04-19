@@ -30,7 +30,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
-#include "mlir/Interfaces/VectorUnrollInterface.h"
+#include "mlir/Interfaces/VectorInterfaces.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -1581,6 +1581,9 @@ ContractionOpToMatmulOpLowering::match(vector::ContractionOp op) const {
       vector::VectorContractLowering::Matmul)
     return failure();
 
+  if (failed(filter(op)))
+    return failure();
+
   auto iteratorTypes = op.iterator_types().getValue();
   if (!isParallelIterator(iteratorTypes[0]) ||
       !isParallelIterator(iteratorTypes[1]) ||
@@ -1647,6 +1650,9 @@ ContractionOpToOuterProductOpLowering::match(vector::ContractionOp op) const {
       vector::VectorContractLowering::OuterProduct)
     return failure();
 
+  if (failed(filter(op)))
+    return failure();
+
   // Determine if the parallel/reduction structure matches something
   // that can be expressed a reduction_size unrolled sequence.
   using MapList = ArrayRef<ArrayRef<AffineExpr>>;
@@ -1701,7 +1707,7 @@ void ContractionOpToOuterProductOpLowering::rewrite(
   auto infer = [](MapList m) { return AffineMap::inferFromExprList(m); };
   AffineExpr m, n, k;
   bindDims(rewriter.getContext(), m, n, k);
-  SmallVector<int64_t, 2> perm{1, 0};
+  static constexpr std::array<int64_t, 2> perm = {1, 0};
   auto iteratorTypes = op.iterator_types().getValue();
   SmallVector<AffineMap, 4> maps = op.getIndexingMaps();
   if (isParallelIterator(iteratorTypes[0]) &&
@@ -1808,6 +1814,10 @@ ContractionOpLowering::matchAndRewrite(vector::ContractionOp op,
   // TODO: implement masks.
   if (llvm::size(op.masks()) != 0)
     return failure();
+
+  if (failed(filter(op)))
+    return failure();
+
   // TODO: support mixed mode contract lowering.
   if (op.getLhsType().getElementType() !=
           getElementTypeOrSelf(op.getAccType()) ||
@@ -1901,10 +1911,10 @@ Value ContractionOpLowering::lowerParallel(vector::ContractionOp op,
   assert(lookup.hasValue() && "parallel index not listed in reduction");
   int64_t resIndex = lookup.getValue();
   // Construct new iterator types and affine map array attribute.
-  SmallVector<AffineMap, 4> lowIndexingMaps;
-  lowIndexingMaps.push_back(adjustMap(iMap[0], iterIndex, rewriter));
-  lowIndexingMaps.push_back(adjustMap(iMap[1], iterIndex, rewriter));
-  lowIndexingMaps.push_back(adjustMap(iMap[2], iterIndex, rewriter));
+  std::array<AffineMap, 3> lowIndexingMaps = {
+      adjustMap(iMap[0], iterIndex, rewriter),
+      adjustMap(iMap[1], iterIndex, rewriter),
+      adjustMap(iMap[2], iterIndex, rewriter)};
   auto lowAffine = rewriter.getAffineMapArrayAttr(lowIndexingMaps);
   auto lowIter =
       rewriter.getArrayAttr(adjustIter(op.iterator_types(), iterIndex));
@@ -1952,10 +1962,10 @@ Value ContractionOpLowering::lowerReduction(vector::ContractionOp op,
                                                 op.acc());
   }
   // Construct new iterator types and affine map array attribute.
-  SmallVector<AffineMap, 4> lowIndexingMaps;
-  lowIndexingMaps.push_back(adjustMap(iMap[0], iterIndex, rewriter));
-  lowIndexingMaps.push_back(adjustMap(iMap[1], iterIndex, rewriter));
-  lowIndexingMaps.push_back(adjustMap(iMap[2], iterIndex, rewriter));
+  std::array<AffineMap, 3> lowIndexingMaps = {
+      adjustMap(iMap[0], iterIndex, rewriter),
+      adjustMap(iMap[1], iterIndex, rewriter),
+      adjustMap(iMap[2], iterIndex, rewriter)};
   auto lowAffine = rewriter.getAffineMapArrayAttr(lowIndexingMaps);
   auto lowIter =
       rewriter.getArrayAttr(adjustIter(op.iterator_types(), iterIndex));
