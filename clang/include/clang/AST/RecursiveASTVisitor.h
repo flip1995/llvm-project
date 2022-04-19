@@ -2669,6 +2669,7 @@ DEF_TRAVERSE_STMT(CXXRewrittenBinaryOperator, {
 })
 DEF_TRAVERSE_STMT(OpaqueValueExpr, {})
 DEF_TRAVERSE_STMT(TypoExpr, {})
+DEF_TRAVERSE_STMT(RecoveryExpr, {})
 DEF_TRAVERSE_STMT(CUDAKernelCallExpr, {})
 
 // These operators (all of them) do not need any action except
@@ -2851,6 +2852,9 @@ DEF_TRAVERSE_STMT(OMPFlushDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
 DEF_TRAVERSE_STMT(OMPDepobjDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPScanDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
 DEF_TRAVERSE_STMT(OMPOrderedDirective,
@@ -3182,6 +3186,20 @@ bool RecursiveASTVisitor<Derived>::VisitOMPClauseList(T *Node) {
 }
 
 template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPInclusiveClause(
+    OMPInclusiveClause *C) {
+  TRY_TO(VisitOMPClauseList(C));
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPExclusiveClause(
+    OMPExclusiveClause *C) {
+  TRY_TO(VisitOMPClauseList(C));
+  return true;
+}
+
+template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPPrivateClause(OMPPrivateClause *C) {
   TRY_TO(VisitOMPClauseList(C));
   for (auto *E : C->private_copies()) {
@@ -3486,6 +3504,12 @@ bool RecursiveASTVisitor<Derived>::VisitOMPNontemporalClause(
 
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPOrderClause(OMPOrderClause *) {
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPDetachClause(OMPDetachClause *C) {
+  TRY_TO(TraverseStmt(C->getEventHandler()));
   return true;
 }
 

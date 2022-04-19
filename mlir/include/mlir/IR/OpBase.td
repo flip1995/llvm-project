@@ -260,6 +260,16 @@ class Dialect {
 
   // If this dialect overrides the hook for materializing constants.
   bit hasConstantMaterializer = 0;
+
+  // If this dialect overrides the hook for verifying operation attributes.
+  bit hasOperationAttrVerify = 0;
+
+  // If this dialect overrides the hook for verifying region argument
+  // attributes.
+  bit hasRegionArgAttrVerify = 0;
+
+  // If this dialect overrides the hook for verifying region result attributes.
+  bit hasRegionResultAttrVerify = 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1376,6 +1386,9 @@ def SymbolRefArrayAttr :
 // DerivedAttr are attributes whose value is computed from properties
 // of the operation. They do not require additional storage and are
 // materialized as needed.
+// Note: All derived attributes should be materializable as an Attribute. E.g.,
+// do not use DerivedAttr for things that could not have been stored as
+// Attribute.
 class DerivedAttr<code ret, code b> : Attr<CPred<"true">, "derived attribute"> {
   let returnType = ret;
   code body = b;

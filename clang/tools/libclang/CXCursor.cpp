@@ -293,6 +293,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::ObjCDictionaryLiteralClass:
   case Stmt::ObjCBoxedExprClass:
   case Stmt::ObjCSubscriptRefExprClass:
+  case Stmt::RecoveryExprClass:
     K = CXCursor_UnexposedExpr;
     break;
 
@@ -638,6 +639,9 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     break;
   case Stmt::OMPDepobjDirectiveClass:
     K = CXCursor_OMPDepobjDirective;
+    break;
+  case Stmt::OMPScanDirectiveClass:
+    K = CXCursor_OMPScanDirective;
     break;
   case Stmt::OMPOrderedDirectiveClass:
     K = CXCursor_OMPOrderedDirective;

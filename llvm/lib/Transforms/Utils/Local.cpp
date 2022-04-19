@@ -59,6 +59,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/KnowledgeRetention.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Metadata.h"
@@ -411,7 +412,8 @@ bool llvm::wouldInstructionBeTriviallyDead(Instruction *I,
     // true are operationally no-ops.  In the future we can consider more
     // sophisticated tradeoffs for guards considering potential for check
     // widening, but for now we keep things simple.
-    if (II->getIntrinsicID() == Intrinsic::assume ||
+    if ((II->getIntrinsicID() == Intrinsic::assume &&
+         isAssumeWithEmptyBundle(*II)) ||
         II->getIntrinsicID() == Intrinsic::experimental_guard) {
       if (ConstantInt *Cond = dyn_cast<ConstantInt>(II->getArgOperand(0)))
         return !Cond->isZero();
@@ -2935,21 +2937,39 @@ bool llvm::canReplaceOperandWithVariable(const Instruction *I, unsigned OpIdx) {
   default:
     return true;
   case Instruction::Call:
-  case Instruction::Invoke:
+  case Instruction::Invoke: {
+    ImmutableCallSite CS(I);
+
     // Can't handle inline asm. Skip it.
-    if (isa<InlineAsm>(ImmutableCallSite(I).getCalledValue()))
-      return false;
-    // Many arithmetic intrinsics have no issue taking a
-    // variable, however it's hard to distingish these from
-    // specials such as @llvm.frameaddress that require a constant.
-    if (isa<IntrinsicInst>(I))
+    if (CS.isInlineAsm())
       return false;
 
     // Constant bundle operands may need to retain their constant-ness for
     // correctness.
-    if (ImmutableCallSite(I).isBundleOperand(OpIdx))
+    if (CS.isBundleOperand(OpIdx))
       return false;
-    return true;
+
+    if (OpIdx < CS.getNumArgOperands()) {
+      // Some variadic intrinsics require constants in the variadic arguments,
+      // which currently aren't markable as immarg.
+      if (CS.isIntrinsic() && OpIdx >= CS.getFunctionType()->getNumParams()) {
+        // This is known to be OK for stackmap.
+        return CS.getIntrinsicID() == Intrinsic::experimental_stackmap;
+      }
+
+      // gcroot is a special case, since it requires a constant argument which
+      // isn't also required to be a simple ConstantInt.
+      if (CS.getIntrinsicID() == Intrinsic::gcroot)
+        return false;
+
+      // Some intrinsic operands are required to be immediates.
+      return !CS.paramHasAttr(OpIdx, Attribute::ImmArg);
+    }
+
+    // It is never allowed to replace the call argument to an intrinsic, but it
+    // may be possible for a call.
+    return !CS.isIntrinsic();
+  }
   case Instruction::ShuffleVector:
     // Shufflevector masks are constant.
     return OpIdx != 2;

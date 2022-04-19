@@ -41,7 +41,7 @@ class LibcxxTestFormat(object):
         self.exec_env = dict(exec_env)
 
     @staticmethod
-    def _make_custom_parsers():
+    def _make_custom_parsers(test):
         return [
             IntegratedTestKeywordParser('FLAKY_TEST.', ParserKind.TAG,
                                         initial_value=False),
@@ -50,7 +50,9 @@ class LibcxxTestFormat(object):
             IntegratedTestKeywordParser('LINK_PTHREADS_LIBRARY.',
                                         ParserKind.TAG, initial_value=False),
             IntegratedTestKeywordParser('MODULES_DEFINES:', ParserKind.LIST,
-                                        initial_value=[])
+                                        initial_value=[]),
+            IntegratedTestKeywordParser('FILE_DEPENDENCIES:', ParserKind.LIST,
+                                        initial_value=test.file_dependencies)
         ]
 
     @staticmethod
@@ -106,9 +108,13 @@ class LibcxxTestFormat(object):
            'objective-c++' in test.config.available_features:
             return (lit.Test.UNSUPPORTED, "Objective-C++ is not supported")
 
-        parsers = self._make_custom_parsers()
+        setattr(test, 'file_dependencies', [])
+        parsers = self._make_custom_parsers(test)
         script = lit.TestRunner.parseIntegratedTestScript(
             test, additional_parsers=parsers, require_script=is_sh_test)
+
+        local_cwd = os.path.dirname(test.getSourcePath())
+        data_files = [os.path.join(local_cwd, f) for f in test.file_dependencies]
         # Check if a result for the test was returned. If so return that
         # result.
         if isinstance(script, lit.Test.Result):
@@ -123,6 +129,7 @@ class LibcxxTestFormat(object):
         tmpDir, tmpBase = lit.TestRunner.getTempPaths(test)
         substitutions = lit.TestRunner.getDefaultSubstitutions(test, tmpDir,
                                                                tmpBase)
+        substitutions.append(('%file_dependencies', ' '.join(data_files)))
         script = lit.TestRunner.applySubstitutions(script, substitutions)
 
         test_cxx = copy.deepcopy(self.cxx)
@@ -185,7 +192,7 @@ class LibcxxTestFormat(object):
             return self._evaluate_fail_test(test, test_cxx, parsers)
         elif is_pass_test:
             return self._evaluate_pass_test(test, tmpBase, lit_config,
-                                            test_cxx, parsers)
+                                            test_cxx, parsers, data_files)
         else:
             # No other test type is supported
             assert False
@@ -194,7 +201,7 @@ class LibcxxTestFormat(object):
         libcxx.util.cleanFile(exec_path)
 
     def _evaluate_pass_test(self, test, tmpBase, lit_config,
-                            test_cxx, parsers):
+                            test_cxx, parsers, data_files):
         execDir = os.path.dirname(test.getExecPath())
         source_path = test.getSourcePath()
         exec_path = tmpBase + '.exe'
@@ -216,12 +223,6 @@ class LibcxxTestFormat(object):
             env = None
             if self.exec_env:
                 env = self.exec_env
-            # TODO: Only list actually needed files in file_deps.
-            # Right now we just mark all of the .dat files in the same
-            # directory as dependencies, but it's likely less than that. We
-            # should add a `// FILE-DEP: foo.dat` to each test to track this.
-            data_files = [os.path.join(local_cwd, f)
-                          for f in os.listdir(local_cwd) if f.endswith('.dat')]
             is_flaky = self._get_parser('FLAKY_TEST.', parsers).getValue()
             max_retry = 3 if is_flaky else 1
             for retry_count in range(max_retry):

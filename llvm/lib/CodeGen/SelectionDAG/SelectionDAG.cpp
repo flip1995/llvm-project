@@ -4085,13 +4085,10 @@ unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, const APInt &DemandedElts,
     return FirstAnswer;
   }
 
-  // Okay, we know that the sign bit in Mask is set.  Use CLZ to determine
+  // Okay, we know that the sign bit in Mask is set.  Use CLO to determine
   // the number of identical bits in the top of the input value.
-  Mask = ~Mask;
   Mask <<= Mask.getBitWidth()-VTBits;
-  // Return # leading zeros.  We use 'min' here in case Val was zero before
-  // shifting.  We don't want to return '64' as for an i32 "0".
-  return std::max(FirstAnswer, std::min(VTBits, Mask.countLeadingZeros()));
+  return std::max(FirstAnswer, Mask.countLeadingOnes());
 }
 
 bool SelectionDAG::isBaseWithConstantOffset(SDValue Op) const {
@@ -7631,7 +7628,7 @@ SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL,
 }
 
 SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, SDVTList VTList,
-                              ArrayRef<SDValue> Ops) {
+                              ArrayRef<SDValue> Ops, const SDNodeFlags Flags) {
   if (VTList.NumVTs == 1)
     return getNode(Opcode, DL, VTList.VTs[0], Ops);
 
@@ -7700,6 +7697,7 @@ SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, SDVTList VTList,
       return SDValue(E, 0);
 
     N = newSDNode<SDNode>(Opcode, DL.getIROrder(), DL.getDebugLoc(), VTList);
+    N->setFlags(Flags);
     createOperands(N, Ops);
     CSEMap.InsertNode(N, IP);
   } else {

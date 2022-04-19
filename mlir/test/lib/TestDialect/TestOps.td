@@ -17,13 +17,16 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffects.td"
 
-def TEST_Dialect : Dialect {
+def Test_Dialect : Dialect {
   let name = "test";
   let cppNamespace = "";
+  let hasOperationAttrVerify = 1;
+  let hasRegionArgAttrVerify = 1;
+  let hasRegionResultAttrVerify = 1;
 }
 
 class TEST_Op<string mnemonic, list<OpTrait> traits = []> :
-    Op<TEST_Dialect, mnemonic, traits>;
+    Op<Test_Dialect, mnemonic, traits>;
 
 //===----------------------------------------------------------------------===//
 // Test Types
@@ -491,6 +494,18 @@ def AttrSizedResultOp : TEST_Op<"attr_sized_results",
     I32:$c,
     Variadic<I32>:$d
   );
+}
+
+// This is used to test encoding of a string attribute into an SSA name of a
+// pretty printed value name.
+def StringAttrPrettyNameOp
+ : TEST_Op<"string_attr_pretty_name",
+           [DeclareOpInterfaceMethods<OpAsmOpInterface>]> {
+  let arguments = (ins StrArrayAttr:$names);
+  let results = (outs Variadic<I32>:$r);
+
+  let printer = [{ return ::print(p, *this); }];
+  let parser = [{ return ::parse$cppClass(parser, result); }];
 }
 
 //===----------------------------------------------------------------------===//
