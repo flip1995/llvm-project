@@ -1,3 +1,5 @@
+// REQUIRES: aarch64-registered-target
+
 // When -mmark-bti-property is passed the generated file object gets BTI marking.
 // RUN: %clang -target arm64-linux-none -mmark-bti-property -c -o - %s | llvm-readobj -n - | FileCheck -check-prefix=CHECK  -check-prefix=CHECK_GEN %s
 // RUN: %clang -target arm64-linux-none -DNOTE_PRESENT -c %s -o - | llvm-readobj -n - | FileCheck -check-prefix=CHECK  -check-prefix=CHECK_PRESET %s
