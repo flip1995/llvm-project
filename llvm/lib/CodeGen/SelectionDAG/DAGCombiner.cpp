@@ -4749,6 +4749,14 @@ SDValue DAGCombiner::visitMULO(SDNode *N) {
                        N->getVTList(), N0, N0);
 
   if (IsSigned) {
+    // A 1 bit SMULO overflows if both inputs are 1.
+    if (VT.getScalarSizeInBits() == 1) {
+      SDValue And = DAG.getNode(ISD::AND, DL, VT, N0, N1);
+      return CombineTo(N, And,
+                       DAG.getSetCC(DL, CarryVT, And,
+                                    DAG.getConstant(0, DL, VT), ISD::SETNE));
+    }
+
     // Multiplying n * m significant bits yields a result of n + m significant
     // bits. If the total number of significant bits does not exceed the
     // result bit width (minus 1), there is no overflow.
@@ -9703,7 +9711,7 @@ SDValue DAGCombiner::visitMSCATTER(SDNode *N) {
   SDLoc DL(N);
 
   // Zap scatters with a zero mask.
-  if (ISD::isBuildVectorAllZeros(Mask.getNode()))
+  if (ISD::isConstantSplatVectorAllZeros(Mask.getNode()))
     return Chain;
 
   if (refineUniformBase(BasePtr, Index, DAG)) {
@@ -9759,7 +9767,7 @@ SDValue DAGCombiner::visitMGATHER(SDNode *N) {
   SDLoc DL(N);
 
   // Zap gathers with a zero mask.
-  if (ISD::isBuildVectorAllZeros(Mask.getNode()))
+  if (ISD::isConstantSplatVectorAllZeros(Mask.getNode()))
     return CombineTo(N, PassThru, MGT->getChain());
 
   if (refineUniformBase(BasePtr, Index, DAG)) {
@@ -11872,14 +11880,24 @@ SDValue DAGCombiner::visitSIGN_EXTEND_INREG(SDNode *N) {
   }
 
   // fold (sext_in_reg (*_extend_vector_inreg x)) -> (sext_vector_inreg x)
-  if ((N0.getOpcode() == ISD::ANY_EXTEND_VECTOR_INREG ||
-       N0.getOpcode() == ISD::SIGN_EXTEND_VECTOR_INREG ||
-       N0.getOpcode() == ISD::ZERO_EXTEND_VECTOR_INREG) &&
-      N0.getOperand(0).getScalarValueSizeInBits() == ExtVTBits) {
-    if (!LegalOperations ||
-        TLI.isOperationLegal(ISD::SIGN_EXTEND_VECTOR_INREG, VT))
-      return DAG.getNode(ISD::SIGN_EXTEND_VECTOR_INREG, SDLoc(N), VT,
-                         N0.getOperand(0));
+  // if x is small enough or if we know that x has more than 1 sign bit and the
+  // sign_extend_inreg is extending from one of them.
+  if (N0.getOpcode() == ISD::ANY_EXTEND_VECTOR_INREG ||
+      N0.getOpcode() == ISD::SIGN_EXTEND_VECTOR_INREG ||
+      N0.getOpcode() == ISD::ZERO_EXTEND_VECTOR_INREG) {
+    SDValue N00 = N0.getOperand(0);
+    unsigned N00Bits = N00.getScalarValueSizeInBits();
+    unsigned DstElts = N0.getValueType().getVectorMinNumElements();
+    unsigned SrcElts = N00.getValueType().getVectorMinNumElements();
+    bool IsZext = N0.getOpcode() == ISD::ZERO_EXTEND_VECTOR_INREG;
+    APInt DemandedSrcElts = APInt::getLowBitsSet(SrcElts, DstElts);
+    if ((N00Bits == ExtVTBits ||
+         (!IsZext && (N00Bits < ExtVTBits ||
+                      (N00Bits - DAG.ComputeNumSignBits(N00, DemandedSrcElts)) <
+                          ExtVTBits))) &&
+        (!LegalOperations ||
+         TLI.isOperationLegal(ISD::SIGN_EXTEND_VECTOR_INREG, VT)))
+      return DAG.getNode(ISD::SIGN_EXTEND_VECTOR_INREG, SDLoc(N), VT, N00);
   }
 
   // fold (sext_in_reg (zext x)) -> (sext x)
@@ -12488,7 +12506,7 @@ SDValue DAGCombiner::visitBITCAST(SDNode *N) {
                                              VT.getVectorElementType());
 
   // If the input is a constant, let getNode fold it.
-  if (isa<ConstantSDNode>(N0) || isa<ConstantFPSDNode>(N0)) {
+  if (isIntOrFPConstant(N0)) {
     // If we can't allow illegal operations, we need to check that this is just
     // a fp -> int or int -> conversion and that the resulting operation will
     // be legal.
@@ -12726,7 +12744,7 @@ SDValue DAGCombiner::visitFREEZE(SDNode *N) {
     return N0;
 
   // If the input is a constant, return it.
-  if (isa<ConstantSDNode>(N0) || isa<ConstantFPSDNode>(N0))
+  if (isIntOrFPConstant(N0))
     return N0;
 
   return SDValue();
@@ -16990,7 +17008,7 @@ void DAGCombiner::getStoreMergeCandidates(
     case StoreSource::Constant:
       if (NoTypeMatch)
         return false;
-      if (!(isa<ConstantSDNode>(OtherBC) || isa<ConstantFPSDNode>(OtherBC)))
+      if (!isIntOrFPConstant(OtherBC))
         return false;
       break;
     case StoreSource::Extract:
@@ -20645,7 +20663,7 @@ static SDValue combineShuffleOfScalars(ShuffleVectorSDNode *SVN,
     // generating a splat; semantically, this is fine, but it's likely to
     // generate low-quality code if the target can't reconstruct an appropriate
     // shuffle.
-    if (!Op.isUndef() && !isa<ConstantSDNode>(Op) && !isa<ConstantFPSDNode>(Op))
+    if (!Op.isUndef() && !isIntOrFPConstant(Op))
       if (!IsSplat && !DuplicateOps.insert(Op).second)
         return SDValue();
 
@@ -21410,14 +21428,17 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
 
     // Merge shuffles through binops if we are able to merge it with at least
     // one other shuffles.
+    // shuffle(bop(shuffle(x,y),shuffle(z,w)),undef)
     // shuffle(bop(shuffle(x,y),shuffle(z,w)),bop(shuffle(a,b),shuffle(c,d)))
     unsigned SrcOpcode = N0.getOpcode();
-    if (SrcOpcode == N1.getOpcode() && TLI.isBinOp(SrcOpcode) &&
-        N->isOnlyUserOf(N0.getNode()) && N->isOnlyUserOf(N1.getNode())) {
+    if (TLI.isBinOp(SrcOpcode) && N->isOnlyUserOf(N0.getNode()) &&
+        (N1.isUndef() ||
+         (SrcOpcode == N1.getOpcode() && N->isOnlyUserOf(N1.getNode())))) {
+      // Get binop source ops, or just pass on the undef.
       SDValue Op00 = N0.getOperand(0);
-      SDValue Op10 = N1.getOperand(0);
       SDValue Op01 = N0.getOperand(1);
-      SDValue Op11 = N1.getOperand(1);
+      SDValue Op10 = N1.isUndef() ? N1 : N1.getOperand(0);
+      SDValue Op11 = N1.isUndef() ? N1 : N1.getOperand(1);
       // TODO: We might be able to relax the VT check but we don't currently
       // have any isBinOp() that has different result/ops VTs so play safe until
       // we have test coverage.

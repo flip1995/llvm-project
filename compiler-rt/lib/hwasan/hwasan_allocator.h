@@ -13,13 +13,15 @@
 #ifndef HWASAN_ALLOCATOR_H
 #define HWASAN_ALLOCATOR_H
 
+#include "hwasan.h"
+#include "hwasan_interface_internal.h"
+#include "hwasan_poisoning.h"
 #include "sanitizer_common/sanitizer_allocator.h"
 #include "sanitizer_common/sanitizer_allocator_checks.h"
 #include "sanitizer_common/sanitizer_allocator_interface.h"
 #include "sanitizer_common/sanitizer_allocator_report.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_ring_buffer.h"
-#include "hwasan_poisoning.h"
 
 #if !defined(__aarch64__) && !defined(__x86_64__)
 #error Unsupported platform
@@ -55,7 +57,12 @@ static const usize kMaxAllowedMallocSize = 1UL << 40;  // 1T
 
 struct AP64 {
   static const vaddr kSpaceBeg = ~0ULL;
+
+#if defined(__x86_64__)
+  static const usize kSpaceSize = 1ULL << kAddressTagShift;
+#else
   static const usize kSpaceSize = 0x2000000000ULL;
+#endif
   static const usize kMetadataSize = sizeof(Metadata);
   typedef __sanitizer::VeryDenseSizeClassMap SizeClassMap;
   using AddressSpaceView = LocalAddressSpaceView;
@@ -101,6 +108,16 @@ struct HeapAllocationRecord {
 typedef RingBuffer<HeapAllocationRecord> HeapAllocationsRingBuffer;
 
 void GetAllocatorStats(AllocatorStatCounters s);
+
+inline bool InTaggableRegion(uptr addr) {
+#if defined(__x86_64__)
+  // Aliases are mapped next to shadow so that the upper bits match the shadow
+  // base.
+  return (addr >> kTaggableRegionCheckShift) ==
+         (__hwasan_shadow_memory_dynamic_address >> kTaggableRegionCheckShift);
+#endif
+  return true;
+}
 
 } // namespace __hwasan
 

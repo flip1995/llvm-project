@@ -221,7 +221,8 @@ void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   StackOffset Offset =
       getFrameLowering(MF)->getFrameIndexReference(MF, FrameIndex, FrameReg);
   bool isRVV = RISCVVPseudosTable::getPseudoInfo(MI.getOpcode()) ||
-               isRVVWholeLoadStore(MI.getOpcode());
+               isRVVWholeLoadStore(MI.getOpcode()) ||
+               TII->isRVVSpillForZvlsseg(MI.getOpcode());
   if (!isRVV)
     Offset += StackOffset::getFixed(MI.getOperand(FIOperandNum + 1).getImm());
 
@@ -237,17 +238,27 @@ void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     // The offset won't fit in an immediate, so use a scratch register instead
     // Modify Offset and FrameReg appropriately
     unsigned Opc;
+    unsigned ImmOpc;
     Register ScratchReg = MRI.createVirtualRegister(&RISCV::GPRRegClass);
     Register DestReg;
     if (RISCVABI::isCheriPureCapABI(STI.getTargetABI())) {
       Opc = RISCV::CIncOffset;
+      ImmOpc = RISCV::CIncOffsetImm;
       DestReg = MRI.createVirtualRegister(&RISCV::GPCRRegClass);
     } else {
       Opc = RISCV::ADD;
+      ImmOpc = RISCV::ADDI;
       DestReg = ScratchReg;
     }
 
     TII->movImm(MBB, II, DL, ScratchReg, Offset.getFixed());
+    if (MI.getOpcode() == ImmOpc) {
+      BuildMI(MBB, II, DL, TII->get(Opc), MI.getOperand(0).getReg())
+        .addReg(FrameReg)
+        .addReg(DestReg, RegState::Kill);
+      MI.eraseFromParent();
+      return;
+    }
     BuildMI(MBB, II, DL, TII->get(Opc), DestReg)
         .addReg(FrameReg)
         .addReg(ScratchReg, RegState::Kill);
@@ -303,6 +314,16 @@ void RISCVRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     MI.getOperand(FIOperandNum).ChangeToRegister(VL, false, false, true);
     if (!isRVV)
       MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset.getFixed());
+  }
+
+  MachineFrameInfo &MFI = MF.getFrameInfo();
+  auto ZvlssegInfo = TII->isRVVSpillForZvlsseg(MI.getOpcode());
+  if (ZvlssegInfo) {
+    int64_t ScalableValue = MFI.getObjectSize(FrameIndex) / ZvlssegInfo->first;
+    Register FactorRegister =
+        TII->getVLENFactoredAmount(MF, MBB, II, ScalableValue);
+    MI.getOperand(FIOperandNum + 1)
+        .ChangeToRegister(FactorRegister, /*isDef=*/false);
   }
 }
 

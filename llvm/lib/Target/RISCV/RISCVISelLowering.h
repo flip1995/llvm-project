@@ -36,6 +36,7 @@ enum NodeType : unsigned {
   /// The lhs and rhs are XLenVT integers. The true and false values can be
   /// integer or floating point.
   SELECT_CC,
+  BR_CC,
   BuildPairF64,
   SplitF64,
   TAIL,
@@ -54,6 +55,10 @@ enum NodeType : unsigned {
   // instructions.
   ROLW,
   RORW,
+  // RV64IZbb bit counting instructions directly matching the semantics of the
+  // named RISC-V instructions.
+  CLZW,
+  CTZW,
   // RV64IB/RV32IB funnel shifts, with the semantics of the named RISC-V
   // instructions, but the same operand order as fshl/fshr intrinsics.
   FSR,
@@ -425,6 +430,17 @@ public:
       MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
       bool *Fast = nullptr) const override;
 
+  bool splitValueIntoRegisterParts(SelectionDAG &DAG, const SDLoc &DL,
+                                   SDValue Val, SDValue *Parts,
+                                   unsigned NumParts, MVT PartVT,
+                                   Optional<CallingConv::ID> CC) const override;
+
+  SDValue
+  joinRegisterPartsIntoValue(SelectionDAG &DAG, const SDLoc &DL,
+                             const SDValue *Parts, unsigned NumParts,
+                             MVT PartVT, EVT ValueVT,
+                             Optional<CallingConv::ID> CC) const override;
+
   static RISCVVLMUL getLMUL(MVT VT);
   static unsigned getRegClassIDForLMUL(RISCVVLMUL LMul);
   static unsigned getSubregIndexByMVT(MVT VT, unsigned Index);
@@ -438,6 +454,8 @@ public:
                                               const RISCVSubtarget &Subtarget);
   static MVT getContainerForFixedLengthVector(SelectionDAG &DAG, MVT VT,
                                               const RISCVSubtarget &Subtarget);
+
+  bool shouldRemoveExtendFromGSIndex(EVT VT) const override;
 
 private:
   void analyzeInputArgs(MachineFunction &MF, CCState &CCInfo,
@@ -462,6 +480,7 @@ private:
   SDValue lowerJumpTable(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerSELECT(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerBRCOND(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVASTART(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
@@ -479,10 +498,15 @@ private:
   SDValue lowerFPVECREDUCE(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerINSERT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerEXTRACT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerSTEP_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVECTOR_REVERSE(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerABS(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerMLOAD(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerMSTORE(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorFCOPYSIGNToRVV(SDValue Op,
                                                SelectionDAG &DAG) const;
+  SDValue lowerMGATHER(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerMSCATTER(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorLoadToRVV(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorStoreToRVV(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFixedLengthVectorSetccToRVV(SDValue Op, SelectionDAG &DAG) const;
