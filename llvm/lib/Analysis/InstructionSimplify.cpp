@@ -4152,10 +4152,12 @@ static Value *simplifySelectWithICmpCond(Value *CondVal, Value *TrueVal,
                                               TrueVal, FalseVal))
     return V;
 
-  // If we have an equality comparison, then we know the value in one of the
-  // arms of the select. See if substituting this value into the arm and
+  // If we have a scalar equality comparison, then we know the value in one of
+  // the arms of the select. See if substituting this value into the arm and
   // simplifying the result yields the same value as the other arm.
-  if (Pred == ICmpInst::ICMP_EQ) {
+  // Note that the equivalence/replacement opportunity does not hold for vectors
+  // because each element of a vector select is chosen independently.
+  if (Pred == ICmpInst::ICMP_EQ && !CondVal->getType()->isVectorTy()) {
     if (SimplifyWithOpReplaced(FalseVal, CmpLHS, CmpRHS, Q,
                                /* AllowRefinement */ false, MaxRecurse) ==
             TrueVal ||
@@ -4322,10 +4324,14 @@ static Value *SimplifyGEPInst(Type *SrcTy, ArrayRef<Value *> Ops,
   // Compute the (pointer) type returned by the GEP instruction.
   Type *LastType = GetElementPtrInst::getIndexedType(SrcTy, Ops.slice(1));
   Type *GEPTy = PointerType::get(LastType, AS);
-  if (VectorType *VT = dyn_cast<VectorType>(Ops[0]->getType()))
-    GEPTy = VectorType::get(GEPTy, VT->getElementCount());
-  else if (VectorType *VT = dyn_cast<VectorType>(Ops[1]->getType()))
-    GEPTy = VectorType::get(GEPTy, VT->getElementCount());
+  for (Value *Op : Ops) {
+    // If one of the operands is a vector, the result type is a vector of
+    // pointers. All vector operands must have the same number of elements.
+    if (VectorType *VT = dyn_cast<VectorType>(Op->getType())) {
+      GEPTy = VectorType::get(GEPTy, VT->getElementCount());
+      break;
+    }
+  }
 
   // getelementptr poison, idx -> poison
   // getelementptr baseptr, poison -> poison

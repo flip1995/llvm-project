@@ -803,18 +803,12 @@ static Register buildScratchExecCopy(LivePhysRegs &LiveRegs,
   const GCNSubtarget &ST = MF.getSubtarget<GCNSubtarget>();
   const SIInstrInfo *TII = ST.getInstrInfo();
   const SIRegisterInfo &TRI = TII->getRegisterInfo();
-  SIMachineFunctionInfo *FuncInfo = MF.getInfo<SIMachineFunctionInfo>();
   DebugLoc DL;
 
   if (LiveRegs.empty()) {
     if (IsProlog) {
       LiveRegs.init(TRI);
       LiveRegs.addLiveIns(MBB);
-      if (FuncInfo->SGPRForFPSaveRestoreCopy)
-        LiveRegs.removeReg(FuncInfo->SGPRForFPSaveRestoreCopy);
-
-      if (FuncInfo->SGPRForBPSaveRestoreCopy)
-        LiveRegs.removeReg(FuncInfo->SGPRForBPSaveRestoreCopy);
     } else {
       // In epilog.
       LiveRegs.init(*ST.getRegisterInfo());
@@ -828,8 +822,7 @@ static Register buildScratchExecCopy(LivePhysRegs &LiveRegs,
   if (!ScratchExecCopy)
     report_fatal_error("failed to find free scratch register");
 
-  if (!IsProlog)
-    LiveRegs.removeReg(ScratchExecCopy);
+  LiveRegs.addReg(ScratchExecCopy);
 
   const unsigned OrSaveExec =
       ST.isWave32() ? AMDGPU::S_OR_SAVEEXEC_B32 : AMDGPU::S_OR_SAVEEXEC_B64;
@@ -879,8 +872,8 @@ void SIFrameLowering::emitPrologue(MachineFunction &MF,
   Optional<int> FPSaveIndex = FuncInfo->FramePointerSaveIndex;
   Optional<int> BPSaveIndex = FuncInfo->BasePointerSaveIndex;
 
-  for (const SIMachineFunctionInfo::SGPRSpillVGPRCSR &Reg
-         : FuncInfo->getSGPRSpillVGPRs()) {
+  for (const SIMachineFunctionInfo::SGPRSpillVGPR &Reg :
+       FuncInfo->getSGPRSpillVGPRs()) {
     if (!Reg.FI.hasValue())
       continue;
 
@@ -1174,7 +1167,7 @@ void SIFrameLowering::emitEpilogue(MachineFunction &MF,
     }
   }
 
-  for (const SIMachineFunctionInfo::SGPRSpillVGPRCSR &Reg :
+  for (const SIMachineFunctionInfo::SGPRSpillVGPR &Reg :
        FuncInfo->getSGPRSpillVGPRs()) {
     if (!Reg.FI.hasValue())
       continue;

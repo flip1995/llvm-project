@@ -26,7 +26,6 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
-#include "llvm/IR/Statepoint.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/IR/ValueSymbolTable.h"
 #include "llvm/Support/CommandLine.h"
@@ -236,8 +235,7 @@ void Value::dropDroppableUsesIn(User &Usr) {
 
 void Value::dropDroppableUse(Use &U) {
   U.removeFromList();
-  if (auto *Assume = dyn_cast<IntrinsicInst>(U.getUser())) {
-    assert(Assume->getIntrinsicID() == Intrinsic::assume);
+  if (auto *Assume = dyn_cast<AssumeInst>(U.getUser())) {
     unsigned OpNo = U.getOperandNo();
     if (OpNo == 0)
       U.set(ConstantInt::getTrue(Assume->getContext()));
