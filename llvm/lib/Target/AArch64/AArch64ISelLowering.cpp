@@ -307,7 +307,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
   // AArch64 lacks both left-rotate and popcount instructions.
   setOperationAction(ISD::ROTL, MVT::i32, Expand);
   setOperationAction(ISD::ROTL, MVT::i64, Expand);
-  for (MVT VT : MVT::vector_valuetypes()) {
+  for (MVT VT : MVT::fixedlen_vector_valuetypes()) {
     setOperationAction(ISD::ROTL, VT, Expand);
     setOperationAction(ISD::ROTR, VT, Expand);
   }
@@ -321,7 +321,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
 
   setOperationAction(ISD::SDIVREM, MVT::i32, Expand);
   setOperationAction(ISD::SDIVREM, MVT::i64, Expand);
-  for (MVT VT : MVT::vector_valuetypes()) {
+  for (MVT VT : MVT::fixedlen_vector_valuetypes()) {
     setOperationAction(ISD::SDIVREM, VT, Expand);
     setOperationAction(ISD::UDIVREM, VT, Expand);
   }
@@ -754,7 +754,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
     setTruncStoreAction(MVT::v2i32, MVT::v2i16, Expand);
     // Likewise, narrowing and extending vector loads/stores aren't handled
     // directly.
-    for (MVT VT : MVT::vector_valuetypes()) {
+    for (MVT VT : MVT::fixedlen_vector_valuetypes()) {
       setOperationAction(ISD::SIGN_EXTEND_INREG, VT, Expand);
 
       if (VT == MVT::v16i8 || VT == MVT::v8i16 || VT == MVT::v4i32) {
@@ -770,7 +770,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
       setOperationAction(ISD::BSWAP, VT, Expand);
       setOperationAction(ISD::CTTZ, VT, Expand);
 
-      for (MVT InnerVT : MVT::vector_valuetypes()) {
+      for (MVT InnerVT : MVT::fixedlen_vector_valuetypes()) {
         setTruncStoreAction(VT, InnerVT, Expand);
         setLoadExtAction(ISD::SEXTLOAD, VT, InnerVT, Expand);
         setLoadExtAction(ISD::ZEXTLOAD, VT, InnerVT, Expand);
@@ -5845,7 +5845,7 @@ enum PredicateConstraint {
   Invalid
 };
 
-PredicateConstraint parsePredicateConstraint(StringRef Constraint) {
+static PredicateConstraint parsePredicateConstraint(StringRef Constraint) {
   PredicateConstraint P = PredicateConstraint::Invalid;
   if (Constraint == "Upa")
     P = PredicateConstraint::Upa;
@@ -10333,6 +10333,29 @@ static SDValue tryCombineShiftImm(unsigned IID, SDNode *N, SelectionDAG &DAG) {
     Opcode = AArch64ISD::SQSHLU_I;
     IsRightShift = false;
     break;
+  case Intrinsic::aarch64_neon_sshl:
+  case Intrinsic::aarch64_neon_ushl: {
+    // ushll/ushll2 provide unsigned shifts with immediate operands and
+    // sshll/sshll2 provide signed shifts with immediates, so we have to make
+    // sure we only match patterns here we can later match to them.
+    SDValue Op0 = N->getOperand(1);
+    if (Op0.getNode()->getOpcode() != (IID == Intrinsic::aarch64_neon_ushl
+                                           ? ISD::ZERO_EXTEND
+                                           : ISD::SIGN_EXTEND))
+      return SDValue();
+
+    EVT FromType = Op0.getOperand(0).getValueType();
+    EVT ToType = Op0.getValueType();
+    unsigned FromSize = FromType.getScalarSizeInBits();
+    if (!FromType.isVector() || !ToType.isVector() ||
+        (FromSize != 8 && FromSize != 16 && FromSize != 32) ||
+        2 * FromSize != ToType.getScalarSizeInBits())
+      return SDValue();
+
+    Opcode = AArch64ISD::VSHL;
+    IsRightShift = false;
+    break;
+  }
   }
 
   if (IsRightShift && ShiftAmount <= -1 && ShiftAmount >= -(int)ElemBits) {
@@ -10419,6 +10442,8 @@ static SDValue performIntrinsicCombine(SDNode *N,
   case Intrinsic::aarch64_neon_sqshlu:
   case Intrinsic::aarch64_neon_srshl:
   case Intrinsic::aarch64_neon_urshl:
+  case Intrinsic::aarch64_neon_sshl:
+  case Intrinsic::aarch64_neon_ushl:
     return tryCombineShiftImm(IID, N, DAG);
   case Intrinsic::aarch64_crc32b:
   case Intrinsic::aarch64_crc32cb:

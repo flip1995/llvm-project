@@ -612,7 +612,7 @@ SDValue TargetLowering::SimplifyMultipleUseDemandedBits(
     SDValue Op, const APInt &DemandedBits, const APInt &DemandedElts,
     SelectionDAG &DAG, unsigned Depth) const {
   // Limit search depth.
-  if (Depth >= 6)
+  if (Depth >= SelectionDAG::MaxRecursionDepth)
     return SDValue();
 
   // Ignore UNDEFs.
@@ -825,12 +825,15 @@ bool TargetLowering::SimplifyDemandedBits(
   } else if (OriginalDemandedBits == 0 || OriginalDemandedElts == 0) {
     // Not demanding any bits/elts from Op.
     return TLO.CombineTo(Op, TLO.DAG.getUNDEF(VT));
-  } else if (Depth >= 6) { // Limit search depth.
+  } else if (Depth >= SelectionDAG::MaxRecursionDepth) {
+    // Limit search depth.
     return false;
   }
 
   KnownBits Known2, KnownOut;
   switch (Op.getOpcode()) {
+  case ISD::TargetConstant:
+    llvm_unreachable("Can't simplify this node");
   case ISD::SCALAR_TO_VECTOR: {
     if (!DemandedElts[0])
       return TLO.CombineTo(Op, TLO.DAG.getUNDEF(VT));
@@ -1312,7 +1315,7 @@ bool TargetLowering::SimplifyDemandedBits(
       // out) are never demanded.
       // TODO - support non-uniform vector amounts.
       if (Op0.getOpcode() == ISD::SRL) {
-        if ((DemandedBits & APInt::getLowBitsSet(BitWidth, ShAmt)) == 0) {
+        if (!DemandedBits.intersects(APInt::getLowBitsSet(BitWidth, ShAmt))) {
           if (ConstantSDNode *SA2 =
                   isConstOrConstSplat(Op0.getOperand(1), DemandedElts)) {
             if (SA2->getAPIntValue().ult(BitWidth)) {
@@ -1419,7 +1422,8 @@ bool TargetLowering::SimplifyDemandedBits(
       if (Op0.getOpcode() == ISD::SHL) {
         if (ConstantSDNode *SA2 =
                 isConstOrConstSplat(Op0.getOperand(1), DemandedElts)) {
-          if ((DemandedBits & APInt::getHighBitsSet(BitWidth, ShAmt)) == 0) {
+          if (!DemandedBits.intersects(
+                  APInt::getHighBitsSet(BitWidth, ShAmt))) {
             if (SA2->getAPIntValue().ult(BitWidth)) {
               unsigned C1 = SA2->getZExtValue();
               unsigned Opc = ISD::SRL;
@@ -2133,7 +2137,7 @@ bool TargetLowering::SimplifyDemandedVectorElts(
   }
 
   // Limit search depth.
-  if (Depth >= 6)
+  if (Depth >= SelectionDAG::MaxRecursionDepth)
     return false;
 
   SDLoc DL(Op);

@@ -96,9 +96,12 @@
 #ifndef LLVM_TRANSFORMS_IPO_ATTRIBUTOR_H
 #define LLVM_TRANSFORMS_IPO_ATTRIBUTOR_H
 
-#include "llvm/ADT/SetVector.h"
-#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/PassManager.h"
 
@@ -519,6 +522,31 @@ public:
   iterator end() { return IRPositions.end(); }
 };
 
+/// Wrapper for FunctoinAnalysisManager.
+struct AnalysisGetter {
+  template <typename Analysis>
+  typename Analysis::Result *getAnalysis(const Function &F) {
+    if (!MAM || !F.getParent())
+      return nullptr;
+    auto &FAM = MAM->getResult<FunctionAnalysisManagerModuleProxy>(
+                       const_cast<Module &>(*F.getParent()))
+                    .getManager();
+    return &FAM.getResult<Analysis>(const_cast<Function &>(F));
+  }
+
+  template <typename Analysis>
+  typename Analysis::Result *getAnalysis(const Module &M) {
+    if (!MAM)
+      return nullptr;
+    return &MAM->getResult<Analysis>(const_cast<Module &>(M));
+  }
+  AnalysisGetter(ModuleAnalysisManager &MAM) : MAM(&MAM) {}
+  AnalysisGetter() {}
+
+private:
+  ModuleAnalysisManager *MAM = nullptr;
+};
+
 /// Data structure to hold cached (LLVM-IR) information.
 ///
 /// All attributes are given an InformationCache object at creation time to
@@ -532,7 +560,20 @@ public:
 /// reusable, it is advised to inherit from the InformationCache and cast the
 /// instance down in the abstract attributes.
 struct InformationCache {
-  InformationCache(const DataLayout &DL) : DL(DL) {}
+  InformationCache(const Module &M, AnalysisGetter &AG)
+      : DL(M.getDataLayout()), AG(AG) {
+
+    CallGraph *CG = AG.getAnalysis<CallGraphAnalysis>(M);
+    if (!CG)
+      return;
+
+    DenseMap<const Function *, unsigned> SccSize;
+    for (scc_iterator<CallGraph *> I = scc_begin(CG); !I.isAtEnd(); ++I) {
+      for (CallGraphNode *Node : *I)
+        SccSize[Node->getFunction()] = I->size();
+    }
+    SccSizeOpt = std::move(SccSize);
+  }
 
   /// A map type from opcodes to instructions with this opcode.
   using OpcodeInstMapTy = DenseMap<unsigned, SmallVector<Instruction *, 32>>;
@@ -553,7 +594,19 @@ struct InformationCache {
 
   /// Return TargetLibraryInfo for function \p F.
   TargetLibraryInfo *getTargetLibraryInfoForFunction(const Function &F) {
-    return FuncTLIMap[&F];
+    return AG.getAnalysis<TargetLibraryAnalysis>(F);
+  }
+
+  /// Return AliasAnalysis Result for function \p F.
+  AAResults *getAAResultsForFunction(const Function &F) {
+    return AG.getAnalysis<AAManager>(F);
+  }
+
+  /// Return SCC size on call graph for function \p F.
+  unsigned getSccSize(const Function &F) {
+    if (!SccSizeOpt.hasValue())
+      return 0;
+    return (SccSizeOpt.getValue())[&F];
   }
 
   /// Return datalayout used in the module.
@@ -566,9 +619,6 @@ private:
   /// A map type from functions to their read or write instructions.
   using FuncRWInstsMapTy = DenseMap<const Function *, InstructionVectorTy>;
 
-  /// A map type from functions to their TLI.
-  using FuncTLIMapTy = DenseMap<const Function *, TargetLibraryInfo *>;
-
   /// A nested map that remembers all instructions in a function with a certain
   /// instruction opcode (Instruction::getOpcode()).
   FuncInstOpcodeMapTy FuncInstOpcodeMap;
@@ -576,11 +626,14 @@ private:
   /// A map from functions to their instructions that may read or write memory.
   FuncRWInstsMapTy FuncRWInstsMap;
 
-  /// A map from functions to their TLI.
-  FuncTLIMapTy FuncTLIMap;
-
   /// The datalayout used in the module.
   const DataLayout &DL;
+
+  /// Getters for analysis.
+  AnalysisGetter &AG;
+
+  /// Cache result for scc size in the call graph
+  Optional<DenseMap<const Function *, unsigned>> SccSizeOpt;
 
   /// Give the Attributor access to the members so
   /// Attributor::identifyDefaultAbstractAttributes(...) can initialize them.
@@ -704,15 +757,19 @@ struct Attributor {
   /// abstract attribute objects for them.
   ///
   /// \param F The function that is checked for attribute opportunities.
-  /// \param TLIGetter helper function to get TargetLibraryInfo Analysis result.
   ///
   /// Note that abstract attribute instances are generally created even if the
   /// IR already contains the information they would deduce. The most important
   /// reason for this is the single interface, the one of the abstract attribute
   /// instance, which can be queried without the need to look at the IR in
   /// various places.
-  void identifyDefaultAbstractAttributes(
-      Function &F, std::function<TargetLibraryInfo *(Function &)> &TLIGetter);
+  void identifyDefaultAbstractAttributes(Function &F);
+
+  /// Initialize the information cache for queries regarding function \p F.
+  ///
+  /// This method needs to be called for all function that might be looked at
+  /// through the information cache interface *prior* to looking at them.
+  void initializeInformationCache(Function &F);
 
   /// Mark the internal function \p F as live.
   ///
@@ -720,12 +777,9 @@ struct Attributor {
   /// \p F.
   void markLiveInternalFunction(const Function &F) {
     assert(F.hasInternalLinkage() &&
-            "Only internal linkage is assumed dead initially.");
+           "Only internal linkage is assumed dead initially.");
 
-    std::function<TargetLibraryInfo *(Function &)> TLIGetter =
-        [&](Function &F) -> TargetLibraryInfo * { return nullptr; };
-
-    identifyDefaultAbstractAttributes(const_cast<Function &>(F), TLIGetter);
+    identifyDefaultAbstractAttributes(const_cast<Function &>(F));
   }
 
   /// Record that \p I is deleted after information was manifested.
