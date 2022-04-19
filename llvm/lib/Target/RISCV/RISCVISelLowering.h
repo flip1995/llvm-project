@@ -28,6 +28,12 @@ enum NodeType : unsigned {
   SRET_FLAG,
   MRET_FLAG,
   CALL,
+  /// Select with condition operator - This selects between a true value and
+  /// a false value (ops #3 and #4) based on the boolean result of comparing
+  /// the lhs and rhs (ops #0 and #1) of a conditional expression with the
+  /// condition code in op #2, a XLenVT constant from the ISD::CondCode enum.
+  /// The lhs and rhs are XLenVT integers. The true and false values can be
+  /// integer or floating point.
   SELECT_CC,
   BuildPairF64,
   SplitF64,
@@ -97,6 +103,8 @@ enum NodeType : unsigned {
   SPLAT_VECTOR_I64,
   // Read VLENB CSR
   READ_VLENB,
+  // Truncates a RVV integer vector by one power-of-two.
+  TRUNCATE_VECTOR,
 };
 } // namespace RISCVISD
 
@@ -134,6 +142,10 @@ public:
                           SelectionDAG &DAG) const override;
 
   SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
+
+  bool targetShrinkDemandedConstant(SDValue Op, const APInt &DemandedBits,
+                                    const APInt &DemandedElts,
+                                    TargetLoweringOpt &TLO) const override;
 
   void computeKnownBitsForTargetNode(const SDValue Op,
                                      KnownBits &Known,

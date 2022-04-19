@@ -4695,6 +4695,10 @@ SDValue DAGCombiner::visitIMINMAX(SDNode *N) {
       return DAG.getNode(AltOpcode, SDLoc(N), VT, N0, N1);
   }
 
+  // Simplify the operands using demanded-bits information.
+  if (SimplifyDemandedBits(SDValue(N, 0)))
+    return SDValue(N, 0);
+
   return SDValue();
 }
 
@@ -21054,6 +21058,32 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
         SV1 = CurrentVec;
         Mask.push_back(Idx + NumElts);
         continue;
+      }
+
+      // Last chance - see if the vector is another shuffle and if it
+      // uses one of the existing candidate shuffle ops.
+      if (auto *CurrentSVN = dyn_cast<ShuffleVectorSDNode>(CurrentVec)) {
+        int InnerIdx = CurrentSVN->getMaskElt(Idx);
+        if (InnerIdx < 0) {
+          Mask.push_back(-1);
+          continue;
+        }
+        SDValue InnerVec = (InnerIdx < (int)NumElts)
+                               ? CurrentSVN->getOperand(0)
+                               : CurrentSVN->getOperand(1);
+        if (InnerVec.isUndef()) {
+          Mask.push_back(-1);
+          continue;
+        }
+        InnerIdx %= NumElts;
+        if (InnerVec == SV0) {
+          Mask.push_back(InnerIdx);
+          continue;
+        }
+        if (InnerVec == SV1) {
+          Mask.push_back(InnerIdx + NumElts);
+          continue;
+        }
       }
 
       // Bail out if we cannot convert the shuffle pair into a single shuffle.
