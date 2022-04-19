@@ -53,6 +53,7 @@ public:
 
   // Constructors and Destructors
   explicit ClangASTContext(llvm::StringRef triple = "");
+  explicit ClangASTContext(ArchSpec arch);
 
   /// Constructs a ClangASTContext that uses an existing ASTContext internally.
   /// Useful when having an existing ASTContext created by Clang.
@@ -110,13 +111,7 @@ public:
   void setSema(clang::Sema *s);
   clang::Sema *getSema() { return m_sema; }
 
-  void Clear();
-
   const char *GetTargetTriple();
-
-  void SetTargetTriple(llvm::StringRef target_triple);
-
-  void SetArchitecture(const ArchSpec &arch);
 
   void SetExternalSource(
       llvm::IntrusiveRefCntPtr<clang::ExternalASTSource> &ast_source_up);
@@ -608,9 +603,6 @@ public:
   static bool GetCXXClassName(const CompilerType &type,
                               std::string &class_name);
 
-  static bool GetObjCClassName(const CompilerType &type,
-                               std::string &class_name);
-
   // Type Completion
 
   bool GetCompleteType(lldb::opaque_compiler_type_t type) override;
@@ -1008,11 +1000,14 @@ private:
   // For ClangASTContext only
   ClangASTContext(const ClangASTContext &);
   const ClangASTContext &operator=(const ClangASTContext &);
+  /// Creates the internal ASTContext.
+  void CreateASTContext();
+  void SetTargetTriple(llvm::StringRef target_triple);
 };
 
 class ClangASTContextForExpressions : public ClangASTContext {
 public:
-  ClangASTContextForExpressions(Target &target);
+  ClangASTContextForExpressions(Target &target, ArchSpec arch);
 
   ~ClangASTContextForExpressions() override = default;
 

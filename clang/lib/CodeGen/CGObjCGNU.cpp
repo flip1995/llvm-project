@@ -1296,7 +1296,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
       // Emit a placeholder symbol.
       GV = new llvm::GlobalVariable(TheModule, ProtocolTy, false,
           llvm::GlobalValue::ExternalLinkage, nullptr, Name);
-      GV->setAlignment(CGM.getPointerAlign().getQuantity());
+      GV->setAlignment(CGM.getPointerAlign().getAsAlign());
     }
     return llvm::ConstantExpr::getBitCast(GV, ProtocolPtrTy);
   }
@@ -1320,7 +1320,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
           llvm::ConstantExpr::getBitCast(Protocol, ProtocolPtrTy), RefName);
       GV->setComdat(TheModule.getOrInsertComdat(RefName));
       GV->setSection(sectionName<ProtocolReferenceSection>());
-      GV->setAlignment(CGM.getPointerAlign().getQuantity());
+      GV->setAlignment(CGM.getPointerAlign().getAsAlign());
       Ref = GV;
     }
     EmittedProtocolRef = true;
@@ -1499,7 +1499,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
         Sym->setSection((Section + SecSuffix).str());
         Sym->setComdat(TheModule.getOrInsertComdat((Prefix +
             Section).str()));
-        Sym->setAlignment(CGM.getPointerAlign().getQuantity());
+        Sym->setAlignment(CGM.getPointerAlign().getAsAlign());
         return Sym;
       };
       return { Sym("__start_", "$a"), Sym("__stop", "$z") };
@@ -1856,7 +1856,8 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
         ivarBuilder.addInt(Int32Ty,
             CGM.getContext().getTypeSizeInChars(ivarTy).getQuantity());
         // Alignment will be stored as a base-2 log of the alignment.
-        int align = llvm::Log2_32(Context.getTypeAlignInChars(ivarTy).getQuantity());
+        unsigned align =
+            llvm::Log2_32(Context.getTypeAlignInChars(ivarTy).getQuantity());
         // Objects that require more than 2^64-byte alignment should be impossible!
         assert(align < 64);
         // uint32_t flags;
@@ -4079,7 +4080,7 @@ LValue CGObjCGNU::EmitObjCValueForIvar(CodeGenFunction &CGF,
                                        const ObjCIvarDecl *Ivar,
                                        unsigned CVRQualifiers) {
   const ObjCInterfaceDecl *ID =
-    ObjectTy->getAs<ObjCObjectType>()->getInterface();
+    ObjectTy->castAs<ObjCObjectType>()->getInterface();
   return EmitValueForIvarAtOffset(CGF, ID, BaseValue, Ivar, CVRQualifiers,
                                   EmitIvarOffset(CGF, ID, Ivar));
 }
@@ -4128,7 +4129,7 @@ llvm::Value *CGObjCGNU::EmitIvarOffset(CodeGenFunction &CGF,
           false, llvm::GlobalValue::LinkOnceAnyLinkage,
           llvm::Constant::getNullValue(IntTy), name, nullptr,
           llvm::GlobalVariable::NotThreadLocal, AS);
-      GV->setAlignment(Align.getQuantity());
+      GV->setAlignment(Align.getAsAlign());
       Offset = GV;
     }
     Offset = CGF.Builder.CreateAlignedLoad(Offset, Align);

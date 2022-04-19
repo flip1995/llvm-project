@@ -3357,11 +3357,18 @@ def OMPDeclareVariant : InheritableAttr {
   let Documentation = [OMPDeclareVariantDocs];
   let Args = [
     ExprArgument<"VariantFuncRef">,
+    ExprArgument<"Score">,
     EnumArgument<"CtxSelectorSet", "CtxSelectorSetType",
                  [ "", "implementation"
                  ],
                  [
                    "CtxSetUnknown", "CtxSetImplementation"
+                 ]>,
+    EnumArgument<"CtxScore", "ScoreType",
+                 [ "", "score"
+                 ],
+                 [
+                   "ScoreUnknown", "ScoreSpecified"
                  ]>,
     EnumArgument<"CtxSelector", "CtxSelectorType",
                  [ "", "vendor"
@@ -3369,9 +3376,16 @@ def OMPDeclareVariant : InheritableAttr {
                  [
                    "CtxUnknown", "CtxVendor"
                  ]>,
-    StringArgument<"ImplVendor", 1>
+    VariadicStringArgument<"ImplVendors">
   ];
   let AdditionalMembers = [{
+    void printScore(raw_ostream & OS, const PrintingPolicy &Policy) const {
+      if (const Expr *E = getScore()) {
+        OS << "score(";
+        E->printPretty(OS, nullptr, Policy);
+        OS << "):";
+      }
+    }
     void printPrettyPragma(raw_ostream & OS, const PrintingPolicy &Policy)
         const {
       assert(getCtxSelectorSet() != CtxSetUnknown &&
@@ -3389,7 +3403,12 @@ def OMPDeclareVariant : InheritableAttr {
         switch (getCtxSelector()) {
         case CtxVendor:
           OS << "vendor(";
-          OS << getImplVendor();
+          printScore(OS, Policy);
+          if (implVendors_size() > 0) {
+            OS << *implVendors(). begin();
+            for (StringRef VendorName : llvm::drop_begin(implVendors(), 1))
+              OS << ", " << VendorName;
+          }
           OS << ")";
           break;
         case CtxUnknown:

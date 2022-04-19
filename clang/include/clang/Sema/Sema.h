@@ -1522,6 +1522,8 @@ public:
   QualType BuildAddressSpaceAttr(QualType &T, Expr *AddrSpace,
                                  SourceLocation AttrLoc);
 
+  bool CheckQualifiedFunctionForTypeId(QualType T, SourceLocation Loc);
+
   bool CheckFunctionReturnType(QualType T, SourceLocation Loc);
 
   /// Build a function type.
@@ -9145,12 +9147,15 @@ public:
         OMPDeclareVariantAttr::CtxSetUnknown;
     OMPDeclareVariantAttr::CtxSelectorType Ctx =
         OMPDeclareVariantAttr::CtxUnknown;
-    StringRef ImplVendor;
+    MutableArrayRef<StringRef> ImplVendors;
+    ExprResult CtxScore;
     explicit OpenMPDeclareVariantCtsSelectorData() = default;
     explicit OpenMPDeclareVariantCtsSelectorData(
         OMPDeclareVariantAttr::CtxSelectorSetType CtxSet,
-        OMPDeclareVariantAttr::CtxSelectorType Ctx, StringRef ImplVendor)
-        : CtxSet(CtxSet), Ctx(Ctx), ImplVendor(ImplVendor) {}
+        OMPDeclareVariantAttr::CtxSelectorType Ctx,
+        MutableArrayRef<StringRef> ImplVendors, ExprResult CtxScore)
+        : CtxSet(CtxSet), Ctx(Ctx), ImplVendors(ImplVendors),
+          CtxScore(CtxScore) {}
   };
 
   /// Checks if the variant/multiversion functions are compatible.
@@ -9160,7 +9165,7 @@ public:
       const PartialDiagnosticAt &NoteCausedDiagIDAt,
       const PartialDiagnosticAt &NoSupportDiagIDAt,
       const PartialDiagnosticAt &DiffDiagIDAt, bool TemplatesSupported,
-      bool ConstexprSupported);
+      bool ConstexprSupported, bool CLinkageMayDiffer);
 
   /// Function tries to capture lambda's captured variables in the OpenMP region
   /// before the original lambda is captured.
@@ -9185,6 +9190,10 @@ public:
   /// If the current region is a loop-based region, mark the start of the loop
   /// construct.
   void startOpenMPLoop();
+
+  /// If the current region is a range loop-based region, mark the start of the
+  /// loop construct.
+  void startOpenMPCXXRangeFor();
 
   /// Check if the specified variable is used in 'private' clause.
   /// \param Level Relative level of nested OpenMP construct for that the check
@@ -11095,6 +11104,7 @@ private:
   bool CheckARMBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
 
   bool CheckAArch64BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
+  bool CheckBPFBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckHexagonBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckHexagonBuiltinCpu(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckHexagonBuiltinArgument(unsigned BuiltinID, CallExpr *TheCall);
