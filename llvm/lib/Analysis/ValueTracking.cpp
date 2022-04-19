@@ -2651,21 +2651,16 @@ bool isKnownNonZero(const Value* V, unsigned Depth, const Query& Q) {
   return isKnownNonZero(V, DemandedElts, Depth, Q);
 }
 
-/// If the pair of operators are the same invertible function, return the
-/// the operands of the function corresponding to each input. Otherwise,
-/// return None.  An invertible function is one that is 1-to-1 and maps
-/// every input value to exactly one output value.  This is equivalent to
-/// saying that Op1 and Op2 are equal exactly when the specified pair of
-/// operands are equal, (except that Op1 and Op2 may be poison more often.)
-static Optional<std::pair<Value*, Value*>>
-getInvertibleOperands(const Operator *Op1,
-                      const Operator *Op2) {
+/// If the pair of operators are the same invertible function of a single
+/// operand return the index of that operand.  Otherwise, return None.  An
+/// invertible function is one that is 1-to-1 and maps every input value
+/// to exactly one output value.  This is equivalent to saying that Op1
+/// and Op2 are equal exactly when the specified pair of operands are equal,
+/// (except that Op1 and Op2 may be poison more often.)
+static Optional<unsigned> getInvertibleOperand(const Operator *Op1,
+                                               const Operator *Op2) {
   if (Op1->getOpcode() != Op2->getOpcode())
     return None;
-
-  auto getOperands = [&](unsigned OpNum) -> auto {
-    return std::make_pair(Op1->getOperand(OpNum), Op2->getOperand(OpNum));
-  };
 
   switch (Op1->getOpcode()) {
   default:
@@ -2673,9 +2668,9 @@ getInvertibleOperands(const Operator *Op1,
   case Instruction::Add:
   case Instruction::Sub:
     if (Op1->getOperand(0) == Op2->getOperand(0))
-      return getOperands(1);
+      return 1;
     if (Op1->getOperand(1) == Op2->getOperand(1))
-      return getOperands(0);
+      return 0;
     break;
   case Instruction::Mul: {
     // invertible if A * B == (A * B) mod 2^N where A, and B are integers
@@ -2691,7 +2686,7 @@ getInvertibleOperands(const Operator *Op1,
     if (Op1->getOperand(1) == Op2->getOperand(1) &&
         isa<ConstantInt>(Op1->getOperand(1)) &&
         !cast<ConstantInt>(Op1->getOperand(1))->isZero())
-      return getOperands(0);
+      return 0;
     break;
   }
   case Instruction::Shl: {
@@ -2704,7 +2699,7 @@ getInvertibleOperands(const Operator *Op1,
       break;
 
     if (Op1->getOperand(1) == Op2->getOperand(1))
-      return getOperands(0);
+      return 0;
     break;
   }
   case Instruction::AShr:
@@ -2715,13 +2710,13 @@ getInvertibleOperands(const Operator *Op1,
       break;
 
     if (Op1->getOperand(1) == Op2->getOperand(1))
-      return getOperands(0);
+      return 0;
     break;
   }
   case Instruction::SExt:
   case Instruction::ZExt:
     if (Op1->getOperand(0)->getType() == Op2->getOperand(0)->getType())
-      return getOperands(0);
+      return 0;
     break;
   case Instruction::PHI: {
     const PHINode *PN1 = cast<PHINode>(Op1);
@@ -2739,12 +2734,18 @@ getInvertibleOperands(const Operator *Op1,
         !matchSimpleRecurrence(PN2, BO2, Start2, Step2))
       break;
 
-    auto Values = getInvertibleOperands(cast<Operator>(BO1),
-                                        cast<Operator>(BO2));
-    if (!Values)
+    Optional<unsigned> Idx = getInvertibleOperand(cast<Operator>(BO1),
+                                                  cast<Operator>(BO2));
+    if (!Idx || *Idx != 0)
       break;
-    assert(Values->first == PN1 && Values->second == PN2);
-    return std::make_pair(Start1, Start2);
+    assert(BO1->getOperand(*Idx) == PN1 && BO2->getOperand(*Idx) == PN2);
+
+    // Phi operands might not be in the same order.  TODO: generalize
+    // interface to return pair of operands.
+    if (PN1->getOperand(0) == BO1 && PN2->getOperand(0) == BO2)
+      return 1;
+    if (PN1->getOperand(1) == BO1 && PN2->getOperand(1) == BO2)
+      return 0;
   }
   }
   return None;
@@ -2841,9 +2842,11 @@ static bool isKnownNonEqual(const Value *V1, const Value *V2, unsigned Depth,
   auto *O1 = dyn_cast<Operator>(V1);
   auto *O2 = dyn_cast<Operator>(V2);
   if (O1 && O2 && O1->getOpcode() == O2->getOpcode()) {
-    if (auto Values = getInvertibleOperands(O1, O2))
-      return isKnownNonEqual(Values->first, Values->second, Depth + 1, Q);
-
+    if (Optional<unsigned> Opt = getInvertibleOperand(O1, O2)) {
+      unsigned Idx = *Opt;
+      return isKnownNonEqual(O1->getOperand(Idx), O2->getOperand(Idx),
+                             Depth + 1, Q);
+    }
     if (const PHINode *PN1 = dyn_cast<PHINode>(V1)) {
       const PHINode *PN2 = cast<PHINode>(V2);
       // FIXME: This is missing a generalization to handle the case where one is
@@ -5516,6 +5519,9 @@ static bool programUndefinedIfUndefOrPoison(const Value *V,
     return false;
   }
 
+  // Limit number of instructions we look at, to avoid scanning through large
+  // blocks. The current limit is chosen arbitrarily.
+  unsigned ScanLimit = 32;
   BasicBlock::const_iterator End = BB->end();
 
   if (!PoisonOnly) {
@@ -5524,12 +5530,16 @@ static bool programUndefinedIfUndefOrPoison(const Value *V,
     // well-defined operands.
 
     for (auto &I : make_range(Begin, End)) {
+      if (isa<DbgInfoIntrinsic>(I))
+        continue;
+      if (--ScanLimit == 0)
+        break;
+
       SmallPtrSet<const Value *, 4> WellDefinedOps;
       getGuaranteedWellDefinedOps(&I, WellDefinedOps);
-      for (auto *Op : WellDefinedOps) {
-        if (Op == V)
-          return true;
-      }
+      if (WellDefinedOps.contains(V))
+        return true;
+
       if (!isGuaranteedToTransferExecutionToSuccessor(&I))
         break;
     }
@@ -5549,9 +5559,12 @@ static bool programUndefinedIfUndefOrPoison(const Value *V,
   for_each(V->users(), Propagate);
   Visited.insert(BB);
 
-  unsigned Iter = 0;
-  while (Iter++ < MaxAnalysisRecursionDepth) {
+  while (true) {
     for (auto &I : make_range(Begin, End)) {
+      if (isa<DbgInfoIntrinsic>(I))
+        continue;
+      if (--ScanLimit == 0)
+        return false;
       if (mustTriggerUB(&I, YieldsPoison))
         return true;
       if (!isGuaranteedToTransferExecutionToSuccessor(&I))
@@ -5562,16 +5575,12 @@ static bool programUndefinedIfUndefOrPoison(const Value *V,
         for_each(I.users(), Propagate);
     }
 
-    if (auto *NextBB = BB->getSingleSuccessor()) {
-      if (Visited.insert(NextBB).second) {
-        BB = NextBB;
-        Begin = BB->getFirstNonPHI()->getIterator();
-        End = BB->end();
-        continue;
-      }
-    }
+    BB = BB->getSingleSuccessor();
+    if (!BB || !Visited.insert(BB).second)
+      break;
 
-    break;
+    Begin = BB->getFirstNonPHI()->getIterator();
+    End = BB->end();
   }
   return false;
 }
