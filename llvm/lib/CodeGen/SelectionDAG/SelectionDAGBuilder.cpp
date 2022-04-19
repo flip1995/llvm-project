@@ -735,10 +735,10 @@ static void getCopyToPartsVector(SelectionDAG &DAG, const SDLoc &DL,
     IntermediateVT.getVectorNumElements() : 1;
 
   // Convert the vector to the appropriate type if necessary.
-  unsigned DestVectorNoElts = NumIntermediates * IntermediateNumElts;
-
+  auto DestEltCnt = ElementCount(NumIntermediates * IntermediateNumElts,
+                                 ValueVT.isScalableVector());
   EVT BuiltVectorTy = EVT::getVectorVT(
-      *DAG.getContext(), IntermediateVT.getScalarType(), DestVectorNoElts);
+      *DAG.getContext(), IntermediateVT.getScalarType(), DestEltCnt);
   if (ValueVT != BuiltVectorTy) {
     if (SDValue Widened = widenVectorToPartType(DAG, Val, DL, BuiltVectorTy))
       Val = Widened;
@@ -1837,7 +1837,7 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
     unsigned NumValues = ValueVTs.size();
 
     SmallVector<SDValue, 4> Chains(NumValues);
-    unsigned BaseAlign = DL.getABITypeAlignment(I.getOperand(0)->getType());
+    Align BaseAlign = DL.getPrefTypeAlign(I.getOperand(0)->getType());
     for (unsigned i = 0; i != NumValues; ++i) {
       // An aggregate return value cannot wrap around the address space, so
       // offsets to its parts don't wrap either.
@@ -1846,10 +1846,11 @@ void SelectionDAGBuilder::visitRet(const ReturnInst &I) {
       SDValue Val = RetOp.getValue(RetOp.getResNo() + i);
       if (MemVTs[i] != ValueVTs[i])
         Val = DAG.getPtrExtOrTrunc(Val, getCurSDLoc(), MemVTs[i]);
-      Chains[i] = DAG.getStore(Chain, getCurSDLoc(), Val,
+      Chains[i] = DAG.getStore(
+          Chain, getCurSDLoc(), Val,
           // FIXME: better loc info would be nice.
           Ptr, MachinePointerInfo::getUnknownStack(DAG.getMachineFunction()),
-          MinAlign(BaseAlign, Offsets[i]));
+          commonAlignment(BaseAlign, Offsets[i]));
     }
 
     Chain = DAG.getNode(ISD::TokenFactor, getCurSDLoc(),
@@ -9396,7 +9397,7 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
           RetTys[i], CLI.DL, CLI.Chain, Add,
           MachinePointerInfo::getFixedStack(CLI.DAG.getMachineFunction(),
                                             DemoteStackIdx, Offsets[i]),
-          /* Alignment = */ MinAlign(HiddenSRetAlign.value(), Offsets[i]));
+          HiddenSRetAlign);
       ReturnValues[i] = L;
       Chains[i] = L.getValue(1);
     }

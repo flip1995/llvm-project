@@ -3,6 +3,7 @@ import os
 import shlex
 import sys
 
+import lit.reports
 import lit.util
 from lit.LitConfig import CheriTestMode
 
@@ -59,7 +60,7 @@ def parse_args():
             help="Display all commandlines and output",
             action="store_true")
     format_group.add_argument("-o", "--output",
-            dest="output_path",
+            type=lit.reports.JsonReport,
             help="Write test results to the provided path",
             metavar="PATH")
     format_group.add_argument("--no-progress-bar",
@@ -100,7 +101,7 @@ def parse_args():
             help="Don't execute any tests (assume PASS)",
             action="store_true")
     execution_group.add_argument("--xunit-xml-output",
-            dest="xunit_output_file",
+            type=lit.reports.XunitReport,
             help="Write XUnit-compatible XML test reports to the specified file")
     execution_group.add_argument("--timeout",
             dest="maxIndividualTestTime",
@@ -201,6 +202,8 @@ def parse_args():
         opts.shard = (opts.runShard, opts.numShards)
     else:
         opts.shard = None
+
+    opts.reports = filter(None, [opts.output, opts.xunit_xml_output])
 
     return opts
 

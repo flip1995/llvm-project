@@ -4297,6 +4297,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
         options::OPT_fno_function_sections,
         options::OPT_fdata_sections,
         options::OPT_fno_data_sections,
+        options::OPT_funique_internal_linkage_names,
+        options::OPT_fno_unique_internal_linkage_names,
         options::OPT_funique_section_names,
         options::OPT_fno_unique_section_names,
         options::OPT_mrestrict_it,
@@ -4717,8 +4719,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Enable -mconstructor-aliases except on darwin, where we have to work around
   // a linker bug (see <rdar://problem/7651567>), and CUDA device code, where
-  // aliases aren't supported.
-  if (!RawTriple.isOSDarwin() && !RawTriple.isNVPTX())
+  // aliases aren't supported. Similarly, aliases aren't yet supported for AIX.
+  if (!RawTriple.isOSDarwin() && !RawTriple.isNVPTX() && !RawTriple.isOSAIX())
     CmdArgs.push_back("-mconstructor-aliases");
 
   // Darwin's kernel doesn't support guard variables; just die if we
@@ -4915,6 +4917,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasFlag(options::OPT_funique_section_names,
                     options::OPT_fno_unique_section_names, true))
     CmdArgs.push_back("-fno-unique-section-names");
+
+  if (Args.hasFlag(options::OPT_funique_internal_linkage_names,
+                   options::OPT_fno_unique_internal_linkage_names, false))
+    CmdArgs.push_back("-funique-internal-linkage-names");
 
   Args.AddLastArg(CmdArgs, options::OPT_finstrument_functions,
                   options::OPT_finstrument_functions_after_inlining,

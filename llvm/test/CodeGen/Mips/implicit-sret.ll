@@ -11,7 +11,7 @@ declare dso_local { i32, i128, i64 } @implicit_sret_decl() unnamed_addr
 define internal void @test() unnamed_addr nounwind {
 ; CHECK-LABEL: test:
 ; CHECK:       # %bb.0: # %start
-; CHECK-NEXT:    daddiu $sp, $sp, -[[STACKFRAME_SIZE:48]]
+; CHECK-NEXT:    daddiu $sp, $sp, -48
 ; CHECK-NEXT:    sd $ra, 40($sp) # 8-byte Folded Spill
 ; CHECK-NEXT:    daddiu $4, $sp, 8
 ; CHECK-NEXT:    jal implicit_sret_decl
@@ -26,7 +26,7 @@ define internal void @test() unnamed_addr nounwind {
 ; CHECK-NEXT:    jal use_sret
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    ld $ra, 40($sp) # 8-byte Folded Reload
-; CHECK-NEXT:    daddiu $sp, $sp, [[STACKFRAME_SIZE]]
+; CHECK-NEXT:    daddiu $sp, $sp, 48
 ; CHECK-NEXT:    jr $ra
 ; CHECK-NEXT:    nop
 start:
@@ -60,7 +60,7 @@ declare dso_local void @use_sret2(i32, i32, i32) unnamed_addr
 define internal void @test2() unnamed_addr nounwind {
 ; CHECK-LABEL: test2:
 ; CHECK:       # %bb.0: # %start
-; CHECK-NEXT:    daddiu $sp, $sp, -[[STACKFRAME_SIZE:32]]
+; CHECK-NEXT:    daddiu $sp, $sp, -32
 ; CHECK-NEXT:    sd $ra, 24($sp) # 8-byte Folded Spill
 ; CHECK-NEXT:    daddiu $4, $sp, 0
 ; CHECK-NEXT:    jal implicit_sret_decl2
@@ -77,7 +77,7 @@ define internal void @test2() unnamed_addr nounwind {
 ; CHECK-NEXT:    jal use_sret2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    ld $ra, 24($sp) # 8-byte Folded Reload
-; CHECK-NEXT:    daddiu $sp, $sp, [[STACKFRAME_SIZE]]
+; CHECK-NEXT:    daddiu $sp, $sp, 32
 ; CHECK-NEXT:    jr $ra
 ; CHECK-NEXT:    nop
 start:
