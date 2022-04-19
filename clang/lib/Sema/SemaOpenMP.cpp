@@ -648,9 +648,10 @@ public:
              (M == OMPC_DEFAULTMAP_MODIFIER_default);
     case OMPC_DEFAULTMAP_aggregate:
       return M == OMPC_DEFAULTMAP_MODIFIER_firstprivate;
-    case OMPC_DEFAULTMAP_unknown:
-      llvm_unreachable("Unexpected variable category");
+    default:
+      break;
     }
+    llvm_unreachable("Unexpected OpenMPDefaultmapClauseKind enum");
   }
   bool mustBeFirstprivateAtLevel(unsigned Level,
                                  OpenMPDefaultmapClauseKind Kind) const {
@@ -907,7 +908,7 @@ static const Expr *getExprAsWritten(const Expr *E) {
     E = FE->getSubExpr();
 
   if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(E))
-    E = MTE->getSubExpr();
+    E = MTE->GetTemporaryExpr();
 
   while (const auto *Binder = dyn_cast<CXXBindTemporaryExpr>(E))
     E = Binder->getSubExpr();
