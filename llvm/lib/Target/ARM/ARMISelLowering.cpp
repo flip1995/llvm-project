@@ -9196,7 +9196,7 @@ SDValue ARMTargetLowering::LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const {
   if (ShouldUseSRet) {
     // Create stack object for sret.
     const uint64_t ByteSize = DL.getTypeAllocSize(RetTy);
-    const unsigned StackAlign = DL.getPrefTypeAlignment(RetTy);
+    const Align StackAlign = DL.getPrefTypeAlign(RetTy);
     int FrameIdx = MFI.CreateStackObject(ByteSize, StackAlign, false);
     SRet = DAG.getFrameIndex(FrameIdx, TLI.getPointerTy(DL));
 
@@ -17753,7 +17753,8 @@ ARMTargetLowering::LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const 
 
   if (DAG.getMachineFunction().getFunction().hasFnAttribute(
           "no-stack-arg-probe")) {
-    MaybeAlign Align(cast<ConstantSDNode>(Op.getOperand(2))->getZExtValue());
+    MaybeAlign Align =
+        cast<ConstantSDNode>(Op.getOperand(2))->getMaybeAlignValue();
     SDValue SP = DAG.getCopyFromReg(Chain, DL, ARM::SP, MVT::i32);
     Chain = SP.getValue(1);
     SP = DAG.getNode(ISD::SUB, DL, MVT::i32, SP, Size);
@@ -17964,7 +17965,7 @@ bool ARMTargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     Info.ptrVal = I.getArgOperand(0);
     Info.offset = 0;
     Value *AlignArg = I.getArgOperand(I.getNumArgOperands() - 1);
-    Info.align = MaybeAlign(cast<ConstantInt>(AlignArg)->getZExtValue());
+    Info.align = cast<ConstantInt>(AlignArg)->getMaybeAlignValue();
     // volatile loads with NEON intrinsics not supported
     Info.flags = MachineMemOperand::MOLoad;
     return true;
@@ -18005,7 +18006,7 @@ bool ARMTargetLowering::getTgtMemIntrinsic(IntrinsicInfo &Info,
     Info.ptrVal = I.getArgOperand(0);
     Info.offset = 0;
     Value *AlignArg = I.getArgOperand(I.getNumArgOperands() - 1);
-    Info.align = MaybeAlign(cast<ConstantInt>(AlignArg)->getZExtValue());
+    Info.align = cast<ConstantInt>(AlignArg)->getMaybeAlignValue();
     // volatile stores with NEON intrinsics not supported
     Info.flags = MachineMemOperand::MOStore;
     return true;
@@ -18833,7 +18834,7 @@ static bool isHomogeneousAggregate(Type *Ty, HABaseType &Base,
 /// Return the correct alignment for the current calling convention.
 Align ARMTargetLowering::getABIAlignmentForCallingConv(Type *ArgTy,
                                                        DataLayout DL) const {
-  const Align ABITypeAlign(DL.getABITypeAlignment(ArgTy));
+  const Align ABITypeAlign = DL.getABITypeAlign(ArgTy);
   if (!ArgTy->isVectorTy())
     return ABITypeAlign;
 

@@ -1207,7 +1207,7 @@ bool HoistSpillHelper::isSpillCandBB(LiveInterval &OrigLI, VNInfo &OrigVNI,
   SmallSetVector<Register, 16> &Siblings = Virt2SiblingsMap[OrigReg];
   assert(OrigLI.getVNInfoAt(Idx) == &OrigVNI && "Unexpected VNI");
 
-  for (auto const SibReg : Siblings) {
+  for (const Register &SibReg : Siblings) {
     LiveInterval &LI = LIS.getInterval(SibReg);
     VNInfo *VNI = LI.getVNInfoAt(Idx);
     if (VNI) {
@@ -1316,10 +1316,7 @@ void HoistSpillHelper::getVisitOrders(
   Orders.push_back(MDT.getBase().getNode(Root));
   do {
     MachineDomTreeNode *Node = Orders[idx++];
-    const std::vector<MachineDomTreeNode *> &Children = Node->getChildren();
-    unsigned NumChildren = Children.size();
-    for (unsigned i = 0; i != NumChildren; ++i) {
-      MachineDomTreeNode *Child = Children[i];
+    for (MachineDomTreeNode *Child : Node->children()) {
       if (WorkSet.count(Child))
         Orders.push_back(Child);
     }
@@ -1387,10 +1384,7 @@ void HoistSpillHelper::runHoistSpills(
 
     // Collect spills in subtree of current node (*RIt) to
     // SpillsInSubTreeMap[*RIt].first.
-    const std::vector<MachineDomTreeNode *> &Children = (*RIt)->getChildren();
-    unsigned NumChildren = Children.size();
-    for (unsigned i = 0; i != NumChildren; ++i) {
-      MachineDomTreeNode *Child = Children[i];
+    for (MachineDomTreeNode *Child : (*RIt)->children()) {
       if (SpillsInSubTreeMap.find(Child) == SpillsInSubTreeMap.end())
         continue;
       // The stmt "SpillsInSubTree = SpillsInSubTreeMap[*RIt].first" below

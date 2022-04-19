@@ -3170,7 +3170,7 @@ private:
     unsigned OffsetWidth = DL.getIndexSizeInBits(OtherAS);
     APInt OtherOffset(OffsetWidth, NewBeginOffset - BeginOffset);
     Align OtherAlign =
-        assumeAligned(IsDest ? II.getSourceAlignment() : II.getDestAlignment());
+        (IsDest ? II.getSourceAlign() : II.getDestAlign()).valueOrOne();
     OtherAlign =
         commonAlignment(OtherAlign, OtherOffset.zextOrTrunc(64).getZExtValue());
 
@@ -4500,7 +4500,7 @@ AllocaInst *SROA::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
     const Align Alignment = commonAlignment(AI.getAlign(), P.beginOffset());
     // If we will get at least this much alignment from the type alone, leave
     // the alloca's alignment unconstrained.
-    const bool IsUnconstrained = Alignment <= DL.getABITypeAlignment(SliceTy);
+    const bool IsUnconstrained = Alignment <= DL.getABITypeAlign(SliceTy);
     NewAI = new AllocaInst(
         SliceTy, AI.getType()->getAddressSpace(), nullptr,
         IsUnconstrained ? DL.getPrefTypeAlign(SliceTy) : Alignment,

@@ -1424,8 +1424,14 @@ def warn_multiple_selectors: Warning<
   "several methods with selector %0 of mismatched types are found "
   "for the @selector expression">,
   InGroup<SelectorTypeMismatch>, DefaultIgnore;
-def err_direct_selector_expression: Error<
+def err_direct_selector_expression : Error<
   "@selector expression formed with direct selector %0">;
+def warn_potentially_direct_selector_expression : Warning<
+  "@selector expression formed with potentially direct selector %0">,
+  InGroup<ObjCPotentiallyDirectSelector>;
+def warn_strict_potentially_direct_selector_expression : Warning<
+  warn_potentially_direct_selector_expression.Text>,
+  InGroup<ObjCStrictPotentiallyDirectSelector>, DefaultIgnore;
 
 def err_objc_kindof_nonobject : Error<
   "'__kindof' specifier cannot be applied to non-object type %0">;
@@ -9531,6 +9537,8 @@ def err_x86_builtin_invalid_rounding : Error<
   "invalid rounding argument">;
 def err_x86_builtin_invalid_scale : Error<
   "scale argument must be 1, 2, 4, or 8">;
+def err_x86_builtin_tile_arg_duplicate : Error<
+  "tile arguments must refer to different tiles">;
 
 def err_builtin_target_unsupported : Error<
   "builtin is not supported on this target">;
@@ -10716,6 +10724,9 @@ def err_await_suspend_invalid_return_type : Error<
 def note_await_ready_no_bool_conversion : Note<
   "return type of 'await_ready' is required to be contextually convertible to 'bool'"
 >;
+def warn_coroutine_handle_address_invalid_return_type : Warning <
+  "return type of 'coroutine_handle<>::address should be 'void*' (have %0) in order to get capability with existing async C API.">,
+  InGroup<Coroutine>;
 def err_coroutine_promise_final_suspend_requires_nothrow : Error<
   "the expression 'co_await __promise.final_suspend()' is required to be non-throwing"
 >;

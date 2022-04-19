@@ -14,7 +14,7 @@
 #include "lldb/Utility/Stream.h"
 #include "lldb/Utility/StreamString.h"
 #include "lldb/lldb-types.h"
-
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/SmallString.h"
 
 #include <cinttypes>
@@ -22,6 +22,60 @@
 
 using namespace lldb;
 using namespace lldb_private;
+
+namespace {
+enum class Category { Void, Integral, Float };
+}
+
+static Category GetCategory(Scalar::Type type) {
+  switch (type) {
+  case Scalar::e_void:
+    return Category::Void;
+  case Scalar::e_float:
+  case Scalar::e_double:
+  case Scalar::e_long_double:
+    return Category::Float;
+  case Scalar::e_sint:
+  case Scalar::e_slong:
+  case Scalar::e_slonglong:
+  case Scalar::e_sint128:
+  case Scalar::e_sint256:
+  case Scalar::e_sint512:
+  case Scalar::e_uint:
+  case Scalar::e_ulong:
+  case Scalar::e_ulonglong:
+  case Scalar::e_uint128:
+  case Scalar::e_uint256:
+  case Scalar::e_uint512:
+    return Category::Integral;
+  }
+  llvm_unreachable("Unhandled type!");
+}
+
+static bool IsSigned(Scalar::Type type) {
+  switch (type) {
+  case Scalar::e_void:
+  case Scalar::e_uint:
+  case Scalar::e_ulong:
+  case Scalar::e_ulonglong:
+  case Scalar::e_uint128:
+  case Scalar::e_uint256:
+  case Scalar::e_uint512:
+    return false;
+  case Scalar::e_sint:
+  case Scalar::e_slong:
+  case Scalar::e_slonglong:
+  case Scalar::e_sint128:
+  case Scalar::e_sint256:
+  case Scalar::e_sint512:
+  case Scalar::e_float:
+  case Scalar::e_double:
+  case Scalar::e_long_double:
+    return true;
+  }
+  llvm_unreachable("Unhandled type!");
+}
+
 
 // Promote to max type currently follows the ANSI C rule for type promotion in
 // expressions.
@@ -103,39 +157,18 @@ bool Scalar::GetData(DataExtractor &data, size_t limit_byte_size) const {
 void Scalar::GetBytes(llvm::MutableArrayRef<uint8_t> storage) const {
   assert(storage.size() >= GetByteSize());
 
-  switch (m_type) {
-  case e_void:
+  const auto &store = [&](const llvm::APInt val) {
+    StoreIntToMemory(val, storage.data(), (val.getBitWidth() + 7) / 8);
+  };
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
-    StoreIntToMemory(m_integer, storage.data(),
-                     (m_integer.getBitWidth() + 7) / 8);
+  case Category::Integral:
+    store(m_integer);
     break;
-  case e_float: {
-    float val = m_float.convertToFloat();
-    memcpy(storage.data(), &val, sizeof(val));
+  case Category::Float:
+    store(m_float.bitcastToAPInt());
     break;
-  }
-  case e_double: {
-    double val = m_float.convertToDouble();
-    memcpy(storage.data(), &val, sizeof(double));
-    break;
-  }
-  case e_long_double: {
-    llvm::APInt val = m_float.bitcastToAPInt();
-    StoreIntToMemory(val, storage.data(), storage.size());
-    break;
-  }
   }
 }
 
@@ -167,26 +200,12 @@ size_t Scalar::GetByteSize() const {
 }
 
 bool Scalar::IsZero() const {
-  llvm::APInt zero_int = llvm::APInt::getNullValue(m_integer.getBitWidth() / 8);
-  switch (m_type) {
-  case e_void:
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_uint512:
-  case e_sint512:
-    return llvm::APInt::isSameValue(zero_int, m_integer);
-  case e_float:
-  case e_double:
-  case e_long_double:
+  case Category::Integral:
+    return m_integer.isNullValue();
+  case Category::Float:
     return m_float.isZero();
   }
   return false;
@@ -196,71 +215,18 @@ void Scalar::GetValue(Stream *s, bool show_type) const {
   if (show_type)
     s->Printf("(%s) ", GetTypeAsCString());
 
-  switch (m_type) {
-  case e_void:
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_slong:
-  case e_slonglong:
-  case e_sint128:
-  case e_sint256:
-  case e_sint512:
-    s->PutCString(m_integer.toString(10, true));
+  case Category::Integral:
+    s->PutCString(m_integer.toString(10, IsSigned(m_type)));
     break;
-  case e_uint:
-  case e_ulong:
-  case e_ulonglong:
-  case e_uint128:
-  case e_uint256:
-  case e_uint512:
-    s->PutCString(m_integer.toString(10, false));
-    break;
-  case e_float:
-  case e_double:
-  case e_long_double:
+  case Category::Float:
     llvm::SmallString<24> string;
     m_float.toString(string);
-    s->Printf("%s", string.c_str());
+    s->PutCString(string);
     break;
   }
-}
-
-const char *Scalar::GetTypeAsCString() const {
-  switch (m_type) {
-  case e_void:
-    return "void";
-  case e_sint:
-    return "int";
-  case e_uint:
-    return "unsigned int";
-  case e_slong:
-    return "long";
-  case e_ulong:
-    return "unsigned long";
-  case e_slonglong:
-    return "long long";
-  case e_ulonglong:
-    return "unsigned long long";
-  case e_sint128:
-    return "int128_t";
-  case e_uint128:
-    return "unsigned int128_t";
-  case e_sint256:
-    return "int256_t";
-  case e_uint256:
-    return "unsigned int256_t";
-  case e_sint512:
-    return "int512_t";
-  case e_uint512:
-    return "unsigned int512_t";
-  case e_float:
-    return "float";
-  case e_double:
-    return "double";
-  case e_long_double:
-    return "long double";
-  }
-  return "<invalid Scalar type>";
 }
 
 Scalar::~Scalar() = default;
@@ -321,59 +287,6 @@ static size_t GetBitSize(Scalar::Type type) {
     return 8 * sizeof(double);
   case Scalar::e_long_double:
     return 8 * sizeof(long double);
-  }
-  llvm_unreachable("Unhandled type!");
-}
-
-static bool IsSigned(Scalar::Type type) {
-  switch (type) {
-  case Scalar::e_void:
-  case Scalar::e_uint:
-  case Scalar::e_ulong:
-  case Scalar::e_ulonglong:
-  case Scalar::e_uint128:
-  case Scalar::e_uint256:
-  case Scalar::e_uint512:
-    return false;
-  case Scalar::e_sint:
-  case Scalar::e_slong:
-  case Scalar::e_slonglong:
-  case Scalar::e_sint128:
-  case Scalar::e_sint256:
-  case Scalar::e_sint512:
-  case Scalar::e_float:
-  case Scalar::e_double:
-  case Scalar::e_long_double:
-    return true;
-  }
-  llvm_unreachable("Unhandled type!");
-}
-
-namespace {
-enum class Category { Void, Integral, Float };
-}
-
-static Category GetCategory(Scalar::Type type) {
-  switch (type) {
-  case Scalar::e_void:
-    return Category::Void;
-  case Scalar::e_float:
-  case Scalar::e_double:
-  case Scalar::e_long_double:
-    return Category::Float;
-  case Scalar::e_sint:
-  case Scalar::e_slong:
-  case Scalar::e_slonglong:
-  case Scalar::e_sint128:
-  case Scalar::e_sint256:
-  case Scalar::e_sint512:
-  case Scalar::e_uint:
-  case Scalar::e_ulong:
-  case Scalar::e_ulonglong:
-  case Scalar::e_uint128:
-  case Scalar::e_uint256:
-  case Scalar::e_uint512:
-    return Category::Integral;
   }
   llvm_unreachable("Unhandled type!");
 }
@@ -644,157 +557,85 @@ bool Scalar::MakeUnsigned() {
   return success;
 }
 
-template <typename T> T Scalar::GetAsSigned(T fail_value) const {
-  switch (m_type) {
-  case e_void:
-    break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
-    return m_integer.sextOrTrunc(sizeof(T) * 8).getSExtValue();
-
-  case e_float:
-    return static_cast<T>(m_float.convertToFloat());
-  case e_double:
-    return static_cast<T>(m_float.convertToDouble());
-  case e_long_double:
-    llvm::APInt ldbl_val = m_float.bitcastToAPInt();
-    return static_cast<T>(
-        (ldbl_val.sextOrTrunc(sizeof(schar_t) * 8)).getSExtValue());
-  }
-  return fail_value;
+static llvm::APInt ToAPInt(const llvm::APFloat &f, unsigned bits,
+                           bool is_unsigned) {
+  llvm::APSInt result(bits, is_unsigned);
+  bool isExact;
+  f.convertToInteger(result, llvm::APFloat::rmTowardZero, &isExact);
+  return std::move(result);
 }
 
-template <typename T> T Scalar::GetAsUnsigned(T fail_value) const {
-  switch (m_type) {
-  case e_void:
+template <typename T> T Scalar::GetAs(T fail_value) const {
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
+  case Category::Integral:
+    if (IsSigned(m_type))
+      return m_integer.sextOrTrunc(sizeof(T) * 8).getSExtValue();
     return m_integer.zextOrTrunc(sizeof(T) * 8).getZExtValue();
-
-  case e_float:
-    return static_cast<T>(m_float.convertToFloat());
-  case e_double:
-    return static_cast<T>(m_float.convertToDouble());
-  case e_long_double:
-    llvm::APInt ldbl_val = m_float.bitcastToAPInt();
-    return static_cast<T>((ldbl_val.zextOrTrunc(sizeof(T) * 8)).getZExtValue());
+  case Category::Float:
+    return ToAPInt(m_float, sizeof(T) * 8, std::is_unsigned<T>::value)
+        .getSExtValue();
   }
   return fail_value;
 }
 
 signed char Scalar::SChar(signed char fail_value) const {
-  return GetAsSigned<signed char>(fail_value);
+  return GetAs<signed char>(fail_value);
 }
 
 unsigned char Scalar::UChar(unsigned char fail_value) const {
-  return GetAsUnsigned<unsigned char>(fail_value);
+  return GetAs<unsigned char>(fail_value);
 }
 
 short Scalar::SShort(short fail_value) const {
-  return GetAsSigned<short>(fail_value);
+  return GetAs<short>(fail_value);
 }
 
 unsigned short Scalar::UShort(unsigned short fail_value) const {
-  return GetAsUnsigned<unsigned short>(fail_value);
+  return GetAs<unsigned short>(fail_value);
 }
 
-int Scalar::SInt(int fail_value) const { return GetAsSigned<int>(fail_value); }
+int Scalar::SInt(int fail_value) const { return GetAs<int>(fail_value); }
 
 unsigned int Scalar::UInt(unsigned int fail_value) const {
-  return GetAsUnsigned<unsigned int>(fail_value);
+  return GetAs<unsigned int>(fail_value);
 }
 
-long Scalar::SLong(long fail_value) const { return GetAsSigned<long>(fail_value); }
+long Scalar::SLong(long fail_value) const { return GetAs<long>(fail_value); }
 
 unsigned long Scalar::ULong(unsigned long fail_value) const {
-  return GetAsUnsigned<unsigned long>(fail_value);
+  return GetAs<unsigned long>(fail_value);
 }
 
 long long Scalar::SLongLong(long long fail_value) const {
-  return GetAsSigned<long long>(fail_value);
+  return GetAs<long long>(fail_value);
 }
 
 unsigned long long Scalar::ULongLong(unsigned long long fail_value) const {
-  switch (m_type) {
-  case e_double: {
-    double d_val = m_float.convertToDouble();
-    llvm::APInt rounded_double =
-        llvm::APIntOps::RoundDoubleToAPInt(d_val, sizeof(ulonglong_t) * 8);
-    return static_cast<ulonglong_t>(
-        (rounded_double.zextOrTrunc(sizeof(ulonglong_t) * 8)).getZExtValue());
-  }
-  default:
-    return GetAsUnsigned<unsigned long long>(fail_value);
-  }
+  return GetAs<unsigned long long>(fail_value);
 }
 
 llvm::APInt Scalar::SInt128(const llvm::APInt &fail_value) const {
-  switch (m_type) {
-  case e_void:
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
+  case Category::Integral:
     return m_integer;
-  case e_float:
-  case e_double:
-  case e_long_double:
-    return m_float.bitcastToAPInt();
+  case Category::Float:
+    return ToAPInt(m_float, 128, /*is_unsigned=*/false);
   }
   return fail_value;
 }
 
 llvm::APInt Scalar::UInt128(const llvm::APInt &fail_value) const {
-  switch (m_type) {
-  case e_void:
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
+  case Category::Integral:
     return m_integer;
-  case e_float:
-  case e_double:
-  case e_long_double:
-    return m_float.bitcastToAPInt();
+  case Category::Float:
+    return ToAPInt(m_float, 128, /*is_unsigned=*/true);
   }
   return fail_value;
 }
@@ -804,18 +645,21 @@ float Scalar::Float(float fail_value) const {
   case e_void:
     break;
   case e_sint:
-  case e_uint:
   case e_slong:
-  case e_ulong:
   case e_slonglong:
-  case e_ulonglong:
   case e_sint128:
-  case e_uint128:
   case e_sint256:
-  case e_uint256:
   case e_sint512:
+    return llvm::APIntOps::RoundSignedAPIntToFloat(m_integer);
+
+  case e_uint:
+  case e_ulong:
+  case e_ulonglong:
+  case e_uint128:
+  case e_uint256:
   case e_uint512:
     return llvm::APIntOps::RoundAPIntToFloat(m_integer);
+
   case e_float:
     return m_float.convertToFloat();
   case e_double:
@@ -832,18 +676,21 @@ double Scalar::Double(double fail_value) const {
   case e_void:
     break;
   case e_sint:
-  case e_uint:
   case e_slong:
-  case e_ulong:
   case e_slonglong:
-  case e_ulonglong:
   case e_sint128:
-  case e_uint128:
   case e_sint256:
-  case e_uint256:
   case e_sint512:
+    return llvm::APIntOps::RoundSignedAPIntToDouble(m_integer);
+
+  case e_uint:
+  case e_ulong:
+  case e_ulonglong:
+  case e_uint128:
+  case e_uint256:
   case e_uint512:
     return llvm::APIntOps::RoundAPIntToDouble(m_integer);
+
   case e_float:
     return static_cast<double_t>(m_float.convertToFloat());
   case e_double:
@@ -860,19 +707,23 @@ long double Scalar::LongDouble(long double fail_value) const {
   case e_void:
     break;
   case e_sint:
-  case e_uint:
   case e_slong:
-  case e_ulong:
   case e_slonglong:
-  case e_ulonglong:
   case e_sint128:
-  case e_uint128:
   case e_sint256:
-  case e_uint256:
   case e_sint512:
+    return static_cast<long_double_t>(
+        llvm::APIntOps::RoundSignedAPIntToDouble(m_integer));
+
+  case e_uint:
+  case e_ulong:
+  case e_ulonglong:
+  case e_uint128:
+  case e_uint256:
   case e_uint512:
     return static_cast<long_double_t>(
         llvm::APIntOps::RoundAPIntToDouble(m_integer));
+
   case e_float:
     return static_cast<long_double_t>(m_float.convertToFloat());
   case e_double:
@@ -890,27 +741,14 @@ Scalar &Scalar::operator+=(const Scalar &rhs) {
   const Scalar *b;
   if ((m_type = PromoteToMaxType(*this, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (m_type) {
-    case e_void:
+    switch (GetCategory(m_type)) {
+    case Category::Void:
       break;
-    case e_sint:
-    case e_uint:
-    case e_slong:
-    case e_ulong:
-    case e_slonglong:
-    case e_ulonglong:
-    case e_sint128:
-    case e_uint128:
-    case e_sint256:
-    case e_uint256:
-    case e_sint512:
-    case e_uint512:
+    case Category::Integral:
       m_integer = a->m_integer + b->m_integer;
       break;
 
-    case e_float:
-    case e_double:
-    case e_long_double:
+    case Category::Float:
       m_float = a->m_float + b->m_float;
       break;
     }
@@ -919,99 +757,22 @@ Scalar &Scalar::operator+=(const Scalar &rhs) {
 }
 
 Scalar &Scalar::operator<<=(const Scalar &rhs) {
-  switch (m_type) {
-  case e_void:
-  case e_float:
-  case e_double:
-  case e_long_double:
+  if (GetCategory(m_type) == Category::Integral &&
+      GetCategory(rhs.m_type) == Category::Integral)
+    m_integer <<= rhs.m_integer;
+  else
     m_type = e_void;
-    break;
-
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
-    switch (rhs.m_type) {
-    case e_void:
-    case e_float:
-    case e_double:
-    case e_long_double:
-      m_type = e_void;
-      break;
-    case e_sint:
-    case e_uint:
-    case e_slong:
-    case e_ulong:
-    case e_slonglong:
-    case e_ulonglong:
-    case e_sint128:
-    case e_uint128:
-    case e_sint256:
-    case e_uint256:
-    case e_sint512:
-    case e_uint512:
-      m_integer = m_integer << rhs.m_integer;
-      break;
-    }
-    break;
-  }
   return *this;
 }
 
 bool Scalar::ShiftRightLogical(const Scalar &rhs) {
-  switch (m_type) {
-  case e_void:
-  case e_float:
-  case e_double:
-  case e_long_double:
-    m_type = e_void;
-    break;
-
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
-    switch (rhs.m_type) {
-    case e_void:
-    case e_float:
-    case e_double:
-    case e_long_double:
-      m_type = e_void;
-      break;
-    case e_sint:
-    case e_uint:
-    case e_slong:
-    case e_ulong:
-    case e_slonglong:
-    case e_ulonglong:
-    case e_sint128:
-    case e_uint128:
-    case e_sint256:
-    case e_uint256:
-    case e_sint512:
-    case e_uint512:
-      m_integer = m_integer.lshr(rhs.m_integer);
-      break;
-    }
-    break;
+  if (GetCategory(m_type) == Category::Integral &&
+      GetCategory(rhs.m_type) == Category::Integral) {
+    m_integer = m_integer.lshr(rhs.m_integer);
+    return true;
   }
-  return m_type != e_void;
+  m_type = e_void;
+  return false;
 }
 
 Scalar &Scalar::operator>>=(const Scalar &rhs) {
@@ -1063,50 +824,11 @@ Scalar &Scalar::operator>>=(const Scalar &rhs) {
 }
 
 Scalar &Scalar::operator&=(const Scalar &rhs) {
-  switch (m_type) {
-  case e_void:
-  case e_float:
-  case e_double:
-  case e_long_double:
+  if (GetCategory(m_type) == Category::Integral &&
+      GetCategory(rhs.m_type) == Category::Integral)
+    m_integer &= rhs.m_integer;
+  else
     m_type = e_void;
-    break;
-
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
-    switch (rhs.m_type) {
-    case e_void:
-    case e_float:
-    case e_double:
-    case e_long_double:
-      m_type = e_void;
-      break;
-    case e_sint:
-    case e_uint:
-    case e_slong:
-    case e_ulong:
-    case e_slonglong:
-    case e_ulonglong:
-    case e_sint128:
-    case e_uint128:
-    case e_sint256:
-    case e_uint256:
-    case e_sint512:
-    case e_uint512:
-      m_integer &= rhs.m_integer;
-      break;
-    }
-    break;
-  }
   return *this;
 }
 
@@ -1142,26 +864,13 @@ bool Scalar::AbsoluteValue() {
 }
 
 bool Scalar::UnaryNegate() {
-  switch (m_type) {
-  case e_void:
+  switch (GetCategory(m_type)) {
+  case Category::Void:
     break;
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
+  case Category::Integral:
     m_integer = -m_integer;
     return true;
-  case e_float:
-  case e_double:
-  case e_long_double:
+  case Category::Float:
     m_float.changeSign();
     return true;
   }
@@ -1169,62 +878,17 @@ bool Scalar::UnaryNegate() {
 }
 
 bool Scalar::OnesComplement() {
-  switch (m_type) {
-  case e_sint:
-  case e_uint:
-  case e_slong:
-  case e_ulong:
-  case e_slonglong:
-  case e_ulonglong:
-  case e_sint128:
-  case e_uint128:
-  case e_sint256:
-  case e_uint256:
-  case e_sint512:
-  case e_uint512:
+  if (GetCategory(m_type) == Category::Integral) {
     m_integer = ~m_integer;
     return true;
-
-  case e_void:
-  case e_float:
-  case e_double:
-  case e_long_double:
-    break;
   }
+
   return false;
 }
 
 const Scalar lldb_private::operator+(const Scalar &lhs, const Scalar &rhs) {
-  Scalar result;
-  Scalar temp_value;
-  const Scalar *a;
-  const Scalar *b;
-  if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
-      Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_void:
-      break;
-    case Scalar::e_sint:
-    case Scalar::e_uint:
-    case Scalar::e_slong:
-    case Scalar::e_ulong:
-    case Scalar::e_slonglong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_uint128:
-    case Scalar::e_sint256:
-    case Scalar::e_uint256:
-    case Scalar::e_sint512:
-    case Scalar::e_uint512:
-      result.m_integer = a->m_integer + b->m_integer;
-      break;
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
-      result.m_float = a->m_float + b->m_float;
-      break;
-    }
-  }
+  Scalar result = lhs;
+  result += rhs;
   return result;
 }
 
@@ -1235,26 +899,13 @@ const Scalar lldb_private::operator-(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_void:
+    switch (GetCategory(result.m_type)) {
+    case Category::Void:
       break;
-    case Scalar::e_sint:
-    case Scalar::e_uint:
-    case Scalar::e_slong:
-    case Scalar::e_ulong:
-    case Scalar::e_slonglong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_uint128:
-    case Scalar::e_sint256:
-    case Scalar::e_uint256:
-    case Scalar::e_sint512:
-    case Scalar::e_uint512:
+    case Category::Integral:
       result.m_integer = a->m_integer - b->m_integer;
       break;
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
+    case Category::Float:
       result.m_float = a->m_float - b->m_float;
       break;
     }
@@ -1268,40 +919,20 @@ const Scalar lldb_private::operator/(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *a;
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
-      Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_void:
+          Scalar::e_void &&
+      !b->IsZero()) {
+    switch (GetCategory(result.m_type)) {
+    case Category::Void:
       break;
-    case Scalar::e_sint:
-    case Scalar::e_slong:
-    case Scalar::e_slonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_sint256:
-    case Scalar::e_sint512:
-      if (b->m_integer != 0) {
+    case Category::Integral:
+      if (IsSigned(result.m_type))
         result.m_integer = a->m_integer.sdiv(b->m_integer);
-        return result;
-      }
-      break;
-    case Scalar::e_uint:
-    case Scalar::e_ulong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_uint128:
-    case Scalar::e_uint256:
-    case Scalar::e_uint512:
-      if (b->m_integer != 0) {
+      else 
         result.m_integer = a->m_integer.udiv(b->m_integer);
-        return result;
-      }
-      break;
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
-      if (!b->m_float.isZero()) {
-        result.m_float = a->m_float / b->m_float;
-        return result;
-      }
-      break;
+      return result;
+    case Category::Float:
+      result.m_float = a->m_float / b->m_float;
+      return result;
     }
   }
   // For division only, the only way it should make it here is if a promotion
@@ -1317,26 +948,13 @@ const Scalar lldb_private::operator*(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_void:
+    switch (GetCategory(result.m_type)) {
+    case Category::Void:
       break;
-    case Scalar::e_sint:
-    case Scalar::e_uint:
-    case Scalar::e_slong:
-    case Scalar::e_ulong:
-    case Scalar::e_slonglong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_uint128:
-    case Scalar::e_sint256:
-    case Scalar::e_uint256:
-    case Scalar::e_sint512:
-    case Scalar::e_uint512:
+    case Category::Integral:
       result.m_integer = a->m_integer * b->m_integer;
       break;
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
+    case Category::Float:
       result.m_float = a->m_float * b->m_float;
       break;
     }
@@ -1351,29 +969,10 @@ const Scalar lldb_private::operator&(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_sint:
-    case Scalar::e_uint:
-    case Scalar::e_slong:
-    case Scalar::e_ulong:
-    case Scalar::e_slonglong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_uint128:
-    case Scalar::e_sint256:
-    case Scalar::e_uint256:
-    case Scalar::e_sint512:
-    case Scalar::e_uint512:
+    if (GetCategory(result.m_type) == Category::Integral)
       result.m_integer = a->m_integer & b->m_integer;
-      break;
-    case Scalar::e_void:
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
-      // No bitwise AND on floats, doubles of long doubles
+    else
       result.m_type = Scalar::e_void;
-      break;
-    }
   }
   return result;
 }
@@ -1385,30 +984,10 @@ const Scalar lldb_private::operator|(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_sint:
-    case Scalar::e_uint:
-    case Scalar::e_slong:
-    case Scalar::e_ulong:
-    case Scalar::e_slonglong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_uint128:
-    case Scalar::e_sint256:
-    case Scalar::e_uint256:
-    case Scalar::e_sint512:
-    case Scalar::e_uint512:
+    if (GetCategory(result.m_type) == Category::Integral)
       result.m_integer = a->m_integer | b->m_integer;
-      break;
-
-    case Scalar::e_void:
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
-      // No bitwise AND on floats, doubles of long doubles
+    else
       result.m_type = Scalar::e_void;
-      break;
-    }
   }
   return result;
 }
@@ -1420,33 +999,12 @@ const Scalar lldb_private::operator%(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (result.m_type) {
-    default:
-      break;
-    case Scalar::e_void:
-      break;
-    case Scalar::e_sint:
-    case Scalar::e_slong:
-    case Scalar::e_slonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_sint256:
-    case Scalar::e_sint512:
-      if (b->m_integer != 0) {
+    if (!b->IsZero() && GetCategory(result.m_type) == Category::Integral) {
+      if (IsSigned(result.m_type))
         result.m_integer = a->m_integer.srem(b->m_integer);
-        return result;
-      }
-      break;
-    case Scalar::e_uint:
-    case Scalar::e_ulong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_uint128:
-    case Scalar::e_uint256:
-    case Scalar::e_uint512:
-      if (b->m_integer != 0) {
+      else
         result.m_integer = a->m_integer.urem(b->m_integer);
-        return result;
-      }
-      break;
+      return result;
     }
   }
   result.m_type = Scalar::e_void;
@@ -1460,30 +1018,10 @@ const Scalar lldb_private::operator^(const Scalar &lhs, const Scalar &rhs) {
   const Scalar *b;
   if ((result.m_type = PromoteToMaxType(lhs, rhs, temp_value, a, b)) !=
       Scalar::e_void) {
-    switch (result.m_type) {
-    case Scalar::e_sint:
-    case Scalar::e_uint:
-    case Scalar::e_slong:
-    case Scalar::e_ulong:
-    case Scalar::e_slonglong:
-    case Scalar::e_ulonglong:
-    case Scalar::e_sint128:
-    case Scalar::e_uint128:
-    case Scalar::e_sint256:
-    case Scalar::e_uint256:
-    case Scalar::e_sint512:
-    case Scalar::e_uint512:
+    if (GetCategory(result.m_type) == Category::Integral)
       result.m_integer = a->m_integer ^ b->m_integer;
-      break;
-
-    case Scalar::e_void:
-    case Scalar::e_float:
-    case Scalar::e_double:
-    case Scalar::e_long_double:
-      // No bitwise AND on floats, doubles of long doubles
+    else
       result.m_type = Scalar::e_void;
-      break;
-    }
   }
   return result;
 }
