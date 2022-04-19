@@ -78,6 +78,12 @@ void populateLinalgBufferizePatterns(BufferizeTypeConverter &converter,
 /// tensors.
 void populateFoldUnitExtentDimsPatterns(RewritePatternSet &patterns);
 
+/// Patterns that are used to inline constant operands into linalg generic ops.
+void populateInlineConstantOperandsPatterns(RewritePatternSet &patterns);
+
+/// Pattern to convert TiledLoopOp to SCF loops.
+void populateTiledLoopToSCFPattern(RewritePatternSet &patterns);
+
 /// Options that control fusion of elementwise operations.
 struct LinalgElementwiseFusionOptions {
   /// Enable fusion of reshapes into the shape with elementwise operations. By
@@ -220,10 +226,9 @@ void interchangeGenericOp(PatternRewriter &rewriter, GenericOp genericOp,
 /// smallest constant value for the size of the buffer needed for each
 /// dimension. If that is not possible, contains the dynamic size of the
 /// subview. The call back should return the buffer to use.
-using AllocBufferCallbackFn =
-    std::function<Optional<Value>(OpBuilder &b, memref::SubViewOp subView,
-                                  ArrayRef<Value> boundingSubViewSize,
-                                  DataLayout &layout, OperationFolder *folder)>;
+using AllocBufferCallbackFn = std::function<Optional<Value>(
+    OpBuilder &b, memref::SubViewOp subView,
+    ArrayRef<Value> boundingSubViewSize, DataLayout &layout)>;
 
 /// Callback function type used to deallocate the buffers used to hold the
 /// promoted subview.
@@ -321,8 +326,7 @@ struct PromotionInfo {
 Optional<PromotionInfo>
 promoteSubviewAsNewBuffer(OpBuilder &b, Location loc, memref::SubViewOp subView,
                           AllocBufferCallbackFn allocationFn,
-                          DataLayout &layout,
-                          OperationFolder *folder = nullptr);
+                          DataLayout &layout);
 
 /// Promotes the `subViews` into a new buffer allocated at the insertion point
 /// `b`. Promotion occurs in 3 steps:
@@ -335,28 +339,23 @@ promoteSubviewAsNewBuffer(OpBuilder &b, Location loc, memref::SubViewOp subView,
 /// Returns the modified linalg op (the modification happens in place) as well
 /// as all the copy ops created.
 Optional<LinalgOp> promoteSubViews(OpBuilder &b, LinalgOp op,
-                                   LinalgPromotionOptions options,
-                                   OperationFolder *folder = nullptr);
+                                   LinalgPromotionOptions options);
 
 /// Emit a suitable vector form for a Linalg op with fully static shape.
 LogicalResult vectorizeLinalgOp(OpBuilder &builder, Operation *op,
                                 SmallVectorImpl<Value> &newResults);
 
-/// Emits a loop nest of `LoopTy` with the proper body for `linalgOp`.
-template <typename LoopTy>
-Optional<LinalgLoops> linalgLowerOpToLoops(PatternRewriter &rewriter,
-                                           LinalgOp linalgOp);
-
 /// Emits a loop nest of `scf.for` with the proper body for `linalgOp`.
-LogicalResult linalgOpToLoops(PatternRewriter &rewriter, LinalgOp linalgOp);
-
-/// Emits a loop nest of `scf.parallel` with the proper body for `linalgOp`.
-LogicalResult linalgOpToParallelLoops(PatternRewriter &rewriter,
+Optional<LinalgLoops> linalgOpToLoops(PatternRewriter &rewriter,
                                       LinalgOp linalgOp);
 
+/// Emits a loop nest of `scf.parallel` with the proper body for `linalgOp`.
+Optional<LinalgLoops> linalgOpToParallelLoops(PatternRewriter &rewriter,
+                                              LinalgOp linalgOp);
+
 /// Emits a loop nest of `affine.for` with the proper body for `linalgOp`.
-LogicalResult linalgOpToAffineLoops(PatternRewriter &rewriter,
-                                    LinalgOp linalgOp);
+Optional<LinalgLoops> linalgOpToAffineLoops(PatternRewriter &rewriter,
+                                            LinalgOp linalgOp);
 
 //===----------------------------------------------------------------------===//
 // Preconditions that ensure the corresponding transformation succeeds and can
@@ -491,6 +490,14 @@ struct LinalgTilingOptions {
   LinalgTilingOptions &
   setDistributionOptions(LinalgLoopDistributionOptions distributionOptions) {
     distribution = std::move(distributionOptions);
+    return *this;
+  }
+
+  /// Specification markers of how to distribute the `linalg.tiled_loop`.
+  SmallVector<StringRef, 2> distributionTypes = {};
+
+  LinalgTilingOptions &setDistributionTypes(ArrayRef<StringRef> types) {
+    distributionTypes.assign(types.begin(), types.end());
     return *this;
   }
 
@@ -814,15 +821,15 @@ struct LinalgLoweringPattern : public RewritePattern {
       // TODO: Move lowering to library calls here.
       return failure();
     case LinalgLoweringType::Loops:
-      if (failed(linalgOpToLoops(rewriter, op)))
+      if (!linalgOpToLoops(rewriter, op))
         return failure();
       break;
     case LinalgLoweringType::AffineLoops:
-      if (failed(linalgOpToAffineLoops(rewriter, op)))
+      if (!linalgOpToAffineLoops(rewriter, op))
         return failure();
       break;
     case LinalgLoweringType::ParallelLoops:
-      if (failed(linalgOpToParallelLoops(rewriter, op)))
+      if (!linalgOpToParallelLoops(rewriter, op))
         return failure();
       break;
     }
@@ -852,6 +859,13 @@ void populateLinalgNamedOpsGeneralizationPatterns(
 void populateLinalgConvGeneralizationPatterns(
     RewritePatternSet &patterns,
     LinalgTransformationFilter filter = LinalgTransformationFilter());
+
+/// Linalg distribution patterns
+//
+/// Populates `patterns` with patterns to distribute linalg.tiled_loop.
+void populateLinalgDistributeTiledLoopPattern(
+    RewritePatternSet &patterns, const LinalgLoopDistributionOptions &opts,
+    const LinalgTransformationFilter &marker);
 
 //===----------------------------------------------------------------------===//
 // Op-specific patterns.

@@ -391,6 +391,7 @@ static void PrintCallingConv(unsigned cc, raw_ostream &Out) {
   case CallingConv::CHERI_CCall:   Out << "chericcallcc"; break;
   case CallingConv::CHERI_CCallee: Out << "chericcallcce"; break;
   case CallingConv::Swift:         Out << "swiftcc"; break;
+  case CallingConv::SwiftTail:     Out << "swifttailcc"; break;
   case CallingConv::X86_INTR:      Out << "x86_intrcc"; break;
   case CallingConv::HHVM:          Out << "hhvmcc"; break;
   case CallingConv::HHVM_C:        Out << "hhvm_ccc"; break;
@@ -1370,7 +1371,7 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
       bool isInf = APF.isInfinity();
       bool isNaN = APF.isNaN();
       if (!isInf && !isNaN) {
-        double Val = isDouble ? APF.convertToDouble() : APF.convertToFloat();
+        double Val = APF.convertToDouble();
         SmallString<128> StrVal;
         APF.toString(StrVal, 6, 0, false);
         // Check to make sure that the stringized number is not some string like

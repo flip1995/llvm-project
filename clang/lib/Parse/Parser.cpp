@@ -1081,8 +1081,6 @@ Parser::ParseDeclOrFunctionDefInternal(ParsedAttributesWithRange &attrs,
     Decl *TheDecl = Actions.ParsedFreeStandingDeclSpec(getCurScope(), AS_none,
                                                        DS, AnonRecord);
     DS.complete(TheDecl);
-    if (getLangOpts().OpenCL)
-      Actions.setCurrentOpenCLExtensionForDecl(TheDecl);
     if (AnonRecord) {
       Decl* decls[] = {AnonRecord, TheDecl};
       return Actions.BuildDeclaratorGroup(decls);
@@ -1697,6 +1695,11 @@ Parser::TryAnnotateName(CorrectionCandidateCallback *CCC) {
     break;
 
   case Sema::NC_Type: {
+    if (TryAltiVecVectorToken())
+      // vector has been found as a type id when altivec is enabled but
+      // this is followed by a declaration specifier so this is really the
+      // altivec vector token.  Leave it unannotated.
+      break;
     SourceLocation BeginLoc = NameLoc;
     if (SS.isNotEmpty())
       BeginLoc = SS.getBeginLoc();
@@ -1738,6 +1741,11 @@ Parser::TryAnnotateName(CorrectionCandidateCallback *CCC) {
     return ANK_Success;
 
   case Sema::NC_NonType:
+    if (TryAltiVecVectorToken())
+      // vector has been found as a non-type id when altivec is enabled but
+      // this is followed by a declaration specifier so this is really the
+      // altivec vector token.  Leave it unannotated.
+      break;
     Tok.setKind(tok::annot_non_type);
     setNonTypeAnnotation(Tok, Classification.getNonTypeDecl());
     Tok.setLocation(NameLoc);

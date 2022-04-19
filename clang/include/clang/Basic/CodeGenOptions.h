@@ -55,11 +55,12 @@ public:
   };
 
   enum VectorLibrary {
-    NoLibrary,  // Don't use any vector library.
-    Accelerate, // Use the Accelerate framework.
-    LIBMVEC,    // GLIBC vector math library.
-    MASSV,      // IBM MASS vector library.
-    SVML        // Intel short vector math library.
+    NoLibrary,         // Don't use any vector library.
+    Accelerate,        // Use the Accelerate framework.
+    LIBMVEC,           // GLIBC vector math library.
+    MASSV,             // IBM MASS vector library.
+    SVML,              // Intel short vector math library.
+    Darwin_libsystem_m // Use Darwin's libsytem_m vector functions.
   };
 
   enum ObjCDispatchMethodKind {
@@ -369,8 +370,10 @@ public:
   /// other styles we may implement in the future.
   std::string StackProtectorGuard;
 
-  /// The TLS base register when StackProtectorGuard is "tls".
+  /// The TLS base register when StackProtectorGuard is "tls", or register used
+  /// to store the stack canary for "sysreg".
   /// On x86 this can be "fs" or "gs".
+  /// On AArch64 this can only be "sp_el0".
   std::string StackProtectorGuardReg;
 
   /// Path to ignorelist file specifying which objects
@@ -454,6 +457,12 @@ public:
   /// Check if maybe unused type info should be emitted.
   bool hasMaybeUnusedDebugInfo() const {
     return getDebugInfo() >= codegenoptions::UnusedTypeInfo;
+  }
+
+  // Check if any one of SanitizeCoverage* is enabled.
+  bool hasSanitizeCoverage() const {
+    return SanitizeCoverageType || SanitizeCoverageIndirectCalls ||
+           SanitizeCoverageTraceCmp;
   }
 };
 

@@ -2671,12 +2671,21 @@ SDValue SelectionDAG::getSplatSourceVector(SDValue V, int &SplatIdx) {
   return SDValue();
 }
 
-SDValue SelectionDAG::getSplatValue(SDValue V) {
+SDValue SelectionDAG::getSplatValue(SDValue V, bool LegalTypes) {
   int SplatIdx;
-  if (SDValue SrcVector = getSplatSourceVector(V, SplatIdx))
-    return getNode(ISD::EXTRACT_VECTOR_ELT, SDLoc(V),
-                   SrcVector.getValueType().getScalarType(), SrcVector,
+  if (SDValue SrcVector = getSplatSourceVector(V, SplatIdx)) {
+    EVT SVT = SrcVector.getValueType().getScalarType();
+    EVT LegalSVT = SVT;
+    if (LegalTypes && !TLI->isTypeLegal(SVT)) {
+      if (!SVT.isInteger())
+        return SDValue();
+      LegalSVT = TLI->getTypeToTransformTo(*getContext(), LegalSVT);
+      if (LegalSVT.bitsLT(SVT))
+        return SDValue();
+    }
+    return getNode(ISD::EXTRACT_VECTOR_ELT, SDLoc(V), LegalSVT, SrcVector,
                    getVectorIdxConstant(SplatIdx, SDLoc(V)));
+  }
   return SDValue();
 }
 
@@ -3100,7 +3109,6 @@ KnownBits SelectionDAG::computeKnownBits(SDValue Op, const APInt &DemandedElts,
     break;
   case ISD::SMULO:
   case ISD::UMULO:
-  case ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS:
     if (Op.getResNo() != 1)
       break;
     // The boolean result conforms to getBooleanContents.
@@ -3553,6 +3561,42 @@ KnownBits SelectionDAG::computeKnownBits(SDValue Op, const APInt &DemandedElts,
       Known = KnownBits::smax(Known, Known2);
     else
       Known = KnownBits::smin(Known, Known2);
+    break;
+  }
+  case ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS:
+    if (Op.getResNo() == 1) {
+      // The boolean result conforms to getBooleanContents.
+      // If we know the result of a setcc has the top bits zero, use this info.
+      // We know that we have an integer-based boolean since these operations
+      // are only available for integer.
+      if (TLI->getBooleanContents(Op.getValueType().isVector(), false) ==
+              TargetLowering::ZeroOrOneBooleanContent &&
+          BitWidth > 1)
+        Known.Zero.setBitsFrom(1);
+      break;
+    }
+    LLVM_FALLTHROUGH;
+  case ISD::ATOMIC_CMP_SWAP:
+  case ISD::ATOMIC_SWAP:
+  case ISD::ATOMIC_LOAD_ADD:
+  case ISD::ATOMIC_LOAD_SUB:
+  case ISD::ATOMIC_LOAD_AND:
+  case ISD::ATOMIC_LOAD_CLR:
+  case ISD::ATOMIC_LOAD_OR:
+  case ISD::ATOMIC_LOAD_XOR:
+  case ISD::ATOMIC_LOAD_NAND:
+  case ISD::ATOMIC_LOAD_MIN:
+  case ISD::ATOMIC_LOAD_MAX:
+  case ISD::ATOMIC_LOAD_UMIN:
+  case ISD::ATOMIC_LOAD_UMAX:
+  case ISD::ATOMIC_LOAD: {
+    unsigned MemBits =
+        cast<AtomicSDNode>(Op)->getMemoryVT().getScalarSizeInBits();
+    // If we are looking at the loaded value.
+    if (Op.getResNo() == 0) {
+      if (TLI->getExtendForAtomicOps() == ISD::ZERO_EXTEND)
+        Known.Zero.setBitsFrom(MemBits);
+    }
     break;
   }
   case ISD::FrameIndex:
@@ -4134,6 +4178,33 @@ unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, const APInt &DemandedElts,
     }
     assert(Tmp <= VTBits && "Failed to determine minimum sign bits");
     return Tmp;
+  }
+  case ISD::ATOMIC_CMP_SWAP:
+  case ISD::ATOMIC_CMP_SWAP_WITH_SUCCESS:
+  case ISD::ATOMIC_SWAP:
+  case ISD::ATOMIC_LOAD_ADD:
+  case ISD::ATOMIC_LOAD_SUB:
+  case ISD::ATOMIC_LOAD_AND:
+  case ISD::ATOMIC_LOAD_CLR:
+  case ISD::ATOMIC_LOAD_OR:
+  case ISD::ATOMIC_LOAD_XOR:
+  case ISD::ATOMIC_LOAD_NAND:
+  case ISD::ATOMIC_LOAD_MIN:
+  case ISD::ATOMIC_LOAD_MAX:
+  case ISD::ATOMIC_LOAD_UMIN:
+  case ISD::ATOMIC_LOAD_UMAX:
+  case ISD::ATOMIC_LOAD: {
+    Tmp = cast<AtomicSDNode>(Op)->getMemoryVT().getScalarSizeInBits();
+    // If we are looking at the loaded value.
+    if (Op.getResNo() == 0) {
+      if (Tmp == VTBits)
+        return 1; // early-out
+      if (TLI->getExtendForAtomicOps() == ISD::SIGN_EXTEND)
+        return VTBits - Tmp + 1;
+      if (TLI->getExtendForAtomicOps() == ISD::ZERO_EXTEND)
+        return VTBits - Tmp;
+    }
+    break;
   }
   }
 
@@ -6349,7 +6420,7 @@ static SDValue getMemcpyLoadsAndStores(
     SelectionDAG &DAG, const SDLoc &dl, SDValue Chain, SDValue Dst, SDValue Src,
     uint64_t Size, Align Alignment, bool isVol, bool AlwaysInline,
     bool MustPreserveCheriCapabilities, MachinePointerInfo DstPtrInfo,
-    MachinePointerInfo SrcPtrInfo, StringRef CopyTy,
+    MachinePointerInfo SrcPtrInfo, const AAMDNodes &AAInfo, StringRef CopyTy,
     CodeGenOpt::Level OptLevel) {
   // Turn a memcpy of undef to nop.
   // FIXME: We need to honor volatile even is Src is undef.
@@ -6448,6 +6519,10 @@ static SDValue getMemcpyLoadsAndStores(
     }
   }
 
+  // Prepare AAInfo for loads/stores after lowering this memcpy.
+  AAMDNodes NewAAInfo = AAInfo;
+  NewAAInfo.TBAA = NewAAInfo.TBAAStruct = nullptr;
+
   MachineMemOperand::Flags MMOFlags =
       isVol ? MachineMemOperand::MOVolatile : MachineMemOperand::MONone;
   SmallVector<SDValue, 16> OutLoadChains;
@@ -6490,7 +6565,7 @@ static SDValue getMemcpyLoadsAndStores(
         Store = DAG.getStore(
             Chain, dl, Value,
             DAG.getMemBasePlusOffset(Dst, TypeSize::Fixed(DstOff), dl),
-            DstPtrInfo.getWithOffset(DstOff), Alignment, MMOFlags);
+            DstPtrInfo.getWithOffset(DstOff), Alignment, MMOFlags, NewAAInfo);
         OutChains.push_back(Store);
       }
     }
@@ -6514,13 +6589,13 @@ static SDValue getMemcpyLoadsAndStores(
           ISD::EXTLOAD, dl, NVT, Chain,
           DAG.getMemBasePlusOffset(Src, TypeSize::Fixed(SrcOff), dl),
           SrcPtrInfo.getWithOffset(SrcOff), VT,
-          commonAlignment(*SrcAlign, SrcOff), SrcMMOFlags);
+          commonAlignment(*SrcAlign, SrcOff), SrcMMOFlags, NewAAInfo);
       OutLoadChains.push_back(Value.getValue(1));
 
       Store = DAG.getTruncStore(
           Chain, dl, Value,
           DAG.getMemBasePlusOffset(Dst, TypeSize::Fixed(DstOff), dl),
-          DstPtrInfo.getWithOffset(DstOff), VT, Alignment, MMOFlags);
+          DstPtrInfo.getWithOffset(DstOff), VT, Alignment, MMOFlags, NewAAInfo);
       OutStoreChains.push_back(Store);
     }
     SrcOff += VTSize;
@@ -6578,7 +6653,7 @@ static SDValue getMemmoveLoadsAndStores(
     SelectionDAG &DAG, const SDLoc &dl, SDValue Chain, SDValue Dst, SDValue Src,
     uint64_t Size, Align Alignment, bool isVol, bool AlwaysInline,
     bool MustPreserveCheriCapabilities, MachinePointerInfo DstPtrInfo,
-    MachinePointerInfo SrcPtrInfo, StringRef MoveTy,
+    MachinePointerInfo SrcPtrInfo, const AAMDNodes &AAInfo, StringRef MoveTy,
     CodeGenOpt::Level OptLevel) {
   // Turn a memmove of undef to nop.
   // FIXME: We need to honor volatile even is Src is undef.
@@ -6655,6 +6730,10 @@ static SDValue getMemmoveLoadsAndStores(
     }
   }
 
+  // Prepare AAInfo for loads/stores after lowering this memmove.
+  AAMDNodes NewAAInfo = AAInfo;
+  NewAAInfo.TBAA = NewAAInfo.TBAAStruct = nullptr;
+
   MachineMemOperand::Flags MMOFlags =
       isVol ? MachineMemOperand::MOVolatile : MachineMemOperand::MONone;
   uint64_t SrcOff = 0, DstOff = 0;
@@ -6673,10 +6752,10 @@ static SDValue getMemmoveLoadsAndStores(
     if (isDereferenceable)
       SrcMMOFlags |= MachineMemOperand::MODereferenceable;
 
-    Value =
-        DAG.getLoad(VT, dl, Chain,
-                    DAG.getMemBasePlusOffset(Src, TypeSize::Fixed(SrcOff), dl),
-                    SrcPtrInfo.getWithOffset(SrcOff), *SrcAlign, SrcMMOFlags);
+    Value = DAG.getLoad(
+        VT, dl, Chain,
+        DAG.getMemBasePlusOffset(Src, TypeSize::Fixed(SrcOff), dl),
+        SrcPtrInfo.getWithOffset(SrcOff), *SrcAlign, SrcMMOFlags, NewAAInfo);
     LoadValues.push_back(Value);
     LoadChains.push_back(Value.getValue(1));
     SrcOff += VTSize;
@@ -6688,10 +6767,10 @@ static SDValue getMemmoveLoadsAndStores(
     unsigned VTSize = VT.getSizeInBits() / 8;
     SDValue Store;
 
-    Store =
-        DAG.getStore(Chain, dl, LoadValues[i],
-                     DAG.getMemBasePlusOffset(Dst, TypeSize::Fixed(DstOff), dl),
-                     DstPtrInfo.getWithOffset(DstOff), Alignment, MMOFlags);
+    Store = DAG.getStore(
+        Chain, dl, LoadValues[i],
+        DAG.getMemBasePlusOffset(Dst, TypeSize::Fixed(DstOff), dl),
+        DstPtrInfo.getWithOffset(DstOff), Alignment, MMOFlags, NewAAInfo);
     OutChains.push_back(Store);
     DstOff += VTSize;
   }
@@ -6720,7 +6799,8 @@ static SDValue getMemmoveLoadsAndStores(
 static SDValue getMemsetStores(SelectionDAG &DAG, const SDLoc &dl,
                                SDValue Chain, SDValue Dst, SDValue Src,
                                uint64_t Size, Align Alignment, bool isVol,
-                               MachinePointerInfo DstPtrInfo) {
+                               MachinePointerInfo DstPtrInfo,
+                               const AAMDNodes &AAInfo) {
   // Turn a memset of undef to nop.
   // FIXME: We need to honor volatile even is Src is undef.
   if (Src.isUndef())
@@ -6771,6 +6851,10 @@ static SDValue getMemsetStores(SelectionDAG &DAG, const SDLoc &dl,
       LargestVT = MemOps[i];
   SDValue MemSetValue = getMemsetValue(Src, LargestVT, DAG, dl);
 
+  // Prepare AAInfo for loads/stores after lowering this memset.
+  AAMDNodes NewAAInfo = AAInfo;
+  NewAAInfo.TBAA = NewAAInfo.TBAAStruct = nullptr;
+
   for (unsigned i = 0; i < NumMemOps; i++) {
     EVT VT = MemOps[i];
     unsigned VTSize = VT.getSizeInBits() / 8;
@@ -6796,7 +6880,8 @@ static SDValue getMemsetStores(SelectionDAG &DAG, const SDLoc &dl,
         Chain, dl, Value,
         DAG.getMemBasePlusOffset(Dst, TypeSize::Fixed(DstOff), dl),
         DstPtrInfo.getWithOffset(DstOff), Alignment,
-        isVol ? MachineMemOperand::MOVolatile : MachineMemOperand::MONone);
+        isVol ? MachineMemOperand::MOVolatile : MachineMemOperand::MONone,
+        NewAAInfo);
     OutChains.push_back(Store);
     DstOff += VT.getSizeInBits() / 8;
     Size -= VTSize;
@@ -6847,6 +6932,7 @@ SDValue SelectionDAG::getMemcpy(SDValue Chain, const SDLoc &dl, SDValue Dst,
                                 bool MustPreserveCheriCapabilities,
                                 MachinePointerInfo DstPtrInfo,
                                 MachinePointerInfo SrcPtrInfo,
+                                const AAMDNodes &AAInfo,
                                 StringRef CopyType) {
   LLVM_DEBUG(dbgs() << "DAG.getMemcpy() align=" << Alignment.value()
                     << " size=";
@@ -6864,7 +6950,7 @@ SDValue SelectionDAG::getMemcpy(SDValue Chain, const SDLoc &dl, SDValue Dst,
     SDValue Result = getMemcpyLoadsAndStores(
         *this, dl, Chain, Dst, Src, ConstantSize->getZExtValue(),
         Alignment, isVol, false, MustPreserveCheriCapabilities,
-        DstPtrInfo, SrcPtrInfo, CopyType, OptLevel);
+        DstPtrInfo, SrcPtrInfo, AAInfo, CopyType, OptLevel);
     if (Result.getNode())
       return Result;
   }
@@ -6883,10 +6969,10 @@ SDValue SelectionDAG::getMemcpy(SDValue Chain, const SDLoc &dl, SDValue Dst,
   // use a (potentially long) sequence of loads and stores.
   if (AlwaysInline) {
     assert(ConstantSize && "AlwaysInline requires a constant size!");
-    return getMemcpyLoadsAndStores(*this, dl, Chain, Dst, Src,
-                                   ConstantSize->getZExtValue(), Alignment,
-                                   isVol, true, MustPreserveCheriCapabilities,
-                                   DstPtrInfo, SrcPtrInfo, CopyType, OptLevel);
+    return getMemcpyLoadsAndStores(
+        *this, dl, Chain, Dst, Src, ConstantSize->getZExtValue(), Alignment,
+        isVol, true, MustPreserveCheriCapabilities, DstPtrInfo, SrcPtrInfo,
+        CopyType, OptLevel, AAInfo);
   }
 
   checkAddrSpaceIsValidForLibcall(TLI, DstPtrInfo.getAddrSpace());
@@ -6970,6 +7056,7 @@ SDValue SelectionDAG::getMemmove(SDValue Chain, const SDLoc &dl, SDValue Dst,
                                  bool MustPreserveCheriCapabilities,
                                  MachinePointerInfo DstPtrInfo,
                                  MachinePointerInfo SrcPtrInfo,
+                                 const AAMDNodes &AAInfo,
                                  StringRef MoveType) {
 
   // Check to see if we should lower the memmove to loads and stores first.
@@ -6983,7 +7070,7 @@ SDValue SelectionDAG::getMemmove(SDValue Chain, const SDLoc &dl, SDValue Dst,
     SDValue Result = getMemmoveLoadsAndStores(
         *this, dl, Chain, Dst, Src, ConstantSize->getZExtValue(), Alignment,
         isVol, false, MustPreserveCheriCapabilities, DstPtrInfo, SrcPtrInfo,
-        MoveType, OptLevel);
+        AAInfo, MoveType, OptLevel);
     if (Result.getNode())
       return Result;
   }
@@ -7073,7 +7160,8 @@ SDValue SelectionDAG::getAtomicMemmove(SDValue Chain, const SDLoc &dl,
 SDValue SelectionDAG::getMemset(SDValue Chain, const SDLoc &dl, SDValue Dst,
                                 SDValue Src, SDValue Size, Align Alignment,
                                 bool isVol, bool isTailCall,
-                                MachinePointerInfo DstPtrInfo) {
+                                MachinePointerInfo DstPtrInfo,
+                                const AAMDNodes &AAInfo) {
   // Check to see if we should lower the memset to stores first.
   // For cases within the target-specified limits, this is the best choice.
   ConstantSDNode *ConstantSize = dyn_cast<ConstantSDNode>(Size);
@@ -7084,7 +7172,7 @@ SDValue SelectionDAG::getMemset(SDValue Chain, const SDLoc &dl, SDValue Dst,
 
     SDValue Result = getMemsetStores(*this, dl, Chain, Dst, Src,
                                      ConstantSize->getZExtValue(), Alignment,
-                                     isVol, DstPtrInfo);
+                                     isVol, DstPtrInfo, AAInfo);
 
     if (Result.getNode())
       return Result;

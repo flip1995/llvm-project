@@ -188,7 +188,6 @@ static bool checkCompatibility(const InputFile *input) {
 
 // Open a given file path and return it as a memory-mapped file.
 Optional<MemoryBufferRef> macho::readFile(StringRef path) {
-  // Open a file.
   ErrorOr<std::unique_ptr<MemoryBuffer>> mbOrErr = MemoryBuffer::getFile(path);
   if (std::error_code ec = mbOrErr.getError()) {
     error("cannot open " + path + ": " + ec.message());
@@ -209,10 +208,9 @@ Optional<MemoryBufferRef> macho::readFile(StringRef path) {
     return mbref;
   }
 
-  // Object files and archive files may be fat files, which contains
-  // multiple real files for different CPU ISAs. Here, we search for a
-  // file that matches with the current link target and returns it as
-  // a MemoryBufferRef.
+  // Object files and archive files may be fat files, which contain multiple
+  // real files for different CPU ISAs. Here, we search for a file that matches
+  // with the current link target and returns it as a MemoryBufferRef.
   const auto *arch = reinterpret_cast<const fat_arch *>(buf + sizeof(*hdr));
 
   for (uint32_t i = 0, n = read32be(&hdr->nfat_arch); i < n; ++i) {
@@ -492,15 +490,16 @@ static macho::Symbol *createDefined(const NList &sym, StringRef name,
 
     return symtab->addDefined(name, isec->file, isec, value, size,
                               sym.n_desc & N_WEAK_DEF, isPrivateExtern,
-                              sym.n_desc & N_ARM_THUMB_DEF);
+                              sym.n_desc & N_ARM_THUMB_DEF,
+                              sym.n_desc & REFERENCED_DYNAMICALLY);
   }
 
   assert(!isWeakDefCanBeHidden &&
          "weak_def_can_be_hidden on already-hidden symbol?");
-  return make<Defined>(name, isec->file, isec, value, size,
-                       sym.n_desc & N_WEAK_DEF,
-                       /*isExternal=*/false, /*isPrivateExtern=*/false,
-                       sym.n_desc & N_ARM_THUMB_DEF);
+  return make<Defined>(
+      name, isec->file, isec, value, size, sym.n_desc & N_WEAK_DEF,
+      /*isExternal=*/false, /*isPrivateExtern=*/false,
+      sym.n_desc & N_ARM_THUMB_DEF, sym.n_desc & REFERENCED_DYNAMICALLY);
 }
 
 // Absolute symbols are defined symbols that do not have an associated
@@ -512,12 +511,14 @@ static macho::Symbol *createAbsolute(const NList &sym, InputFile *file,
     assert((sym.n_type & N_EXT) && "invalid input");
     return symtab->addDefined(name, file, nullptr, sym.n_value, /*size=*/0,
                               /*isWeakDef=*/false, sym.n_type & N_PEXT,
-                              sym.n_desc & N_ARM_THUMB_DEF);
+                              sym.n_desc & N_ARM_THUMB_DEF,
+                              /*isReferencedDynamically=*/false);
   }
   return make<Defined>(name, file, nullptr, sym.n_value, /*size=*/0,
                        /*isWeakDef=*/false,
                        /*isExternal=*/false, /*isPrivateExtern=*/false,
-                       sym.n_desc & N_ARM_THUMB_DEF);
+                       sym.n_desc & N_ARM_THUMB_DEF,
+                       /*isReferencedDynamically=*/false);
 }
 
 template <class NList>
@@ -1015,7 +1016,8 @@ static macho::Symbol *createBitcodeSymbol(const lto::InputFile::Symbol &objSym,
 
   return symtab->addDefined(name, &file, /*isec=*/nullptr, /*value=*/0,
                             /*size=*/0, objSym.isWeak(), isPrivateExtern,
-                            /*isThumb=*/false);
+                            /*isThumb=*/false,
+                            /*isReferencedDynamically=*/false);
 }
 
 BitcodeFile::BitcodeFile(MemoryBufferRef mbref)
