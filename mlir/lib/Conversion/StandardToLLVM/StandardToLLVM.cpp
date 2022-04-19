@@ -302,7 +302,7 @@ LLVMTypeConverter::convertFunctionTypeCWrapper(FunctionType type) {
     auto converted = convertType(t).dyn_cast_or_null<LLVM::LLVMType>();
     if (!converted)
       return {};
-    if (t.isa<MemRefType>() || t.isa<UnrankedMemRefType>())
+    if (t.isa<MemRefType, UnrankedMemRefType>())
       converted = converted.getPointerTo();
     inputs.push_back(converted);
   }
@@ -1044,7 +1044,7 @@ protected:
       FunctionType type, SmallVectorImpl<UnsignedTypePair> &argsInfo) const {
     argsInfo.reserve(type.getNumInputs());
     for (auto en : llvm::enumerate(type.getInputs())) {
-      if (en.value().isa<MemRefType>() || en.value().isa<UnrankedMemRefType>())
+      if (en.value().isa<MemRefType, UnrankedMemRefType>())
         argsInfo.push_back({en.index(), en.value()});
     }
   }
@@ -1955,11 +1955,9 @@ static LogicalResult copyUnrankedDescriptors(OpBuilder &builder, Location loc,
 
   // Find operands of unranked memref type and store them.
   SmallVector<UnrankedMemRefDescriptor, 4> unrankedMemrefs;
-  for (unsigned i = 0, e = operands.size(); i < e; ++i) {
-    if (!origTypes[i].isa<UnrankedMemRefType>())
-      continue;
-    unrankedMemrefs.emplace_back(operands[i]);
-  }
+  for (unsigned i = 0, e = operands.size(); i < e; ++i)
+    if (origTypes[i].isa<UnrankedMemRefType>())
+      unrankedMemrefs.emplace_back(operands[i]);
 
   if (unrankedMemrefs.empty())
     return success();
@@ -2184,7 +2182,7 @@ struct RsqrtOpLowering : public ConvertOpToLLVMPattern<RsqrtOp> {
         [&](LLVM::LLVMType llvmVectorTy, ValueRange operands) {
           auto splatAttr = SplatElementsAttr::get(
               mlir::VectorType::get(
-                  {cast<llvm::VectorType>(llvmVectorTy.getUnderlyingType())
+                  {cast<llvm::FixedVectorType>(llvmVectorTy.getUnderlyingType())
                        ->getNumElements()},
                   floatType),
               floatOne);

@@ -5606,7 +5606,7 @@ SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, EVT VT,
     // the concat have the same type as the extract.
     if (N2C && N1.getOpcode() == ISD::CONCAT_VECTORS &&
         N1.getNumOperands() > 0 && VT == N1.getOperand(0).getValueType()) {
-      unsigned Factor = VT.getVectorNumElements();
+      unsigned Factor = VT.getVectorMinNumElements();
       return N1.getOperand(N2C->getZExtValue() / Factor);
     }
 
@@ -6602,7 +6602,7 @@ SDValue SelectionDAG::getMemcpy(SDValue Chain, const SDLoc &dl, SDValue Dst,
   // code. If the target chooses to do this, this is the next best.
   if (TSI) {
     SDValue Result = TSI->EmitTargetCodeForMemcpy(
-        *this, dl, Chain, Dst, Src, Size, Alignment.value(), isVol,
+        *this, dl, Chain, Dst, Src, Size, Alignment, isVol,
         AlwaysInline, MustPreserveCheriCapabilities, DstPtrInfo, SrcPtrInfo);
     if (Result.getNode())
       return Result;
@@ -6721,7 +6721,7 @@ SDValue SelectionDAG::getMemmove(SDValue Chain, const SDLoc &dl, SDValue Dst,
   // code. If the target chooses to do this, this is the next best.
   if (TSI) {
     SDValue Result = TSI->EmitTargetCodeForMemmove(
-        *this, dl, Chain, Dst, Src, Size, Alignment.value(), isVol,
+        *this, dl, Chain, Dst, Src, Size, Alignment, isVol,
         MustPreserveCheriCapabilities, DstPtrInfo, SrcPtrInfo);
     if (Result.getNode())
       return Result;
@@ -6823,7 +6823,7 @@ SDValue SelectionDAG::getMemset(SDValue Chain, const SDLoc &dl, SDValue Dst,
   // code. If the target chooses to do this, this is the next best.
   if (TSI) {
     SDValue Result = TSI->EmitTargetCodeForMemset(
-        *this, dl, Chain, Dst, Src, Size, Alignment.value(), isVol, DstPtrInfo);
+        *this, dl, Chain, Dst, Src, Size, Alignment, isVol, DstPtrInfo);
     if (Result.getNode())
       return Result;
   }
