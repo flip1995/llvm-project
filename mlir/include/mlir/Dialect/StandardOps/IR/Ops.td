@@ -69,7 +69,9 @@ class CastOp<string mnemonic, list<OpTrait> traits = []> :
 
 // Base class for arithmetic cast operations.
 class ArithmeticCastOp<string mnemonic, list<OpTrait> traits = []> :
-    CastOp<mnemonic, !listconcat(traits, [ElementwiseMappable])> {
+    CastOp<mnemonic,
+    !listconcat(traits, [ElementwiseMappable,
+                         DeclareOpInterfaceMethods<VectorUnrollOpInterface>])> {
 }
 
 // Base class for unary ops. Requires single operand and result. Individual
@@ -104,6 +106,7 @@ class ArithmeticOp<string mnemonic, list<OpTrait> traits = []> :
     Op<StandardOps_Dialect, mnemonic,
        !listconcat(traits, [NoSideEffect,
                             SameOperandsAndResultType,
+                            DeclareOpInterfaceMethods<VectorUnrollOpInterface>,
                             ElementwiseMappable])> {
 
   let results = (outs AnyType:$result);
@@ -992,6 +995,7 @@ def CmpFPredicateAttr : I64EnumAttr<
 
 def CmpFOp : Std_Op<"cmpf",
     [NoSideEffect, SameTypeOperands, ElementwiseMappable,
+     DeclareOpInterfaceMethods<VectorUnrollOpInterface>,
      TypesMatchWith<
        "result type has i1 element type and same shape as operands",
        "lhs", "result", "getI1SameShape($_self)">]> {
@@ -1076,6 +1080,7 @@ def CmpIPredicateAttr : I64EnumAttr<
 
 def CmpIOp : Std_Op<"cmpi",
     [NoSideEffect, SameTypeOperands, ElementwiseMappable,
+     DeclareOpInterfaceMethods<VectorUnrollOpInterface>,
      TypesMatchWith<
        "result type has i1 element type and same shape as operands",
        "lhs", "result", "getI1SameShape($_self)">]> {
@@ -2172,6 +2177,10 @@ def MemRefReinterpretCastOp:
       unsigned resultRank = getResult().getType().cast<ShapedType>().getRank();
       return {1, resultRank, resultRank};
     }
+
+    /// Return the number of leading operands before the `offsets`, `sizes` and
+    /// and `strides` operands.
+    static unsigned getOffsetSizeAndStrideStartOperandIndex() { return 1; }
   }];
 }
 
@@ -2548,7 +2557,7 @@ def RsqrtOp : FloatUnaryOp<"rsqrt"> {
 
 def SelectOp : Std_Op<"select", [NoSideEffect,
      AllTypesMatch<["true_value", "false_value", "result"]>,
-     ElementwiseMappable]> {
+     ElementwiseMappable, DeclareOpInterfaceMethods<VectorUnrollOpInterface>]> {
   let summary = "select operation";
   let description = [{
     The `select` operation chooses one value based on a binary condition
@@ -2779,7 +2788,8 @@ def SignedShiftRightOp : IntArithmeticOp<"shift_right_signed"> {
 //===----------------------------------------------------------------------===//
 
 def SignExtendIOp : Std_Op<"sexti",
-    [NoSideEffect, ElementwiseMappable]> {
+    [NoSideEffect, ElementwiseMappable,
+    DeclareOpInterfaceMethods<VectorUnrollOpInterface>]> {
   let summary = "integer sign extension operation";
   let description = [{
     The integer sign extension operation takes an integer input of
@@ -3025,7 +3035,8 @@ def SubIOp : IntArithmeticOp<"subi"> {
 //===----------------------------------------------------------------------===//
 
 def SubViewOp : BaseOpWithOffsetSizesAndStrides<
-    "subview", [DeclareOpInterfaceMethods<ViewLikeOpInterface>, OffsetSizeAndStrideOpInterface] >  {
+    "subview", [DeclareOpInterfaceMethods<ViewLikeOpInterface>,
+                OffsetSizeAndStrideOpInterface] >  {
   let summary = "memref subview operation";
   let description = [{
     The "subview" operation converts a memref type to another memref type
@@ -3211,6 +3222,10 @@ def SubViewOp : BaseOpWithOffsetSizesAndStrides<
       unsigned rank = getSourceType().getRank();
       return {rank, rank, rank};
     }
+
+    /// Return the number of leading operands before the `offsets`, `sizes` and
+    /// and `strides` operands.
+    static unsigned getOffsetSizeAndStrideStartOperandIndex() { return 1; }
   }];
 
   let hasCanonicalizer = 1;
@@ -3221,7 +3236,8 @@ def SubViewOp : BaseOpWithOffsetSizesAndStrides<
 // SubTensorOp
 //===----------------------------------------------------------------------===//
 
-def SubTensorOp : BaseOpWithOffsetSizesAndStrides<"subtensor", [OffsetSizeAndStrideOpInterface]> {
+def SubTensorOp : BaseOpWithOffsetSizesAndStrides<
+    "subtensor", [OffsetSizeAndStrideOpInterface]> {
   let summary = "subtensor operation";
   let description = [{
     The "subtensor" operation extract a tensor from another tensor as
@@ -3273,12 +3289,12 @@ def SubTensorOp : BaseOpWithOffsetSizesAndStrides<"subtensor", [OffsetSizeAndStr
   let results = (outs AnyRankedTensor:$result);
 
   let builders = [
-    // Build a SubViewOp with mixed static and dynamic entries.
+    // Build a SubTensorOp with mixed static and dynamic entries.
     OpBuilderDAG<(ins "Value":$source, "ArrayRef<int64_t>":$staticOffsets,
       "ArrayRef<int64_t>":$staticSizes, "ArrayRef<int64_t>":$staticStrides,
       "ValueRange":$offsets, "ValueRange":$sizes, "ValueRange":$strides,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>,
-    // Build a SubViewOp with all dynamic entries.
+    // Build a SubTensorOp with all dynamic entries.
     OpBuilderDAG<(ins "Value":$source, "ValueRange":$offsets,
       "ValueRange":$sizes, "ValueRange":$strides,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
@@ -3309,6 +3325,10 @@ def SubTensorOp : BaseOpWithOffsetSizesAndStrides<"subtensor", [OffsetSizeAndStr
       unsigned rank = getSourceType().getRank();
       return {rank, rank, rank};
     }
+
+    /// Return the number of leading operands before the `offsets`, `sizes` and
+    /// and `strides` operands.
+    static unsigned getOffsetSizeAndStrideStartOperandIndex() { return 1; }
   }];
 
   let hasCanonicalizer = 1;
@@ -3318,7 +3338,8 @@ def SubTensorOp : BaseOpWithOffsetSizesAndStrides<"subtensor", [OffsetSizeAndStr
 // SubTensorInsertOp
 //===----------------------------------------------------------------------===//
 
-def SubTensorInsertOp : BaseOpWithOffsetSizesAndStrides<"subtensor_insert", [OffsetSizeAndStrideOpInterface]> {
+def SubTensorInsertOp : BaseOpWithOffsetSizesAndStrides<
+    "subtensor_insert", [OffsetSizeAndStrideOpInterface]> {
   let summary = "subtensor_insert operation";
   let description = [{
     The "subtensor_insert" operation insert a tensor `source` into another
@@ -3363,13 +3384,13 @@ def SubTensorInsertOp : BaseOpWithOffsetSizesAndStrides<"subtensor_insert", [Off
   let results = (outs AnyRankedTensor:$result);
 
   let builders = [
-    // Build a SubViewOp with mixed static and dynamic entries.
+    // Build a SubTensorInsertOp with mixed static and dynamic entries.
     OpBuilderDAG<(ins "Value":$source, "Value":$dest,
       "ArrayRef<int64_t>":$staticOffsets, "ArrayRef<int64_t>":$staticSizes,
       "ArrayRef<int64_t>":$staticStrides, "ValueRange":$offsets,
       "ValueRange":$sizes, "ValueRange":$strides,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>,
-    // Build a SubViewOp with all dynamic entries.
+    // Build a SubTensorInsertOp with all dynamic entries.
     OpBuilderDAG<(ins "Value":$source, "Value":$dest, "ValueRange":$offsets,
       "ValueRange":$sizes, "ValueRange":$strides,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
@@ -3392,6 +3413,10 @@ def SubTensorInsertOp : BaseOpWithOffsetSizesAndStrides<"subtensor_insert", [Off
       unsigned rank = getSourceType().getRank();
       return {rank, rank, rank};
     }
+
+    /// Return the number of leading operands before the `offsets`, `sizes` and
+    /// and `strides` operands.
+    static unsigned getOffsetSizeAndStrideStartOperandIndex() { return 2; }
   }];
 }
 
@@ -3595,7 +3620,9 @@ def TransposeOp : Std_Op<"transpose", [NoSideEffect]>,
 // TruncateIOp
 //===----------------------------------------------------------------------===//
 
-def TruncateIOp : Std_Op<"trunci", [NoSideEffect, ElementwiseMappable]> {
+def TruncateIOp : Std_Op<"trunci",
+  [NoSideEffect, ElementwiseMappable,
+   DeclareOpInterfaceMethods<VectorUnrollOpInterface>,]> {
   let summary = "integer truncation operation";
   let description = [{
     The integer truncation operation takes an integer input of
@@ -3862,7 +3889,9 @@ def XOrOp : IntArithmeticOp<"xor", [Commutative]> {
 // ZeroExtendIOp
 //===----------------------------------------------------------------------===//
 
-def ZeroExtendIOp : Std_Op<"zexti", [NoSideEffect, ElementwiseMappable]> {
+def ZeroExtendIOp : Std_Op<"zexti",
+  [NoSideEffect, ElementwiseMappable,
+   DeclareOpInterfaceMethods<VectorUnrollOpInterface>,]> {
   let summary = "integer zero extension operation";
   let description = [{
     The integer zero extension operation takes an integer input of

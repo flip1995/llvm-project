@@ -393,19 +393,15 @@ static void addFileList(StringRef path) {
     addFile(path, false);
 }
 
-static std::array<StringRef, 6> archNames{"arm",    "arm64", "i386",
-                                          "x86_64", "ppc",   "ppc64"};
-static bool isArchString(StringRef s) {
-  static DenseSet<StringRef> archNamesSet(archNames.begin(), archNames.end());
-  return archNamesSet.find(s) != archNamesSet.end();
-}
-
 // An order file has one entry per line, in the following format:
 //
-//   <arch>:<object file>:<symbol name>
+//   <cpu>:<object file>:<symbol name>
 //
-// <arch> and <object file> are optional. If not specified, then that entry
-// matches any symbol of that name.
+// <cpu> and <object file> are optional. If not specified, then that entry
+// matches any symbol of that name. Parsing this format is not quite
+// straightforward because the symbol name itself can contain colons, so when
+// encountering a colon, we consider the preceding characters to decide if it
+// can be a valid CPU type or file path.
 //
 // If a symbol is matched by multiple entries, then it takes the lowest-ordered
 // entry (the one nearest to the front of the list.)
@@ -420,59 +416,37 @@ static void parseOrderFile(StringRef path) {
 
   MemoryBufferRef mbref = *buffer;
   size_t priority = std::numeric_limits<size_t>::max();
-  for (StringRef rest : args::getLines(mbref)) {
-    StringRef arch, objectFile, symbol;
+  for (StringRef line : args::getLines(mbref)) {
+    StringRef objectFile, symbol;
+    line = line.take_until([](char c) { return c == '#'; }); // ignore comments
+    line = line.ltrim();
 
-    std::array<StringRef, 3> fields;
-    uint8_t fieldCount = 0;
-    while (rest != "" && fieldCount < 3) {
-      std::pair<StringRef, StringRef> p = getToken(rest, ": \t\n\v\f\r");
-      StringRef tok = p.first;
-      rest = p.second;
-
-      // Check if we have a comment
-      if (tok == "" || tok[0] == '#')
-        break;
-
-      fields[fieldCount++] = tok;
-    }
-
-    switch (fieldCount) {
-    case 3:
-      arch = fields[0];
-      objectFile = fields[1];
-      symbol = fields[2];
-      break;
-    case 2:
-      (isArchString(fields[0]) ? arch : objectFile) = fields[0];
-      symbol = fields[1];
-      break;
-    case 1:
-      symbol = fields[0];
-      break;
-    case 0:
-      break;
-    default:
-      llvm_unreachable("too many fields in order file");
-    }
-
-    if (!arch.empty()) {
-      if (!isArchString(arch)) {
-        error("invalid arch \"" + arch + "\" in order file: expected one of " +
-              llvm::join(archNames, ", "));
-        continue;
-      }
-
-      // TODO: Update when we extend support for other archs
-      if (arch != "x86_64")
-        continue;
-    }
-
-    if (!objectFile.empty() && !objectFile.endswith(".o")) {
-      error("invalid object file name \"" + objectFile +
-            "\" in order file: should end with .o");
+    CPUType cpuType = StringSwitch<CPUType>(line)
+                          .StartsWith("i386:", CPU_TYPE_I386)
+                          .StartsWith("x86_64:", CPU_TYPE_X86_64)
+                          .StartsWith("arm:", CPU_TYPE_ARM)
+                          .StartsWith("arm64:", CPU_TYPE_ARM64)
+                          .StartsWith("ppc:", CPU_TYPE_POWERPC)
+                          .StartsWith("ppc64:", CPU_TYPE_POWERPC64)
+                          .Default(CPU_TYPE_ANY);
+    // Drop the CPU type as well as the colon
+    if (cpuType != CPU_TYPE_ANY)
+      line = line.drop_until([](char c) { return c == ':'; }).drop_front();
+    // TODO: Update when we extend support for other CPUs
+    if (cpuType != CPU_TYPE_ANY && cpuType != CPU_TYPE_X86_64)
       continue;
+
+    constexpr std::array<StringRef, 2> fileEnds = {".o:", ".o):"};
+    for (StringRef fileEnd : fileEnds) {
+      size_t pos = line.find(fileEnd);
+      if (pos != StringRef::npos) {
+        // Split the string around the colon
+        objectFile = line.take_front(pos + fileEnd.size() - 1);
+        line = line.drop_front(pos + fileEnd.size());
+        break;
+      }
     }
+    symbol = line.trim();
 
     if (!symbol.empty()) {
       SymbolPriorityEntry &entry = config->priorities[symbol];
@@ -550,7 +524,7 @@ static void replaceCommonSymbols() {
 
     replaceSymbol<Defined>(sym, sym->getName(), isec, /*value=*/0,
                            /*isWeakDef=*/false,
-                           /*isExternal=*/true);
+                           /*isExternal=*/true, common->privateExtern);
   }
 }
 
@@ -574,20 +548,19 @@ static void handlePlatformVersion(const opt::Arg *arg) {
 
   // TODO(compnerd) see if we can generate this case list via XMACROS
   config->platform.kind =
-      llvm::StringSwitch<llvm::MachO::PlatformKind>(lowerDash(platformStr))
-          .Cases("macos", "1", llvm::MachO::PlatformKind::macOS)
-          .Cases("ios", "2", llvm::MachO::PlatformKind::iOS)
-          .Cases("tvos", "3", llvm::MachO::PlatformKind::tvOS)
-          .Cases("watchos", "4", llvm::MachO::PlatformKind::watchOS)
-          .Cases("bridgeos", "5", llvm::MachO::PlatformKind::bridgeOS)
-          .Cases("mac-catalyst", "6", llvm::MachO::PlatformKind::macCatalyst)
-          .Cases("ios-simulator", "7", llvm::MachO::PlatformKind::iOSSimulator)
-          .Cases("tvos-simulator", "8",
-                 llvm::MachO::PlatformKind::tvOSSimulator)
-          .Cases("watchos-simulator", "9",
-                 llvm::MachO::PlatformKind::watchOSSimulator)
-          .Default(llvm::MachO::PlatformKind::unknown);
-  if (config->platform.kind == llvm::MachO::PlatformKind::unknown)
+      StringSwitch<PlatformKind>(lowerDash(platformStr))
+          .Cases("macos", "1", PlatformKind::macOS)
+          .Cases("ios", "2", PlatformKind::iOS)
+          .Cases("tvos", "3", PlatformKind::tvOS)
+          .Cases("watchos", "4", PlatformKind::watchOS)
+          .Cases("bridgeos", "5", PlatformKind::bridgeOS)
+          .Cases("mac-catalyst", "6", PlatformKind::macCatalyst)
+          .Cases("ios-simulator", "7", PlatformKind::iOSSimulator)
+          .Cases("tvos-simulator", "8", PlatformKind::tvOSSimulator)
+          .Cases("watchos-simulator", "9", PlatformKind::watchOSSimulator)
+          .Cases("driverkit", "10", PlatformKind::driverKit)
+          .Default(PlatformKind::unknown);
+  if (config->platform.kind == PlatformKind::unknown)
     error(Twine("malformed platform: ") + platformStr);
   // TODO: check validity of version strings, which varies by platform
   // NOTE: ld64 accepts version strings with 5 components
@@ -663,8 +636,12 @@ static bool isPie(opt::InputArgList &args) {
   // to PIE from 10.7, arm64 should always be PIE, etc
   assert(config->arch == AK_x86_64 || config->arch == AK_x86_64h);
 
-  if (config->platform.kind == MachO::PlatformKind::macOS &&
+  PlatformKind kind = config->platform.kind;
+  if (kind == PlatformKind::macOS &&
       config->platform.minimum >= VersionTuple(10, 6))
+    return true;
+
+  if (kind == PlatformKind::iOSSimulator || kind == PlatformKind::driverKit)
     return true;
 
   return args.hasArg(OPT_pie);
@@ -716,8 +693,13 @@ bool macho::link(llvm::ArrayRef<const char *> argsArr, bool canExitEarly,
   if (args.hasArg(OPT_help_hidden)) {
     parser.printHelp(argsArr[0], /*showHidden=*/true);
     return true;
-  } else if (args.hasArg(OPT_help)) {
+  }
+  if (args.hasArg(OPT_help)) {
     parser.printHelp(argsArr[0], /*showHidden=*/false);
+    return true;
+  }
+  if (args.hasArg(OPT_version)) {
+    message(getLLDVersion());
     return true;
   }
 

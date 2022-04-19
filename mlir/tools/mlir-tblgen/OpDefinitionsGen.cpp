@@ -328,6 +328,9 @@ private:
   // Generates setter for the attributes.
   void genAttrSetters();
 
+  // Generates removers for optional attributes.
+  void genOptionalAttrRemovers();
+
   // Generates getters for named operands.
   void genNamedOperandGetters();
 
@@ -600,6 +603,7 @@ OpEmitter::OpEmitter(const Operator &op,
   genNamedSuccessorGetters();
   genAttrGetters();
   genAttrSetters();
+  genOptionalAttrRemovers();
   genBuilder();
   genParser();
   genPrinter();
@@ -774,6 +778,28 @@ void OpEmitter::genAttrSetters() {
     const auto &attr = namedAttr.attr;
     if (!attr.isDerivedAttr())
       emitAttrWithStorageType(name, attr);
+  }
+}
+
+void OpEmitter::genOptionalAttrRemovers() {
+  // Generate methods for removing optional attributes, instead of having to
+  // use the string interface. Enables better compile time verification.
+  auto emitRemoveAttr = [&](StringRef name) {
+    auto upperInitial = name.take_front().upper();
+    auto suffix = name.drop_front();
+    auto *method = opClass.addMethodAndPrune(
+        "::mlir::Attribute", ("remove" + upperInitial + suffix + "Attr").str());
+    if (!method)
+      return;
+    auto &body = method->body();
+    body << "  return (*this)->removeAttr(\"" << name << "\");";
+  };
+
+  for (const auto &namedAttr : op.getAttributes()) {
+    const auto &name = namedAttr.name;
+    const auto &attr = namedAttr.attr;
+    if (attr.isOptional())
+      emitRemoveAttr(name);
   }
 }
 
@@ -984,7 +1010,7 @@ void OpEmitter::genNamedRegionGetters() {
     if (region.name.empty())
       continue;
 
-    // Generate the accessors for a varidiadic region.
+    // Generate the accessors for a variadic region.
     if (region.isVariadic()) {
       auto *m = opClass.addMethodAndPrune("::mlir::MutableArrayRef<Region>",
                                           region.name);
@@ -1304,8 +1330,7 @@ void OpEmitter::genUseAttrAsResultTypeBuilder() {
 /// Updates the context `fctx` to enable replacement of $_builder and $_state
 /// in the body. Reports errors at `loc`.
 static std::string builderSignatureFromDAG(const DagInit *init,
-                                           ArrayRef<llvm::SMLoc> loc,
-                                           FmtContext &fctx) {
+                                           ArrayRef<llvm::SMLoc> loc) {
   auto *defInit = dyn_cast<DefInit>(init->getOperator());
   if (!defInit || !defInit->getDef()->getName().equals("ins"))
     PrintFatalError(loc, "expected 'ins' in builders");
@@ -1351,29 +1376,7 @@ static std::string builderSignatureFromDAG(const DagInit *init,
         llvm::formatv("{0} {1}{2}", type, name, defaultValue).str());
   }
 
-  fctx.withBuilder(builder);
-  fctx.addSubst("_state", builderOpState);
-
   return llvm::join(arguments, ", ");
-}
-
-// Returns a signature fo the builder as defined by a string initializer,
-// optionally injecting the builder and state arguments.
-// TODO: to be removed after the transition is complete.
-static std::string builderSignatureFromString(StringRef params,
-                                              FmtContext &fctx) {
-  bool skipParamGen = params.startswith("OpBuilder") ||
-                      params.startswith("mlir::OpBuilder") ||
-                      params.startswith("::mlir::OpBuilder");
-  if (skipParamGen)
-    return params.str();
-
-  fctx.withBuilder(builder);
-  fctx.addSubst("_state", builderOpState);
-  return std::string(llvm::formatv("::mlir::OpBuilder &{0}, "
-                                   "::mlir::OperationState &{1}{2}{3}",
-                                   builder, builderOpState,
-                                   params.empty() ? "" : ", ", params));
 }
 
 void OpEmitter::genBuilder() {
@@ -1385,19 +1388,8 @@ void OpEmitter::genBuilder() {
     if (listInit) {
       for (Init *init : listInit->getValues()) {
         Record *builderDef = cast<DefInit>(init)->getDef();
-        llvm::Optional<StringRef> params =
-            builderDef->getValueAsOptionalString("params");
-        FmtContext fctx;
-        if (params.hasValue()) {
-          PrintWarning(op.getLoc(),
-                       "Op uses a deprecated, string-based OpBuilder format; "
-                       "use OpBuilderDAG with '(ins <...>)' instead");
-        }
-        std::string paramStr =
-            params.hasValue() ? builderSignatureFromString(params->trim(), fctx)
-                              : builderSignatureFromDAG(
-                                    builderDef->getValueAsDag("dagParams"),
-                                    op.getLoc(), fctx);
+        std::string paramStr = builderSignatureFromDAG(
+            builderDef->getValueAsDag("dagParams"), op.getLoc());
 
         StringRef body = builderDef->getValueAsString("body");
         bool hasBody = !body.empty();
@@ -1405,6 +1397,10 @@ void OpEmitter::genBuilder() {
             hasBody ? OpMethod::MP_Static : OpMethod::MP_StaticDeclaration;
         auto *method =
             opClass.addMethodAndPrune("void", "build", properties, paramStr);
+
+        FmtContext fctx;
+        fctx.withBuilder(builder);
+        fctx.addSubst("_state", builderOpState);
         if (hasBody)
           method->body() << tgfmt(body, &fctx);
       }
@@ -2167,10 +2163,17 @@ void OpEmitter::genTraits() {
   unsigned numVariadicRegions = op.getNumVariadicRegions();
   addSizeCountTrait(opClass, "Region", numRegions, numVariadicRegions);
 
-  // Add result size trait.
+  // Add result size traits.
   int numResults = op.getNumResults();
   int numVariadicResults = op.getNumVariableLengthResults();
   addSizeCountTrait(opClass, "Result", numResults, numVariadicResults);
+
+  // For single result ops with a known specific type, generate a OneTypedResult
+  // trait.
+  if (numResults == 1 && numVariadicResults == 0) {
+    auto cppName = op.getResults().begin()->constraint.getCPPClassName();
+    opClass.addTrait("::mlir::OpTrait::OneTypedResult<" + cppName + ">::Impl");
+  }
 
   // Add successor size trait.
   unsigned numSuccessors = op.getNumSuccessors();
@@ -2375,7 +2378,7 @@ void OpOperandAdaptorEmitter::addVerification() {
 
   FmtContext verifyCtx;
   populateSubstitutions(op, "odsAttrs.get", "getODSOperands",
-                        "<no results should be genarated>", verifyCtx);
+                        "<no results should be generated>", verifyCtx);
   genAttributeVerifier(op, "odsAttrs.get",
                        Twine("emitError(loc, \"'") + op.getOperationName() +
                            "' op \"",

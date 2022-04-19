@@ -182,6 +182,10 @@ static bool isMergePassthruOpcode(unsigned Opc) {
   switch (Opc) {
   default:
     return false;
+  case AArch64ISD::BITREVERSE_MERGE_PASSTHRU:
+  case AArch64ISD::BSWAP_MERGE_PASSTHRU:
+  case AArch64ISD::CTLZ_MERGE_PASSTHRU:
+  case AArch64ISD::CTPOP_MERGE_PASSTHRU:
   case AArch64ISD::DUP_MERGE_PASSTHRU:
   case AArch64ISD::FNEG_MERGE_PASSTHRU:
   case AArch64ISD::SIGN_EXTEND_INREG_MERGE_PASSTHRU:
@@ -995,6 +999,9 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
                     MVT::v8f16, MVT::v4f32, MVT::v2f64 }) {
       setOperationAction(ISD::VECREDUCE_FMAX, VT, Custom);
       setOperationAction(ISD::VECREDUCE_FMIN, VT, Custom);
+
+      if (VT.getVectorElementType() != MVT::f16 || Subtarget->hasFullFP16())
+        setOperationAction(ISD::VECREDUCE_FADD, VT, Legal);
     }
     for (MVT VT : { MVT::v8i8, MVT::v4i16, MVT::v2i32,
                     MVT::v16i8, MVT::v8i16, MVT::v4i32 }) {
@@ -1066,6 +1073,11 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
     // splat of 0 or undef) once vector selects supported in SVE codegen. See
     // D68877 for more details.
     for (auto VT : {MVT::nxv16i8, MVT::nxv8i16, MVT::nxv4i32, MVT::nxv2i64}) {
+      setOperationAction(ISD::BITREVERSE, VT, Custom);
+      setOperationAction(ISD::BSWAP, VT, Custom);
+      setOperationAction(ISD::CTLZ, VT, Custom);
+      setOperationAction(ISD::CTPOP, VT, Custom);
+      setOperationAction(ISD::CTTZ, VT, Custom);
       setOperationAction(ISD::INSERT_SUBVECTOR, VT, Custom);
       setOperationAction(ISD::UINT_TO_FP, VT, Custom);
       setOperationAction(ISD::SINT_TO_FP, VT, Custom);
@@ -1183,6 +1195,10 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
         setOperationAction(ISD::FP_ROUND, VT, Expand);
 
       // These operations are not supported on NEON but SVE can do them.
+      setOperationAction(ISD::BITREVERSE, MVT::v1i64, Custom);
+      setOperationAction(ISD::CTLZ, MVT::v1i64, Custom);
+      setOperationAction(ISD::CTLZ, MVT::v2i64, Custom);
+      setOperationAction(ISD::CTTZ, MVT::v1i64, Custom);
       setOperationAction(ISD::MUL, MVT::v1i64, Custom);
       setOperationAction(ISD::MUL, MVT::v2i64, Custom);
       setOperationAction(ISD::SDIV, MVT::v8i8, Custom);
@@ -1217,6 +1233,8 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
       // Int operations with no NEON support.
       for (auto VT : {MVT::v8i8, MVT::v16i8, MVT::v4i16, MVT::v8i16,
                       MVT::v2i32, MVT::v4i32, MVT::v2i64}) {
+        setOperationAction(ISD::BITREVERSE, VT, Custom);
+        setOperationAction(ISD::CTTZ, VT, Custom);
         setOperationAction(ISD::VECREDUCE_AND, VT, Custom);
         setOperationAction(ISD::VECREDUCE_OR, VT, Custom);
         setOperationAction(ISD::VECREDUCE_XOR, VT, Custom);
@@ -1330,6 +1348,11 @@ void AArch64TargetLowering::addTypeForFixedLengthSVE(MVT VT) {
   setOperationAction(ISD::ADD, VT, Custom);
   setOperationAction(ISD::AND, VT, Custom);
   setOperationAction(ISD::ANY_EXTEND, VT, Custom);
+  setOperationAction(ISD::BITREVERSE, VT, Custom);
+  setOperationAction(ISD::BSWAP, VT, Custom);
+  setOperationAction(ISD::CTLZ, VT, Custom);
+  setOperationAction(ISD::CTPOP, VT, Custom);
+  setOperationAction(ISD::CTTZ, VT, Custom);
   setOperationAction(ISD::FADD, VT, Custom);
   setOperationAction(ISD::FCEIL, VT, Custom);
   setOperationAction(ISD::FDIV, VT, Custom);
@@ -1934,6 +1957,10 @@ const char *AArch64TargetLowering::getTargetNodeName(unsigned Opcode) const {
     MAKE_CASE(AArch64ISD::LDP)
     MAKE_CASE(AArch64ISD::STP)
     MAKE_CASE(AArch64ISD::STNP)
+    MAKE_CASE(AArch64ISD::BITREVERSE_MERGE_PASSTHRU)
+    MAKE_CASE(AArch64ISD::BSWAP_MERGE_PASSTHRU)
+    MAKE_CASE(AArch64ISD::CTLZ_MERGE_PASSTHRU)
+    MAKE_CASE(AArch64ISD::CTPOP_MERGE_PASSTHRU)
     MAKE_CASE(AArch64ISD::DUP_MERGE_PASSTHRU)
     MAKE_CASE(AArch64ISD::INDEX_VECTOR)
     MAKE_CASE(AArch64ISD::UABD)
@@ -3319,7 +3346,8 @@ static bool isExtendedBUILD_VECTOR(SDNode *N, SelectionDAG &DAG,
 }
 
 static SDValue skipExtensionForVectorMULL(SDNode *N, SelectionDAG &DAG) {
-  if (N->getOpcode() == ISD::SIGN_EXTEND || N->getOpcode() == ISD::ZERO_EXTEND)
+  if (N->getOpcode() == ISD::SIGN_EXTEND ||
+      N->getOpcode() == ISD::ZERO_EXTEND || N->getOpcode() == ISD::ANY_EXTEND)
     return addRequiredExtensionForVectorMULL(N->getOperand(0), DAG,
                                              N->getOperand(0)->getValueType(0),
                                              N->getValueType(0),
@@ -3349,6 +3377,7 @@ static bool isSignExtended(SDNode *N, SelectionDAG &DAG) {
 
 static bool isZeroExtended(SDNode *N, SelectionDAG &DAG) {
   return N->getOpcode() == ISD::ZERO_EXTEND ||
+         N->getOpcode() == ISD::ANY_EXTEND ||
          isExtendedBUILD_VECTOR(N, DAG, false);
 }
 
@@ -3566,6 +3595,17 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   case Intrinsic::aarch64_sve_ptrue:
     return DAG.getNode(AArch64ISD::PTRUE, dl, Op.getValueType(),
                        Op.getOperand(1));
+  case Intrinsic::aarch64_sve_clz:
+    return DAG.getNode(AArch64ISD::CTLZ_MERGE_PASSTHRU, dl, Op.getValueType(),
+                       Op.getOperand(2), Op.getOperand(3), Op.getOperand(1));
+  case Intrinsic::aarch64_sve_cnt: {
+    SDValue Data = Op.getOperand(3);
+    // CTPOP only supports integer operands.
+    if (Data.getValueType().isFloatingPoint())
+      Data = DAG.getNode(ISD::BITCAST, dl, Op.getValueType(), Data);
+    return DAG.getNode(AArch64ISD::CTPOP_MERGE_PASSTHRU, dl, Op.getValueType(),
+                       Op.getOperand(2), Data, Op.getOperand(1));
+  }
   case Intrinsic::aarch64_sve_dupq_lane:
     return LowerDUPQLane(Op, DAG);
   case Intrinsic::aarch64_sve_convert_from_svbool:
@@ -3645,7 +3685,13 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
     return DAG.getNode(AArch64ISD::INSR, dl, Op.getValueType(),
                        Op.getOperand(1), Scalar);
   }
-
+  case Intrinsic::aarch64_sve_rbit:
+    return DAG.getNode(AArch64ISD::BITREVERSE_MERGE_PASSTHRU, dl,
+                       Op.getValueType(), Op.getOperand(2), Op.getOperand(3),
+                       Op.getOperand(1));
+  case Intrinsic::aarch64_sve_revb:
+    return DAG.getNode(AArch64ISD::BSWAP_MERGE_PASSTHRU, dl, Op.getValueType(),
+                       Op.getOperand(2), Op.getOperand(3), Op.getOperand(1));
   case Intrinsic::aarch64_sve_sxtb:
     return DAG.getNode(
         AArch64ISD::SIGN_EXTEND_INREG_MERGE_PASSTHRU, dl, Op.getValueType(),
@@ -4356,6 +4402,16 @@ SDValue AArch64TargetLowering::LowerOperation(SDValue Op,
     return LowerFixedLengthVectorSelectToSVE(Op, DAG);
   case ISD::ABS:
     return LowerABS(Op, DAG);
+  case ISD::BITREVERSE:
+    return LowerToPredicatedOp(Op, DAG, AArch64ISD::BITREVERSE_MERGE_PASSTHRU,
+                               /*OverrideNEON=*/true);
+  case ISD::BSWAP:
+    return LowerToPredicatedOp(Op, DAG, AArch64ISD::BSWAP_MERGE_PASSTHRU);
+  case ISD::CTLZ:
+    return LowerToPredicatedOp(Op, DAG, AArch64ISD::CTLZ_MERGE_PASSTHRU,
+                               /*OverrideNEON=*/true);
+  case ISD::CTTZ:
+    return LowerCTTZ(Op, DAG);
   }
 }
 
@@ -5377,11 +5433,9 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
         // Call site info is used for function's parameter entry value
         // tracking. For now we track only simple cases when parameter
         // is transferred through whole register.
-        CSInfo.erase(std::remove_if(CSInfo.begin(), CSInfo.end(),
-                                    [&VA](MachineFunction::ArgRegPair ArgReg) {
-                                      return ArgReg.Reg == VA.getLocReg();
-                                    }),
-                     CSInfo.end());
+        llvm::erase_if(CSInfo, [&VA](MachineFunction::ArgRegPair ArgReg) {
+          return ArgReg.Reg == VA.getLocReg();
+        });
       } else {
         RegsToPass.emplace_back(VA.getLocReg(), Arg);
         RegsUsed.insert(VA.getLocReg());
@@ -6465,6 +6519,9 @@ SDValue AArch64TargetLowering::LowerCTPOP(SDValue Op, SelectionDAG &DAG) const {
     return DAG.getNode(ISD::ZERO_EXTEND, DL, MVT::i128, UaddLV);
   }
 
+  if (VT.isScalableVector() || useSVEForFixedLengthVectorVT(VT))
+    return LowerToPredicatedOp(Op, DAG, AArch64ISD::CTPOP_MERGE_PASSTHRU);
+
   assert((VT == MVT::v1i64 || VT == MVT::v2i64 || VT == MVT::v2i32 ||
           VT == MVT::v4i32 || VT == MVT::v4i16 || VT == MVT::v8i16) &&
          "Unexpected type for custom ctpop lowering");
@@ -6486,6 +6543,16 @@ SDValue AArch64TargetLowering::LowerCTPOP(SDValue Op, SelectionDAG &DAG) const {
   }
 
   return Val;
+}
+
+SDValue AArch64TargetLowering::LowerCTTZ(SDValue Op, SelectionDAG &DAG) const {
+  EVT VT = Op.getValueType();
+  assert(VT.isScalableVector() ||
+         useSVEForFixedLengthVectorVT(VT, /*OverrideNEON=*/true));
+
+  SDLoc DL(Op);
+  SDValue RBIT = DAG.getNode(ISD::BITREVERSE, DL, VT, Op.getOperand(0));
+  return DAG.getNode(ISD::CTLZ, DL, VT, RBIT);
 }
 
 SDValue AArch64TargetLowering::LowerSETCC(SDValue Op, SelectionDAG &DAG) const {
@@ -11637,9 +11704,152 @@ static bool IsSVECntIntrinsic(SDValue S) {
   return false;
 }
 
+/// Calculates what the pre-extend type is, based on the extension
+/// operation node provided by \p Extend.
+///
+/// In the case that \p Extend is a SIGN_EXTEND or a ZERO_EXTEND, the
+/// pre-extend type is pulled directly from the operand, while other extend
+/// operations need a bit more inspection to get this information.
+///
+/// \param Extend The SDNode from the DAG that represents the extend operation
+/// \param DAG The SelectionDAG hosting the \p Extend node
+///
+/// \returns The type representing the \p Extend source type, or \p MVT::Other
+/// if no valid type can be determined
+static EVT calculatePreExtendType(SDValue Extend, SelectionDAG &DAG) {
+  switch (Extend.getOpcode()) {
+  case ISD::SIGN_EXTEND:
+  case ISD::ZERO_EXTEND:
+    return Extend.getOperand(0).getValueType();
+  case ISD::AssertSext:
+  case ISD::AssertZext:
+  case ISD::SIGN_EXTEND_INREG: {
+    VTSDNode *TypeNode = dyn_cast<VTSDNode>(Extend.getOperand(1));
+    if (!TypeNode)
+      return MVT::Other;
+    return TypeNode->getVT();
+  }
+  case ISD::AND: {
+    ConstantSDNode *Constant =
+        dyn_cast<ConstantSDNode>(Extend.getOperand(1).getNode());
+    if (!Constant)
+      return MVT::Other;
+
+    uint32_t Mask = Constant->getZExtValue();
+
+    if (Mask == UCHAR_MAX)
+      return MVT::i8;
+    else if (Mask == USHRT_MAX)
+      return MVT::i16;
+    else if (Mask == UINT_MAX)
+      return MVT::i32;
+
+    return MVT::Other;
+  }
+  default:
+    return MVT::Other;
+  }
+
+  llvm_unreachable("Code path unhandled in calculatePreExtendType!");
+}
+
+/// Combines a dup(sext/zext) node pattern into sext/zext(dup)
+/// making use of the vector SExt/ZExt rather than the scalar SExt/ZExt
+static SDValue performCommonVectorExtendCombine(SDValue VectorShuffle,
+                                                SelectionDAG &DAG) {
+
+  ShuffleVectorSDNode *ShuffleNode =
+      dyn_cast<ShuffleVectorSDNode>(VectorShuffle.getNode());
+  if (!ShuffleNode)
+    return SDValue();
+
+  // Ensuring the mask is zero before continuing
+  if (!ShuffleNode->isSplat() || ShuffleNode->getSplatIndex() != 0)
+    return SDValue();
+
+  SDValue InsertVectorElt = VectorShuffle.getOperand(0);
+
+  if (InsertVectorElt.getOpcode() != ISD::INSERT_VECTOR_ELT)
+    return SDValue();
+
+  SDValue InsertLane = InsertVectorElt.getOperand(2);
+  ConstantSDNode *Constant = dyn_cast<ConstantSDNode>(InsertLane.getNode());
+  // Ensures the insert is inserting into lane 0
+  if (!Constant || Constant->getZExtValue() != 0)
+    return SDValue();
+
+  SDValue Extend = InsertVectorElt.getOperand(1);
+  unsigned ExtendOpcode = Extend.getOpcode();
+
+  bool IsSExt = ExtendOpcode == ISD::SIGN_EXTEND ||
+                ExtendOpcode == ISD::SIGN_EXTEND_INREG ||
+                ExtendOpcode == ISD::AssertSext;
+  if (!IsSExt && ExtendOpcode != ISD::ZERO_EXTEND &&
+      ExtendOpcode != ISD::AssertZext && ExtendOpcode != ISD::AND)
+    return SDValue();
+
+  EVT TargetType = VectorShuffle.getValueType();
+  EVT PreExtendType = calculatePreExtendType(Extend, DAG);
+
+  if ((TargetType != MVT::v8i16 && TargetType != MVT::v4i32 &&
+       TargetType != MVT::v2i64) ||
+      (PreExtendType == MVT::Other))
+    return SDValue();
+
+  EVT PreExtendVT = TargetType.changeVectorElementType(PreExtendType);
+
+  if (PreExtendVT.getVectorElementCount() != TargetType.getVectorElementCount())
+    return SDValue();
+
+  if (TargetType.getScalarSizeInBits() != PreExtendVT.getScalarSizeInBits() * 2)
+    return SDValue();
+
+  SDLoc DL(VectorShuffle);
+
+  SDValue InsertVectorNode = DAG.getNode(
+      InsertVectorElt.getOpcode(), DL, PreExtendVT, DAG.getUNDEF(PreExtendVT),
+      Extend.getOperand(0), DAG.getConstant(0, DL, MVT::i64));
+
+  std::vector<int> ShuffleMask(TargetType.getVectorElementCount().getValue());
+
+  SDValue VectorShuffleNode =
+      DAG.getVectorShuffle(PreExtendVT, DL, InsertVectorNode,
+                           DAG.getUNDEF(PreExtendVT), ShuffleMask);
+
+  SDValue ExtendNode =
+      DAG.getNode(IsSExt ? ISD::SIGN_EXTEND : ISD::ZERO_EXTEND, DL, TargetType,
+                  VectorShuffleNode, DAG.getValueType(TargetType));
+
+  return ExtendNode;
+}
+
+/// Combines a mul(dup(sext/zext)) node pattern into mul(sext/zext(dup))
+/// making use of the vector SExt/ZExt rather than the scalar SExt/ZExt
+static SDValue performMulVectorExtendCombine(SDNode *Mul, SelectionDAG &DAG) {
+  // If the value type isn't a vector, none of the operands are going to be dups
+  if (!Mul->getValueType(0).isVector())
+    return SDValue();
+
+  SDValue Op0 = performCommonVectorExtendCombine(Mul->getOperand(0), DAG);
+  SDValue Op1 = performCommonVectorExtendCombine(Mul->getOperand(1), DAG);
+
+  // Neither operands have been changed, don't make any further changes
+  if (!Op0 && !Op1)
+    return SDValue();
+
+  SDLoc DL(Mul);
+  return DAG.getNode(Mul->getOpcode(), DL, Mul->getValueType(0),
+                     Op0 ? Op0 : Mul->getOperand(0),
+                     Op1 ? Op1 : Mul->getOperand(1));
+}
+
 static SDValue performMulCombine(SDNode *N, SelectionDAG &DAG,
                                  TargetLowering::DAGCombinerInfo &DCI,
                                  const AArch64Subtarget *Subtarget) {
+
+  if (SDValue Ext = performMulVectorExtendCombine(N, DAG))
+    return Ext;
+
   if (DCI.isBeforeLegalizeOps())
     return SDValue();
 
@@ -15885,7 +16095,8 @@ void AArch64TargetLowering::ReplaceNodeResults(
     return;
 
   case ISD::CTPOP:
-    Results.push_back(LowerCTPOP(SDValue(N, 0), DAG));
+    if (SDValue Result = LowerCTPOP(SDValue(N, 0), DAG))
+      Results.push_back(Result);
     return;
   case AArch64ISD::SADDV:
     ReplaceReductionResults(N, Results, DAG, ISD::ADD, AArch64ISD::SADDV);

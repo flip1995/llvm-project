@@ -446,6 +446,17 @@ def retflag       : SDNode<"VEISD::RET_FLAG", SDTNone,
 
 def getGOT        : Operand<iPTR>;
 
+def VEeh_sjlj_setjmp: SDNode<"VEISD::EH_SJLJ_SETJMP",
+                             SDTypeProfile<1, 1, [SDTCisInt<0>,
+                                                  SDTCisPtrTy<1>]>,
+                             [SDNPHasChain, SDNPSideEffect]>;
+def VEeh_sjlj_longjmp: SDNode<"VEISD::EH_SJLJ_LONGJMP",
+                              SDTypeProfile<0, 1, [SDTCisPtrTy<0>]>,
+                              [SDNPHasChain, SDNPSideEffect]>;
+def VEeh_sjlj_setup_dispatch: SDNode<"VEISD::EH_SJLJ_SETUP_DISPATCH",
+                                     SDTypeProfile<0, 0, []>,
+                                     [SDNPHasChain, SDNPSideEffect]>;
+
 // GETFUNPLT for PIC
 def GetFunPLT : SDNode<"VEISD::GETFUNPLT", SDTIntUnaryOp>;
 
@@ -1608,6 +1619,8 @@ def vehi_only : OutPatFrag<(ops node:$hi),
                            (LEASLzii 0, 0, $hi)>;
 def vehi_lo : OutPatFrag<(ops node:$hi, node:$lo),
                          (LEASLrii $lo, 0, $hi)>;
+def vehi_lo_imm : OutPatFrag<(ops node:$hi, node:$lo, node:$idx),
+                             (LEASLrii $lo, $idx, $hi)>;
 def vehi_baselo : OutPatFrag<(ops node:$base, node:$hi, node:$lo),
                              (LEASLrri $base, $lo, $hi)>;
 foreach type = [ "tblockaddress", "tconstpool", "texternalsym", "tglobaladdr",
@@ -1615,6 +1628,8 @@ foreach type = [ "tblockaddress", "tconstpool", "texternalsym", "tglobaladdr",
   def : Pat<(VElo !cast<SDNode>(type):$lo), (velo_only $lo)>;
   def : Pat<(VEhi !cast<SDNode>(type):$hi), (vehi_only $hi)>;
   def : Pat<(add (VEhi !cast<SDNode>(type):$hi), I64:$lo), (vehi_lo $hi, $lo)>;
+  def : Pat<(add (add (VEhi !cast<SDNode>(type):$hi), I64:$lo), simm7:$val),
+            (vehi_lo_imm $hi, $lo, (LO7 $val))>;
   def : Pat<(add I64:$base, (add (VEhi !cast<SDNode>(type):$hi), I64:$lo)),
             (vehi_baselo $base, $hi, $lo)>;
 }
@@ -1873,6 +1888,33 @@ def : Pat<(i32 (atomic_swap_32 ADDRri:$src, i32:$new)),
           (TS1AMWrii MEMriRRM:$src, 15, $new)>;
 def : Pat<(i64 (atomic_swap_64 ADDRri:$src, i64:$new)),
           (TS1AMLrir MEMriRRM:$src, (LEAzii 0, 0, 255), i64:$new)>;
+
+//===----------------------------------------------------------------------===//
+// SJLJ Exception handling patterns
+//===----------------------------------------------------------------------===//
+
+let hasSideEffects = 1, isBarrier = 1, isCodeGenOnly = 1,
+    usesCustomInserter = 1 in {
+  let isTerminator = 1 in
+  def EH_SjLj_LongJmp : Pseudo<(outs), (ins I64:$buf),
+                               "# EH_SJLJ_LONGJMP",
+                               [(VEeh_sjlj_longjmp I64:$buf)]>;
+
+  def EH_SjLj_SetJmp  : Pseudo<(outs I32:$dst), (ins I64:$buf),
+                               "# EH_SJLJ_SETJMP",
+                               [(set I32:$dst, (VEeh_sjlj_setjmp I64:$buf))]>;
+
+  def EH_SjLj_Setup_Dispatch : Pseudo<(outs), (ins), "# EH_SJLJ_SETUP_DISPATCH",
+                                      [(VEeh_sjlj_setup_dispatch)]>;
+}
+
+let isTerminator = 1, isBranch = 1, isCodeGenOnly = 1 in
+  def EH_SjLj_Setup : Pseudo<(outs), (ins brtarget32:$dst),
+                             "# EH_SJlJ_SETUP $dst">;
+
+//===----------------------------------------------------------------------===//
+// Branch related patterns
+//===----------------------------------------------------------------------===//
 
 // Branches
 def : Pat<(br bb:$addr), (BRCFLa bb:$addr)>;

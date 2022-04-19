@@ -334,7 +334,7 @@ struct CodeGen {
 /// Helper method to inspect sparse annotations in the linalg operation.
 /// Fills the per-dimension sparsity information for all tensors.
 static void findSparseAnnotations(Merger &merger, linalg::GenericOp op) {
-  unsigned numTensors = op.getNumInputsAndOutputs();
+  unsigned numTensors = op.getNumShapedOperands();
   ArrayAttr sparseAttr = op.sparseAttr();
   for (unsigned t = 0; t < numTensors; t++) {
     auto map = op.getIndexingMap(t);
@@ -466,8 +466,8 @@ static unsigned buildLattices(Merger &merger, linalg::GenericOp op,
     // set to the undefined index in that dimension. An invariant expression
     // is set to a synthetic tensor with undefined indices only.
     unsigned s = merger.addSet();
-    unsigned t = kind == Kind::kTensor ? merger.exp(exp).e0
-                                       : op.getNumInputsAndOutputs();
+    unsigned t =
+        kind == Kind::kTensor ? merger.exp(exp).e0 : op.getNumShapedOperands();
     merger.set(s).push_back(merger.addLat(t, idx, exp));
     return s;
   }
@@ -504,7 +504,7 @@ static Type genIntType(PatternRewriter &rewriter, linalg::SparseIntType tp) {
 static void genBuffers(Merger &merger, CodeGen &codegen,
                        PatternRewriter &rewriter, linalg::GenericOp op) {
   Location loc = op.getLoc();
-  unsigned numTensors = op.getNumInputsAndOutputs();
+  unsigned numTensors = op.getNumShapedOperands();
   unsigned numInputs = op.getNumInputs();
   assert(numTensors == numInputs + 1);
 
@@ -538,15 +538,8 @@ static void genBuffers(Merger &merger, CodeGen &codegen,
       // Find lower and upper bound in current dimension.
       Value up;
       if (shape[d] == TensorType::kDynamicSize) {
-        // For the output tensor, we may need to infer the upper bound.
-        // For all others, we look at the incoming argument.
-        if (t == numInputs && !op.getNumInitTensors()) {
-          up = codegen.sizes[i];
-          assert(up); // TODO: what else?
-        } else {
-          Value arg = t < numInputs ? op.getInput(t) : op.getInitTensor(0);
-          up = rewriter.create<DimOp>(loc, arg, d);
-        }
+        Value arg = t < numInputs ? op.getInput(t) : op.getOutput(0);
+        up = rewriter.create<DimOp>(loc, arg, d);
         args.push_back(up);
       } else {
         up = rewriter.create<ConstantIndexOp>(loc, shape[d]);
@@ -597,7 +590,7 @@ static void genTensorStore(Merger &merger, CodeGen &codegen,
                            PatternRewriter &rewriter, linalg::GenericOp op,
                            unsigned tensor, Value rhs) {
   // Test if this is a scalarized reduction.
-  unsigned lhs = op.getNumInputsAndOutputs() - 1;
+  unsigned lhs = op.getNumShapedOperands() - 1;
   if (lhs == tensor && codegen.redVal) {
     codegen.redVal = rhs;
     return;
@@ -670,7 +663,7 @@ static void genInvariants(Merger &merger, CodeGen &codegen,
         atLevel = true;
     }
     // All exhausted at this level (atLevel denotes exactly at this level).
-    unsigned lhs = op.getNumInputsAndOutputs() - 1;
+    unsigned lhs = op.getNumShapedOperands() - 1;
     if (lhs == tensor) {
       codegen.redExp = hoist ? exp : -1u;
     } else if (atLevel) {
@@ -995,7 +988,7 @@ static void genStmt(Merger &merger, CodeGen &codegen, PatternRewriter &rewriter,
                     unsigned exp, unsigned at) {
   // At each leaf, assign remaining tensor (sub)expression to output tensor.
   if (at == topSort.size()) {
-    unsigned lhs = op.getNumInputsAndOutputs() - 1;
+    unsigned lhs = op.getNumShapedOperands() - 1;
     Value rhs = genExp(merger, codegen, rewriter, op, exp);
     genTensorStore(merger, codegen, rewriter, op, lhs, rhs);
     return;
@@ -1073,7 +1066,7 @@ static void genStmt(Merger &merger, CodeGen &codegen, PatternRewriter &rewriter,
   Value red = codegen.redVal;
   if (red) {
     codegen.redVal = merger.exp(codegen.redExp).val = Value(); // end chain
-    unsigned lhs = op.getNumInputsAndOutputs() - 1;
+    unsigned lhs = op.getNumShapedOperands() - 1;
     genTensorStore(merger, codegen, rewriter, op, lhs, red);
   }
   codegen.loops[idx] = Value();
@@ -1095,7 +1088,7 @@ public:
     if (!op.hasSparseSemantics())
       return failure();
     assert(op.getNumOutputs() == 1);
-    unsigned numTensors = op.getNumInputsAndOutputs();
+    unsigned numTensors = op.getNumShapedOperands();
     unsigned numLoops = op.iterator_types().getValue().size();
     Merger merger(numTensors, numLoops);
     findSparseAnnotations(merger, op);

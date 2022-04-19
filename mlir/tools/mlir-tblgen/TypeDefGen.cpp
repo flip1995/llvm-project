@@ -47,7 +47,7 @@ static void findAllTypeDefs(const llvm::RecordKeeper &recordKeeper,
       return;
 
     llvm::SmallSet<Dialect, 4> dialects;
-    for (const TypeDef &typeDef : defs)
+    for (const TypeDef typeDef : defs)
       dialects.insert(typeDef.getDialect());
     if (dialects.size() != 1)
       llvm::PrintFatalError("TypeDefs belonging to more than one dialect. Must "
@@ -61,7 +61,7 @@ static void findAllTypeDefs(const llvm::RecordKeeper &recordKeeper,
                           "generate types via '--typedefs-dialect'.");
   }
 
-  for (const TypeDef &typeDef : defs)
+  for (const TypeDef typeDef : defs)
     if (typeDef.getDialect().getName().equals(dialectName))
       typeDefs.push_back(typeDef);
 }
@@ -296,7 +296,7 @@ static void emitTypeDefList(SmallVectorImpl<TypeDef> &typeDefs,
 /// {0}: Storage class namespace.
 /// {1}: Storage class c++ name.
 /// {2}: Parameters parameters.
-/// {3}: Parameter initialzer string.
+/// {3}: Parameter initializer string.
 /// {4}: Parameter name list.
 /// {5}: Parameter types.
 static const char *const typeDefStorageClassBegin = R"(

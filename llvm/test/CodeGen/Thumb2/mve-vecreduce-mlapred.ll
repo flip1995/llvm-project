@@ -282,6 +282,44 @@ entry:
   ret i64 %z
 }
 
+define arm_aapcs_vfpcc i64 @add_v4i16_v4i64_zext(<4 x i16> %x, <4 x i16> %y, <4 x i16> %b) {
+; CHECK-LABEL: add_v4i16_v4i64_zext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    vmovlb.u16 q1, q1
+; CHECK-NEXT:    vmovlb.u16 q0, q0
+; CHECK-NEXT:    vmovlb.u16 q2, q2
+; CHECK-NEXT:    vpt.i32 eq, q2, zr
+; CHECK-NEXT:    vmlalvt.u32 r0, r1, q0, q1
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <4 x i16> %b, zeroinitializer
+  %xx = zext <4 x i16> %x to <4 x i64>
+  %yy = zext <4 x i16> %y to <4 x i64>
+  %m = mul <4 x i64> %xx, %yy
+  %s = select <4 x i1> %c, <4 x i64> %m, <4 x i64> zeroinitializer
+  %z = call i64 @llvm.vector.reduce.add.v4i64(<4 x i64> %s)
+  ret i64 %z
+}
+
+define arm_aapcs_vfpcc i64 @add_v4i16_v4i64_sext(<4 x i16> %x, <4 x i16> %y, <4 x i16> %b) {
+; CHECK-LABEL: add_v4i16_v4i64_sext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    vmovlb.s16 q1, q1
+; CHECK-NEXT:    vmovlb.s16 q0, q0
+; CHECK-NEXT:    vmovlb.u16 q2, q2
+; CHECK-NEXT:    vpt.i32 eq, q2, zr
+; CHECK-NEXT:    vmlalvt.s32 r0, r1, q0, q1
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <4 x i16> %b, zeroinitializer
+  %xx = sext <4 x i16> %x to <4 x i64>
+  %yy = sext <4 x i16> %y to <4 x i64>
+  %m = mul <4 x i64> %xx, %yy
+  %s = select <4 x i1> %c, <4 x i64> %m, <4 x i64> zeroinitializer
+  %z = call i64 @llvm.vector.reduce.add.v4i64(<4 x i64> %s)
+  ret i64 %z
+}
+
 define arm_aapcs_vfpcc i64 @add_v2i16_v2i64_zext(<2 x i16> %x, <2 x i16> %y, <2 x i16> %b) {
 ; CHECK-LABEL: add_v2i16_v2i64_zext:
 ; CHECK:       @ %bb.0: @ %entry
@@ -453,6 +491,150 @@ entry:
   %ma = zext <16 x i16> %m to <16 x i32>
   %s = select <16 x i1> %c, <16 x i32> %ma, <16 x i32> zeroinitializer
   %z = call i32 @llvm.vector.reduce.add.v16i32(<16 x i32> %s)
+  ret i32 %z
+}
+
+define arm_aapcs_vfpcc i32 @add_v8i8_v8i32_zext(<8 x i8> %x, <8 x i8> %y, <8 x i8> %b) {
+; CHECK-LABEL: add_v8i8_v8i32_zext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    .vsave {d8, d9, d10, d11}
+; CHECK-NEXT:    vpush {d8, d9, d10, d11}
+; CHECK-NEXT:    vmovlb.u8 q1, q1
+; CHECK-NEXT:    vmovlb.u8 q0, q0
+; CHECK-NEXT:    vmov.u16 r0, q1[2]
+; CHECK-NEXT:    vmov.u16 r1, q1[0]
+; CHECK-NEXT:    vmov q3[2], q3[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q1[3]
+; CHECK-NEXT:    vmov.u16 r1, q1[1]
+; CHECK-NEXT:    vmovlb.u8 q2, q2
+; CHECK-NEXT:    vmov q3[3], q3[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[2]
+; CHECK-NEXT:    vmov.u16 r1, q0[0]
+; CHECK-NEXT:    vmovlb.u16 q4, q3
+; CHECK-NEXT:    vmov q3[2], q3[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[3]
+; CHECK-NEXT:    vmov.u16 r1, q0[1]
+; CHECK-NEXT:    vcmp.i16 eq, q2, zr
+; CHECK-NEXT:    vmov q3[3], q3[1], r1, r0
+; CHECK-NEXT:    vmov.i8 q2, #0x0
+; CHECK-NEXT:    vmovlb.u16 q5, q3
+; CHECK-NEXT:    vmov.i8 q3, #0xff
+; CHECK-NEXT:    vpsel q2, q3, q2
+; CHECK-NEXT:    vmov.u16 r0, q2[2]
+; CHECK-NEXT:    vmov.u16 r1, q2[0]
+; CHECK-NEXT:    vmov q3[2], q3[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q2[3]
+; CHECK-NEXT:    vmov.u16 r1, q2[1]
+; CHECK-NEXT:    vmov q3[3], q3[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q1[6]
+; CHECK-NEXT:    vcmp.i32 ne, q3, zr
+; CHECK-NEXT:    vmov.i32 q3, #0x0
+; CHECK-NEXT:    vmov.u16 r1, q1[4]
+; CHECK-NEXT:    vpst
+; CHECK-NEXT:    vmult.i32 q3, q5, q4
+; CHECK-NEXT:    vmov q4[2], q4[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q1[7]
+; CHECK-NEXT:    vmov.u16 r1, q1[5]
+; CHECK-NEXT:    vmov q4[3], q4[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[6]
+; CHECK-NEXT:    vmov.u16 r1, q0[4]
+; CHECK-NEXT:    vmov q1[2], q1[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[7]
+; CHECK-NEXT:    vmov.u16 r1, q0[5]
+; CHECK-NEXT:    vmov q1[3], q1[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q2[6]
+; CHECK-NEXT:    vmov.u16 r1, q2[4]
+; CHECK-NEXT:    vmullb.u16 q0, q1, q4
+; CHECK-NEXT:    vmov q1[2], q1[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q2[7]
+; CHECK-NEXT:    vmov.u16 r1, q2[5]
+; CHECK-NEXT:    vmov q1[3], q1[1], r1, r0
+; CHECK-NEXT:    vpt.i32 ne, q1, zr
+; CHECK-NEXT:    vaddt.i32 q3, q3, q0
+; CHECK-NEXT:    vaddv.u32 r0, q3
+; CHECK-NEXT:    vpop {d8, d9, d10, d11}
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <8 x i8> %b, zeroinitializer
+  %xx = zext <8 x i8> %x to <8 x i32>
+  %yy = zext <8 x i8> %y to <8 x i32>
+  %m = mul <8 x i32> %xx, %yy
+  %s = select <8 x i1> %c, <8 x i32> %m, <8 x i32> zeroinitializer
+  %z = call i32 @llvm.vector.reduce.add.v8i32(<8 x i32> %s)
+  ret i32 %z
+}
+
+define arm_aapcs_vfpcc i32 @add_v8i8_v8i32_sext(<8 x i8> %x, <8 x i8> %y, <8 x i8> %b) {
+; CHECK-LABEL: add_v8i8_v8i32_sext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    .vsave {d8, d9, d10, d11}
+; CHECK-NEXT:    vpush {d8, d9, d10, d11}
+; CHECK-NEXT:    vmov.u16 r0, q1[2]
+; CHECK-NEXT:    vmov.u16 r1, q1[0]
+; CHECK-NEXT:    vmov q3[2], q3[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q1[3]
+; CHECK-NEXT:    vmov.u16 r1, q1[1]
+; CHECK-NEXT:    vmovlb.u8 q2, q2
+; CHECK-NEXT:    vmov q3[3], q3[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[2]
+; CHECK-NEXT:    vmovlb.s8 q3, q3
+; CHECK-NEXT:    vmov.u16 r1, q0[0]
+; CHECK-NEXT:    vmovlb.s16 q4, q3
+; CHECK-NEXT:    vmov q3[2], q3[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[3]
+; CHECK-NEXT:    vmov.u16 r1, q0[1]
+; CHECK-NEXT:    vmov q3[3], q3[1], r1, r0
+; CHECK-NEXT:    vcmp.i16 eq, q2, zr
+; CHECK-NEXT:    vmovlb.s8 q3, q3
+; CHECK-NEXT:    vmov.i8 q2, #0x0
+; CHECK-NEXT:    vmovlb.s16 q5, q3
+; CHECK-NEXT:    vmov.i8 q3, #0xff
+; CHECK-NEXT:    vpsel q2, q3, q2
+; CHECK-NEXT:    vmov.u16 r0, q2[2]
+; CHECK-NEXT:    vmov.u16 r1, q2[0]
+; CHECK-NEXT:    vmov q3[2], q3[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q2[3]
+; CHECK-NEXT:    vmov.u16 r1, q2[1]
+; CHECK-NEXT:    vmov q3[3], q3[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q1[6]
+; CHECK-NEXT:    vcmp.i32 ne, q3, zr
+; CHECK-NEXT:    vmov.i32 q3, #0x0
+; CHECK-NEXT:    vmov.u16 r1, q1[4]
+; CHECK-NEXT:    vpst
+; CHECK-NEXT:    vmult.i32 q3, q5, q4
+; CHECK-NEXT:    vmov q4[2], q4[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q1[7]
+; CHECK-NEXT:    vmov.u16 r1, q1[5]
+; CHECK-NEXT:    vmov q4[3], q4[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[6]
+; CHECK-NEXT:    vmov.u16 r1, q0[4]
+; CHECK-NEXT:    vmovlb.s8 q1, q4
+; CHECK-NEXT:    vmov q4[2], q4[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q0[7]
+; CHECK-NEXT:    vmov.u16 r1, q0[5]
+; CHECK-NEXT:    vmovlb.s16 q1, q1
+; CHECK-NEXT:    vmov q4[3], q4[1], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q2[6]
+; CHECK-NEXT:    vmovlb.s8 q0, q4
+; CHECK-NEXT:    vmov.u16 r1, q2[4]
+; CHECK-NEXT:    vmovlb.s16 q0, q0
+; CHECK-NEXT:    vmul.i32 q0, q0, q1
+; CHECK-NEXT:    vmov q1[2], q1[0], r1, r0
+; CHECK-NEXT:    vmov.u16 r0, q2[7]
+; CHECK-NEXT:    vmov.u16 r1, q2[5]
+; CHECK-NEXT:    vmov q1[3], q1[1], r1, r0
+; CHECK-NEXT:    vpt.i32 ne, q1, zr
+; CHECK-NEXT:    vaddt.i32 q3, q3, q0
+; CHECK-NEXT:    vaddv.u32 r0, q3
+; CHECK-NEXT:    vpop {d8, d9, d10, d11}
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <8 x i8> %b, zeroinitializer
+  %xx = sext <8 x i8> %x to <8 x i32>
+  %yy = sext <8 x i8> %y to <8 x i32>
+  %m = mul <8 x i32> %xx, %yy
+  %s = select <8 x i1> %c, <8 x i32> %m, <8 x i32> zeroinitializer
+  %z = call i32 @llvm.vector.reduce.add.v8i32(<8 x i32> %s)
   ret i32 %z
 }
 
@@ -1237,6 +1419,86 @@ entry:
   %m = mul <16 x i64> %xx, %yy
   %s = select <16 x i1> %c, <16 x i64> %m, <16 x i64> zeroinitializer
   %z = call i64 @llvm.vector.reduce.add.v16i64(<16 x i64> %s)
+  ret i64 %z
+}
+
+define arm_aapcs_vfpcc i64 @add_v8i8_v8i64_zext(<8 x i8> %x, <8 x i8> %y, <8 x i8> %b) {
+; CHECK-LABEL: add_v8i8_v8i64_zext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    vmovlb.u8 q1, q1
+; CHECK-NEXT:    vmovlb.u8 q0, q0
+; CHECK-NEXT:    vmovlb.u8 q2, q2
+; CHECK-NEXT:    vpt.i16 eq, q2, zr
+; CHECK-NEXT:    vmlalvt.u16 r0, r1, q0, q1
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <8 x i8> %b, zeroinitializer
+  %xx = zext <8 x i8> %x to <8 x i64>
+  %yy = zext <8 x i8> %y to <8 x i64>
+  %m = mul <8 x i64> %xx, %yy
+  %s = select <8 x i1> %c, <8 x i64> %m, <8 x i64> zeroinitializer
+  %z = call i64 @llvm.vector.reduce.add.v8i64(<8 x i64> %s)
+  ret i64 %z
+}
+
+define arm_aapcs_vfpcc i64 @add_v8i8_v8i64_sext(<8 x i8> %x, <8 x i8> %y, <8 x i8> %b) {
+; CHECK-LABEL: add_v8i8_v8i64_sext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    vmovlb.s8 q1, q1
+; CHECK-NEXT:    vmovlb.s8 q0, q0
+; CHECK-NEXT:    vmovlb.u8 q2, q2
+; CHECK-NEXT:    vpt.i16 eq, q2, zr
+; CHECK-NEXT:    vmlalvt.s16 r0, r1, q0, q1
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <8 x i8> %b, zeroinitializer
+  %xx = sext <8 x i8> %x to <8 x i64>
+  %yy = sext <8 x i8> %y to <8 x i64>
+  %m = mul <8 x i64> %xx, %yy
+  %s = select <8 x i1> %c, <8 x i64> %m, <8 x i64> zeroinitializer
+  %z = call i64 @llvm.vector.reduce.add.v8i64(<8 x i64> %s)
+  ret i64 %z
+}
+
+define arm_aapcs_vfpcc i64 @add_v4i8_v4i64_zext(<4 x i8> %x, <4 x i8> %y, <4 x i8> %b) {
+; CHECK-LABEL: add_v4i8_v4i64_zext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    vmov.i32 q3, #0xff
+; CHECK-NEXT:    vand q1, q1, q3
+; CHECK-NEXT:    vand q0, q0, q3
+; CHECK-NEXT:    vand q2, q2, q3
+; CHECK-NEXT:    vpt.i32 eq, q2, zr
+; CHECK-NEXT:    vmlalvt.u32 r0, r1, q0, q1
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <4 x i8> %b, zeroinitializer
+  %xx = zext <4 x i8> %x to <4 x i64>
+  %yy = zext <4 x i8> %y to <4 x i64>
+  %m = mul <4 x i64> %xx, %yy
+  %s = select <4 x i1> %c, <4 x i64> %m, <4 x i64> zeroinitializer
+  %z = call i64 @llvm.vector.reduce.add.v4i64(<4 x i64> %s)
+  ret i64 %z
+}
+
+define arm_aapcs_vfpcc i64 @add_v4i8_v4i64_sext(<4 x i8> %x, <4 x i8> %y, <4 x i8> %b) {
+; CHECK-LABEL: add_v4i8_v4i64_sext:
+; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    vmovlb.s8 q1, q1
+; CHECK-NEXT:    vmovlb.s8 q0, q0
+; CHECK-NEXT:    vmov.i32 q3, #0xff
+; CHECK-NEXT:    vmovlb.s16 q1, q1
+; CHECK-NEXT:    vand q2, q2, q3
+; CHECK-NEXT:    vmovlb.s16 q0, q0
+; CHECK-NEXT:    vpt.i32 eq, q2, zr
+; CHECK-NEXT:    vmlalvt.s32 r0, r1, q0, q1
+; CHECK-NEXT:    bx lr
+entry:
+  %c = icmp eq <4 x i8> %b, zeroinitializer
+  %xx = sext <4 x i8> %x to <4 x i64>
+  %yy = sext <4 x i8> %y to <4 x i64>
+  %m = mul <4 x i64> %xx, %yy
+  %s = select <4 x i1> %c, <4 x i64> %m, <4 x i64> zeroinitializer
+  %z = call i64 @llvm.vector.reduce.add.v4i64(<4 x i64> %s)
   ret i64 %z
 }
 

@@ -686,7 +686,7 @@ def C : Flag<["-"], "C">, Flags<[CC1Option]>, Group<Preprocessor_Group>,
     HelpText<"Include comments in preprocessed output">,
     MarshallingInfoFlag<"PreprocessorOutputOpts.ShowComments">;
 def D : JoinedOrSeparate<["-"], "D">, Group<Preprocessor_Group>,
-    Flags<[CC1Option]>, MetaVarName<"<macro>=<value>">,
+    Flags<[CC1Option, FlangOption, FC1Option]>, MetaVarName<"<macro>=<value>">,
     HelpText<"Define <macro> to <value> (or 1 if <value> omitted)">;
 def E : Flag<["-"], "E">, Flags<[NoXarchOption,CC1Option, FlangOption, FC1Option]>, Group<Action_Group>,
     HelpText<"Only run the preprocessor">;
@@ -751,7 +751,7 @@ def O_flag : Flag<["-"], "O">, Flags<[CC1Option]>, Alias<O>, AliasArgs<["1"]>;
 def Ofast : Joined<["-"], "Ofast">, Group<O_Group>, Flags<[CC1Option]>;
 def P : Flag<["-"], "P">, Flags<[CC1Option]>, Group<Preprocessor_Group>,
   HelpText<"Disable linemarker output in -E mode">,
-  MarshallingInfoFlag<"PreprocessorOutputOpts.ShowLineMarkers", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"PreprocessorOutputOpts.ShowLineMarkers">;
 def Qy : Flag<["-"], "Qy">, Flags<[CC1Option]>,
   HelpText<"Emit metadata containing compiler name and version">;
 def Qn : Flag<["-"], "Qn">, Flags<[CC1Option]>,
@@ -785,7 +785,7 @@ def Ttext : JoinedOrSeparate<["-"], "Ttext">, Group<T_Group>,
 def T : JoinedOrSeparate<["-"], "T">, Group<T_Group>,
   MetaVarName<"<script>">, HelpText<"Specify <script> as linker script">;
 def U : JoinedOrSeparate<["-"], "U">, Group<Preprocessor_Group>,
-  Flags<[CC1Option]>, MetaVarName<"<macro>">, HelpText<"Undefine macro <macro>">;
+  Flags<[CC1Option, FlangOption, FC1Option]>, MetaVarName<"<macro>">, HelpText<"Undefine macro <macro>">;
 def V : JoinedOrSeparate<["-"], "V">, Flags<[NoXarchOption, Unsupported]>;
 def Wa_COMMA : CommaJoined<["-"], "Wa,">,
   HelpText<"Pass the comma separated arguments in <arg> to the assembler">,
@@ -1267,7 +1267,7 @@ def : Flag<["-"], "frecord-gcc-switches">, Alias<frecord_command_line>;
 def : Flag<["-"], "fno-record-gcc-switches">, Alias<fno_record_command_line>;
 def fcommon : Flag<["-"], "fcommon">, Group<f_Group>,
   Flags<[CoreOption, CC1Option]>, HelpText<"Place uninitialized global variables in a common block">,
-  MarshallingInfoFlag<"CodeGenOpts.NoCommon", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"CodeGenOpts.NoCommon">;
 def fcompile_resource_EQ : Joined<["-"], "fcompile-resource=">, Group<f_Group>;
 defm complete_member_pointers : BoolOption<"complete-member-pointers",
   "LangOpts->CompleteMemberPointers", DefaultsToFalse,
@@ -1899,7 +1899,7 @@ def fmodules_search_all : Flag <["-"], "fmodules-search-all">, Group<f_Group>,
 def fbuild_session_timestamp : Joined<["-"], "fbuild-session-timestamp=">,
   Group<i_Group>, Flags<[CC1Option]>, MetaVarName<"<time since Epoch in seconds>">,
   HelpText<"Time when the current build session started">,
-  MarshallingInfoStringInt<"HeaderSearchOpts->BuildSessionTimestamp">;
+  MarshallingInfoStringInt<"HeaderSearchOpts->BuildSessionTimestamp", "0", "uint64_t">;
 def fbuild_session_file : Joined<["-"], "fbuild-session-file=">,
   Group<i_Group>, MetaVarName<"<file>">,
   HelpText<"Use the last modification time of <file> as the build session timestamp">;
@@ -1911,7 +1911,7 @@ def fmodules_validate_once_per_build_session : Flag<["-"], "fmodules-validate-on
 def fmodules_disable_diagnostic_validation : Flag<["-"], "fmodules-disable-diagnostic-validation">,
   Group<i_Group>, Flags<[CC1Option]>,
   HelpText<"Disable validation of the diagnostic options when loading the module">,
-  MarshallingInfoFlag<"HeaderSearchOpts->ModulesValidateDiagnosticOptions", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"HeaderSearchOpts->ModulesValidateDiagnosticOptions">;
 defm modules_validate_system_headers : BoolOption<"modules-validate-system-headers",
   "HeaderSearchOpts->ModulesValidateSystemHeaders", DefaultsToFalse,
   ChangedBy<PosFlag, [CC1Option], "Validate the system headers that a module depends on when loading the module">,
@@ -1970,7 +1970,8 @@ def fsystem_module : Flag<["-"], "fsystem-module">, Flags<[CC1Option]>,
   MarshallingInfoFlag<"FrontendOpts.IsSystemModule">;
 def fmodule_map_file : Joined<["-"], "fmodule-map-file=">,
   Group<f_Group>, Flags<[NoXarchOption,CC1Option]>, MetaVarName<"<file>">,
-  HelpText<"Load this module map file">;
+  HelpText<"Load this module map file">,
+  MarshallingInfoStringVector<"FrontendOpts.ModuleMapFiles">;
 def fmodule_file : Joined<["-"], "fmodule-file=">,
   Group<i_Group>, Flags<[NoXarchOption,CC1Option]>, MetaVarName<"[<name>=]<file>">,
   HelpText<"Specify the mapping of module name to precompiled module file, or load a module file if name is omitted.">;
@@ -1999,7 +2000,7 @@ def fno_asm : Flag<["-"], "fno-asm">, Group<f_Group>;
 def fno_asynchronous_unwind_tables : Flag<["-"], "fno-asynchronous-unwind-tables">, Group<f_Group>;
 def fno_assume_sane_operator_new : Flag<["-"], "fno-assume-sane-operator-new">, Group<f_Group>,
   HelpText<"Don't assume that C++'s global operator new can't alias any pointer">,
-  Flags<[CC1Option]>, MarshallingInfoFlag<"CodeGenOpts.AssumeSaneOperatorNew", "true">, IsNegative;
+  Flags<[CC1Option]>, MarshallingInfoNegativeFlag<"CodeGenOpts.AssumeSaneOperatorNew">;
 def fno_builtin : Flag<["-"], "fno-builtin">, Group<f_Group>, Flags<[CC1Option, CoreOption]>,
   HelpText<"Disable implicit builtin knowledge of functions">;
 def fno_builtin_ : Joined<["-"], "fno-builtin-">, Group<f_Group>, Flags<[CC1Option, CoreOption]>,
@@ -2077,7 +2078,7 @@ def fno_strict_overflow : Flag<["-"], "fno-strict-overflow">, Group<f_Group>;
 def fno_temp_file : Flag<["-"], "fno-temp-file">, Group<f_Group>,
   Flags<[CC1Option, CoreOption]>, HelpText<
   "Directly create compilation output files. This may lead to incorrect incremental builds if the compiler crashes">,
-  MarshallingInfoFlag<"FrontendOpts.UseTemporary", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"FrontendOpts.UseTemporary">;
 defm use_cxa_atexit : BoolFOption<"use-cxa-atexit",
   "CodeGenOpts.CXAAtExit", DefaultsToTrue,
   ChangedBy<NegFlag, [], "Don't use __cxa_atexit for calling destructors">,
@@ -2085,7 +2086,7 @@ defm use_cxa_atexit : BoolFOption<"use-cxa-atexit",
 def fno_unit_at_a_time : Flag<["-"], "fno-unit-at-a-time">, Group<f_Group>;
 def fno_unwind_tables : Flag<["-"], "fno-unwind-tables">, Group<f_Group>;
 def fno_verbose_asm : Flag<["-"], "fno-verbose-asm">, Group<f_Group>, Flags<[CC1Option]>,
-  MarshallingInfoFlag<"CodeGenOpts.AsmVerbose", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"CodeGenOpts.AsmVerbose">;
 def fno_working_directory : Flag<["-"], "fno-working-directory">, Group<f_Group>;
 def fno_wrapv : Flag<["-"], "fno-wrapv">, Group<f_Group>;
 def fobjc_arc : Flag<["-"], "fobjc-arc">, Group<f_Group>, Flags<[CC1Option]>,
@@ -2647,9 +2648,10 @@ def : Flag<["-"], "grecord-gcc-switches">, Alias<grecord_command_line>;
 def : Flag<["-"], "gno-record-gcc-switches">, Alias<gno_record_command_line>;
 def gstrict_dwarf : Flag<["-"], "gstrict-dwarf">, Group<g_flags_Group>;
 def gno_strict_dwarf : Flag<["-"], "gno-strict-dwarf">, Group<g_flags_Group>;
-defm column_info : BoolGOption<"column-info",
+defm column_info : BoolCC1Option<"column-info",
   "CodeGenOpts.DebugColumnInfo", DefaultsToTrue,
-  ChangedBy<NegFlag>, ResetBy<PosFlag>, BothFlags<[CoreOption]>>;
+  ChangedBy<NegFlag>, ResetBy<PosFlag>, BothFlags<[CoreOption]>, "g">,
+  Group<g_flags_Group>;
 def gsplit_dwarf : Flag<["-"], "gsplit-dwarf">, Group<g_flags_Group>;
 def gsplit_dwarf_EQ : Joined<["-"], "gsplit-dwarf=">, Group<g_flags_Group>,
   HelpText<"Set DWARF fission mode to either 'split' or 'single'">,
@@ -3368,7 +3370,7 @@ def no_pedantic : Flag<["-", "--"], "no-pedantic">, Group<pedantic_Group>;
 def no__dead__strip__inits__and__terms : Flag<["-"], "no_dead_strip_inits_and_terms">;
 def nobuiltininc : Flag<["-"], "nobuiltininc">, Flags<[CC1Option, CoreOption]>,
   HelpText<"Disable builtin #include directories">,
-  MarshallingInfoFlag<"HeaderSearchOpts->UseBuiltinIncludes", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"HeaderSearchOpts->UseBuiltinIncludes">;
 def nogpuinc : Flag<["-"], "nogpuinc">, HelpText<"Do not add include paths for CUDA/HIP and"
   " do not include the default CUDA/HIP wrapper headers">;
 def : Flag<["-"], "nocudainc">, Alias<nogpuinc>;
@@ -3389,7 +3391,7 @@ def nostdinc : Flag<["-"], "nostdinc">, Flags<[CoreOption]>;
 def nostdlibinc : Flag<["-"], "nostdlibinc">;
 def nostdincxx : Flag<["-"], "nostdinc++">, Flags<[CC1Option]>,
   HelpText<"Disable standard #include directories for the C++ standard library">,
-  MarshallingInfoFlag<"HeaderSearchOpts->UseStandardCXXIncludes", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"HeaderSearchOpts->UseStandardCXXIncludes">;
 def nostdlib : Flag<["-"], "nostdlib">, Group<Link_Group>;
 def nostdlibxx : Flag<["-"], "nostdlib++">;
 def object : Flag<["-"], "object">;
@@ -3554,7 +3556,7 @@ def umbrella : Separate<["-"], "umbrella">;
 def undefined : JoinedOrSeparate<["-"], "undefined">, Group<u_Group>;
 def undef : Flag<["-"], "undef">, Group<u_Group>, Flags<[CC1Option]>,
   HelpText<"undef all system defines">,
-  MarshallingInfoFlag<"PreprocessorOpts->UsePredefines", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"PreprocessorOpts->UsePredefines">;
 def unexported__symbols__list : Separate<["-"], "unexported_symbols_list">;
 def u : JoinedOrSeparate<["-"], "u">, Group<u_Group>;
 def v : Flag<["-"], "v">, Flags<[CC1Option, CoreOption]>,
@@ -4017,11 +4019,9 @@ defm inline_small_functions : BooleanFFlag<"inline-small-functions">,
 defm ipa_cp : BooleanFFlag<"ipa-cp">,
     Group<clang_ignored_gcc_optimization_f_Group>;
 defm ivopts : BooleanFFlag<"ivopts">, Group<clang_ignored_gcc_optimization_f_Group>;
-def fsemantic_interposition : Flag<["-"], "fsemantic-interposition">, Group<f_Group>, Flags<[CC1Option]>,
-  MarshallingInfoFlag<"LangOpts->SemanticInterposition">;
-// An explicit -fno-semantic-interposition infers dso_local.
-def fno_semantic_interposition: Flag<["-"], "fno-semantic-interposition">, Group<f_Group>, Flags<[CC1Option]>,
-  MarshallingInfoFlag<"LangOpts->ExplicitNoSemanticInterposition">;
+defm semantic_interposition : BoolFOption<"semantic-interposition",
+  "LangOpts->SemanticInterposition", DefaultsToFalse,
+  ChangedBy<PosFlag>, ResetBy<NegFlag>>;
 defm non_call_exceptions : BooleanFFlag<"non-call-exceptions">, Group<clang_ignored_f_Group>;
 defm peel_loops : BooleanFFlag<"peel-loops">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm permissive : BooleanFFlag<"permissive">, Group<clang_ignored_f_Group>;
@@ -4427,7 +4427,7 @@ def fuse_ctor_homing: Flag<["-"], "fuse-ctor-homing">,
 
 def disable_llvm_verifier : Flag<["-"], "disable-llvm-verifier">,
   HelpText<"Don't run the LLVM IR verifier pass">,
-  MarshallingInfoFlag<"CodeGenOpts.VerifyModule", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"CodeGenOpts.VerifyModule">;
 def disable_llvm_passes : Flag<["-"], "disable-llvm-passes">,
   HelpText<"Use together with -emit-llvm to get pristine LLVM IR from the "
            "frontend by not running any LLVM passes at all">,
@@ -4489,7 +4489,7 @@ def relaxed_aliasing : Flag<["-"], "relaxed-aliasing">,
   MarshallingInfoFlag<"CodeGenOpts.RelaxedAliasing">;
 def no_struct_path_tbaa : Flag<["-"], "no-struct-path-tbaa">,
   HelpText<"Turn off struct-path aware Type Based Alias Analysis">,
-  MarshallingInfoFlag<"CodeGenOpts.StructPathTBAA", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"CodeGenOpts.StructPathTBAA">;
 def new_struct_path_tbaa : Flag<["-"], "new-struct-path-tbaa">,
   HelpText<"Enable enhanced struct-path aware Type Based Alias Analysis">;
 def mdebug_pass : Separate<["-"], "mdebug-pass">,
@@ -4631,10 +4631,10 @@ def flto_visibility_public_std:
     Flag<["-"], "flto-visibility-public-std">,
     HelpText<"Use public LTO visibility for classes in std and stdext namespaces">,
     MarshallingInfoFlag<"CodeGenOpts.LTOVisibilityPublicStd">;
-defm lto_unit : BoolFOption<"lto-unit",
+defm lto_unit : BoolCC1Option<"lto-unit",
   "CodeGenOpts.LTOUnit", DefaultsToFalse,
   ChangedBy<PosFlag, [], "Emit IR to support LTO unit features (CFI, whole program vtable opt)">,
-  ResetBy<NegFlag>>;
+  ResetBy<NegFlag>, BothFlags<[]>, "f">;
 defm debug_pass_manager : BoolOption<"debug-pass-manager",
   "CodeGenOpts.DebugPassManager", DefaultsToFalse,
   ChangedBy<PosFlag, [], "Prints debug information for the new pass manager">,
@@ -4652,7 +4652,7 @@ def msign_return_address_key_EQ : Joined<["-"], "msign-return-address-key=">,
 def mbranch_target_enforce : Flag<["-"], "mbranch-target-enforce">,
   MarshallingInfoFlag<"LangOpts->BranchTargetEnforcement">;
 def fno_dllexport_inlines : Flag<["-"], "fno-dllexport-inlines">,
-  MarshallingInfoFlag<"LangOpts->DllExportInlines", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"LangOpts->DllExportInlines">;
 def cfguard_no_checks : Flag<["-"], "cfguard-no-checks">,
     HelpText<"Emit Windows Control Flow Guard tables only (no checks)">,
     MarshallingInfoFlag<"CodeGenOpts.ControlFlowGuardNoChecks">;
@@ -4758,10 +4758,10 @@ def code_completion_patterns : Flag<["-"], "code-completion-patterns">,
   MarshallingInfoFlag<"FrontendOpts.CodeCompleteOpts.IncludeCodePatterns">;
 def no_code_completion_globals : Flag<["-"], "no-code-completion-globals">,
   HelpText<"Do not include global declarations in code-completion results.">,
-  MarshallingInfoFlag<"FrontendOpts.CodeCompleteOpts.IncludeGlobals", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"FrontendOpts.CodeCompleteOpts.IncludeGlobals">;
 def no_code_completion_ns_level_decls : Flag<["-"], "no-code-completion-ns-level-decls">,
   HelpText<"Do not include declarations inside namespaces (incl. global namespace) in the code-completion results.">,
-  MarshallingInfoFlag<"FrontendOpts.CodeCompleteOpts.IncludeNamespaceLevelDecls", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"FrontendOpts.CodeCompleteOpts.IncludeNamespaceLevelDecls">;
 def code_completion_brief_comments : Flag<["-"], "code-completion-brief-comments">,
   HelpText<"Include brief documentation comments in code-completion results.">,
   MarshallingInfoFlag<"FrontendOpts.CodeCompleteOpts.IncludeBriefComments">;
@@ -4791,10 +4791,10 @@ def ast_dump_filter : Separate<["-"], "ast-dump-filter">,
   MarshallingInfoString<"FrontendOpts.ASTDumpFilter">;
 def fno_modules_global_index : Flag<["-"], "fno-modules-global-index">,
   HelpText<"Do not automatically generate or update the global module index">,
-  MarshallingInfoFlag<"FrontendOpts.UseGlobalModuleIndex", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"FrontendOpts.UseGlobalModuleIndex">;
 def fno_modules_error_recovery : Flag<["-"], "fno-modules-error-recovery">,
   HelpText<"Do not automatically import modules for error recovery">,
-  MarshallingInfoFlag<"LangOpts->ModulesErrorRecovery", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"LangOpts->ModulesErrorRecovery">;
 def fmodule_map_file_home_is_cwd : Flag<["-"], "fmodule-map-file-home-is-cwd">,
   HelpText<"Use the current working directory as the home directory of "
            "module maps specified by -fmodule-map-file=<FILE>">,
@@ -4837,7 +4837,7 @@ def fconcepts_ts : Flag<["-"], "fconcepts-ts">,
 def fno_concept_satisfaction_caching : Flag<["-"],
                                             "fno-concept-satisfaction-caching">,
   HelpText<"Disable satisfaction caching for C++2a Concepts.">,
-  MarshallingInfoFlag<"LangOpts->ConceptSatisfactionCaching", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"LangOpts->ConceptSatisfactionCaching">;
 
 defm recovery_ast : BoolOption<"recovery-ast",
   "LangOpts->RecoveryAST", DefaultsToTrue,
@@ -4939,7 +4939,7 @@ def arcmt_action_EQ : Joined<["-"], "arcmt-action=">, Flags<[CC1Option, NoDriver
   NormalizedValuesScope<"FrontendOptions">,
   NormalizedValues<["ARCMT_Check", "ARCMT_Modify", "ARCMT_Migrate"]>,
   MarshallingInfoString<"FrontendOpts.ARCMTAction", "ARCMT_None">,
-  AutoNormalizeEnumJoined;
+  AutoNormalizeEnum;
 
 def opt_record_file : Separate<["-"], "opt-record-file">,
   HelpText<"File name to use for YAML optimization record output">,
@@ -4989,7 +4989,7 @@ def pch_through_hdrstop_use : Flag<["-"], "pch-through-hdrstop-use">,
   HelpText<"When using a PCH, skip tokens until after a #pragma hdrstop.">;
 def fno_pch_timestamp : Flag<["-"], "fno-pch-timestamp">,
   HelpText<"Disable inclusion of timestamp in precompiled headers">,
-  MarshallingInfoFlag<"FrontendOpts.IncludeTimestamps", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"FrontendOpts.IncludeTimestamps">;
 def building_pch_with_obj : Flag<["-"], "building-pch-with-obj">,
   HelpText<"This compilation is part of building a PCH with corresponding object file.">,
   MarshallingInfoFlag<"LangOpts->BuildingPCHWithObjectFile">;
@@ -5042,7 +5042,7 @@ def fobjc_dispatch_method_EQ : Joined<["-"], "fobjc-dispatch-method=">,
   MarshallingInfoString<"CodeGenOpts.ObjCDispatchMethod", "Legacy">, AutoNormalizeEnum;
 def disable_objc_default_synthesize_properties : Flag<["-"], "disable-objc-default-synthesize-properties">,
   HelpText<"disable the default synthesis of Objective-C properties">,
-  MarshallingInfoFlag<"LangOpts->ObjCDefaultSynthProperties", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"LangOpts->ObjCDefaultSynthProperties">;
 def fencode_extended_block_signature : Flag<["-"], "fencode-extended-block-signature">,
   HelpText<"enable extended encoding of block type signature">,
   MarshallingInfoFlag<"LangOpts->EncodeExtendedBlockSig">;
@@ -5054,6 +5054,9 @@ def pic_level : Separate<["-"], "pic-level">,
 def pic_is_pie : Flag<["-"], "pic-is-pie">,
   HelpText<"File is for a position independent executable">,
   MarshallingInfoFlag<"LangOpts->PIE">;
+def fhalf_no_semantic_interposition : Flag<["-"], "fhalf-no-semantic-interposition">,
+  HelpText<"Like -fno-semantic-interposition but don't use local aliases">,
+  MarshallingInfoFlag<"LangOpts->HalfNoSemanticInterposition">;
 def fno_validate_pch : Flag<["-"], "fno-validate-pch">,
   HelpText<"Disable validation of precompiled headers">,
   MarshallingInfoFlag<"PreprocessorOpts->DisablePCHValidation">;
@@ -5105,10 +5108,10 @@ def fconstexpr_steps : Separate<["-"], "fconstexpr-steps">,
 def fbracket_depth : Separate<["-"], "fbracket-depth">,
   HelpText<"Maximum nesting level for parentheses, brackets, and braces">,
   MarshallingInfoStringInt<"LangOpts->BracketDepth", "256">;
-defm const_strings : BoolFOption<"const-strings",
+defm const_strings : BoolCC1Option<"const-strings",
   "LangOpts->ConstStrings", DefaultsToFalse,
   ChangedBy<PosFlag, [], "Use">, ResetBy<NegFlag, [], "Don't use">,
-  BothFlags<[], " a const qualified type for string literals in C and ObjC">>;
+  BothFlags<[], " a const qualified type for string literals in C and ObjC">, "f">;
 def fno_bitfield_type_align : Flag<["-"], "fno-bitfield-type-align">,
   HelpText<"Ignore bit-field types when aligning structures">,
   MarshallingInfoFlag<"LangOpts->NoBitFieldTypeAlign">;
@@ -5166,10 +5169,10 @@ def fwchar_type_EQ : Joined<["-"], "fwchar-type=">,
   HelpText<"Select underlying type for wchar_t">, Values<"char,short,int">,
   NormalizedValues<["1", "2", "4"]>,
   MarshallingInfoString<"LangOpts->WCharSize", "0">, AutoNormalizeEnum;
-defm signed_wchar : BoolFOption<"signed-wchar",
+defm signed_wchar : BoolCC1Option<"signed-wchar",
   "LangOpts->WCharIsSigned", DefaultsToTrue,
   ChangedBy<NegFlag, [], "Use an unsigned">, ResetBy<PosFlag, [], "Use a signed">,
-  BothFlags<[], " type for wchar_t">>;
+  BothFlags<[], " type for wchar_t">, "f">;
 def fcompatibility_qualified_id_block_param_type_checking : Flag<["-"], "fcompatibility-qualified-id-block-type-checking">,
   HelpText<"Allow using blocks with parameters of more specific type than "
            "the type system guarantees when a parameter is qualified id">,
@@ -5191,7 +5194,7 @@ def fobjc_gc : Flag<["-"], "fobjc-gc">, Group<f_Group>,
 
 def nostdsysteminc : Flag<["-"], "nostdsysteminc">,
   HelpText<"Disable standard system #include directories">,
-  MarshallingInfoFlag<"HeaderSearchOpts->UseStandardSystemIncludes", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"HeaderSearchOpts->UseStandardSystemIncludes">;
 def fdisable_module_hash : Flag<["-"], "fdisable-module-hash">,
   HelpText<"Disable the module hash">,
   MarshallingInfoFlag<"HeaderSearchOpts->DisableModuleHash">;
@@ -5263,7 +5266,7 @@ def fcuda_allow_variadic_functions : Flag<["-"], "fcuda-allow-variadic-functions
   MarshallingInfoFlag<"LangOpts->CUDAAllowVariadicFunctions">;
 def fno_cuda_host_device_constexpr : Flag<["-"], "fno-cuda-host-device-constexpr">,
   HelpText<"Don't treat unattributed constexpr functions as __host__ __device__.">,
-  MarshallingInfoFlag<"LangOpts->CUDAHostDeviceConstexpr", "true">, IsNegative;
+  MarshallingInfoNegativeFlag<"LangOpts->CUDAHostDeviceConstexpr">;
 
 //===----------------------------------------------------------------------===//
 // OpenMP Options

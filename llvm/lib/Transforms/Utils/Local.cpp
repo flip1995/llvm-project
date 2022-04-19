@@ -704,34 +704,6 @@ bool llvm::SimplifyInstructionsInBlock(BasicBlock *BB,
 //  Control Flow Graph Restructuring.
 //
 
-void llvm::RemovePredecessorAndSimplify(BasicBlock *BB, BasicBlock *Pred,
-                                        DomTreeUpdater *DTU) {
-  // This only adjusts blocks with PHI nodes.
-  if (!isa<PHINode>(BB->begin()))
-    return;
-
-  // Remove the entries for Pred from the PHI nodes in BB, but do not simplify
-  // them down.  This will leave us with single entry phi nodes and other phis
-  // that can be removed.
-  BB->removePredecessor(Pred, true);
-
-  WeakTrackingVH PhiIt = &BB->front();
-  while (PHINode *PN = dyn_cast<PHINode>(PhiIt)) {
-    PhiIt = &*++BasicBlock::iterator(cast<Instruction>(PhiIt));
-    Value *OldPhiIt = PhiIt;
-
-    if (!recursivelySimplifyInstruction(PN))
-      continue;
-
-    // If recursive simplification ended up deleting the next PHI node we would
-    // iterate to, then our iterator is invalid, restart scanning from the top
-    // of the block.
-    if (PhiIt != OldPhiIt) PhiIt = &BB->front();
-  }
-  if (DTU)
-    DTU->applyUpdatesPermissive({{DominatorTree::Delete, Pred, BB}});
-}
-
 void llvm::MergeBasicBlockIntoOnlyPred(BasicBlock *DestBB,
                                        DomTreeUpdater *DTU) {
 
@@ -1370,16 +1342,22 @@ static bool PhiHasDebugValue(DILocalVariable *DIVar,
 /// least n bits.
 static bool valueCoversEntireFragment(Type *ValTy, DbgVariableIntrinsic *DII) {
   const DataLayout &DL = DII->getModule()->getDataLayout();
-  uint64_t ValueSize = DL.getTypeAllocSizeInBits(ValTy);
-  if (auto FragmentSize = DII->getFragmentSizeInBits())
-    return ValueSize >= *FragmentSize;
+  TypeSize ValueSize = DL.getTypeAllocSizeInBits(ValTy);
+  if (Optional<uint64_t> FragmentSize = DII->getFragmentSizeInBits()) {
+    assert(!ValueSize.isScalable() &&
+           "Fragments don't work on scalable types.");
+    return ValueSize.getFixedSize() >= *FragmentSize;
+  }
   // We can't always calculate the size of the DI variable (e.g. if it is a
   // VLA). Try to use the size of the alloca that the dbg intrinsic describes
   // intead.
   if (DII->isAddressOfVariable())
     if (auto *AI = dyn_cast_or_null<AllocaInst>(DII->getVariableLocation()))
-      if (auto FragmentSize = AI->getAllocationSizeInBits(DL))
-        return ValueSize >= *FragmentSize;
+      if (Optional<TypeSize> FragmentSize = AI->getAllocationSizeInBits(DL)) {
+        assert(ValueSize.isScalable() == FragmentSize->isScalable() &&
+               "Both sizes should agree on the scalable flag.");
+        return TypeSize::isKnownGE(ValueSize, *FragmentSize);
+      }
   // Could not determine size of variable. Conservatively return false.
   return false;
 }
@@ -2080,7 +2058,7 @@ unsigned llvm::changeToUnreachable(Instruction *I, bool UseLLVMTrap,
 }
 
 CallInst *llvm::createCallMatchingInvoke(InvokeInst *II) {
-  SmallVector<Value *, 8> Args(II->arg_begin(), II->arg_end());
+  SmallVector<Value *, 8> Args(II->args());
   SmallVector<OperandBundleDef, 1> OpBundles;
   II->getOperandBundlesAsDefs(OpBundles);
   CallInst *NewCall = CallInst::Create(II->getFunctionType(),
@@ -2137,7 +2115,7 @@ BasicBlock *llvm::changeToInvokeAndSplitBasicBlock(CallInst *CI,
   BB->getInstList().pop_back();
 
   // Create the new invoke instruction.
-  SmallVector<Value *, 8> InvokeArgs(CI->arg_begin(), CI->arg_end());
+  SmallVector<Value *, 8> InvokeArgs(CI->args());
   SmallVector<OperandBundleDef, 1> OpBundles;
 
   CI->getOperandBundlesAsDefs(OpBundles);

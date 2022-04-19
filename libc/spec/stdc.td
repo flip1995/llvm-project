@@ -371,6 +371,18 @@ def StdC : StandardSpec<"stdc"> {
           FunctionSpec<"llroundf", RetValSpec<LongLongType>, [ArgSpec<FloatType>]>,
           FunctionSpec<"llroundl", RetValSpec<LongLongType>, [ArgSpec<LongDoubleType>]>,
 
+          FunctionSpec<"rint", RetValSpec<DoubleType>, [ArgSpec<DoubleType>]>,
+          FunctionSpec<"rintf", RetValSpec<FloatType>, [ArgSpec<FloatType>]>,
+          FunctionSpec<"rintl", RetValSpec<LongDoubleType>, [ArgSpec<LongDoubleType>]>,
+
+          FunctionSpec<"lrint", RetValSpec<LongType>, [ArgSpec<DoubleType>]>,
+          FunctionSpec<"lrintf", RetValSpec<LongType>, [ArgSpec<FloatType>]>,
+          FunctionSpec<"lrintl", RetValSpec<LongType>, [ArgSpec<LongDoubleType>]>,
+
+          FunctionSpec<"llrint", RetValSpec<LongLongType>, [ArgSpec<DoubleType>]>,
+          FunctionSpec<"llrintf", RetValSpec<LongLongType>, [ArgSpec<FloatType>]>,
+          FunctionSpec<"llrintl", RetValSpec<LongLongType>, [ArgSpec<LongDoubleType>]>,
+
           FunctionSpec<"sqrt", RetValSpec<DoubleType>, [ArgSpec<DoubleType>]>,
           FunctionSpec<"sqrtf", RetValSpec<FloatType>, [ArgSpec<FloatType>]>,
           FunctionSpec<"sqrtl", RetValSpec<LongDoubleType>, [ArgSpec<LongDoubleType>]>,
@@ -378,6 +390,14 @@ def StdC : StandardSpec<"stdc"> {
           FunctionSpec<"trunc", RetValSpec<DoubleType>, [ArgSpec<DoubleType>]>,
           FunctionSpec<"truncf", RetValSpec<FloatType>, [ArgSpec<FloatType>]>,
           FunctionSpec<"truncl", RetValSpec<LongDoubleType>, [ArgSpec<LongDoubleType>]>,
+
+          FunctionSpec<"nearbyint", RetValSpec<DoubleType>, [ArgSpec<DoubleType>]>,
+          FunctionSpec<"nearbyintf", RetValSpec<FloatType>, [ArgSpec<FloatType>]>,
+          FunctionSpec<"nearbyintl", RetValSpec<LongDoubleType>, [ArgSpec<LongDoubleType>]>,
+
+          FunctionSpec<"nextafterf", RetValSpec<FloatType>, [ArgSpec<FloatType>, ArgSpec<FloatType>]>,
+          FunctionSpec<"nextafter", RetValSpec<DoubleType>, [ArgSpec<DoubleType>, ArgSpec<DoubleType>]>,
+          FunctionSpec<"nextafterl", RetValSpec<LongDoubleType>, [ArgSpec<LongDoubleType>, ArgSpec<LongDoubleType>]>,
       ]
   >;
 

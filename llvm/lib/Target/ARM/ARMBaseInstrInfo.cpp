@@ -134,6 +134,31 @@ ARMBaseInstrInfo::CreateTargetHazardRecognizer(const TargetSubtargetInfo *STI,
   return TargetInstrInfo::CreateTargetHazardRecognizer(STI, DAG);
 }
 
+// Called during:
+// - pre-RA scheduling
+// - post-RA scheduling when FeatureUseMISched is set
+ScheduleHazardRecognizer *ARMBaseInstrInfo::CreateTargetMIHazardRecognizer(
+    const InstrItineraryData *II, const ScheduleDAGMI *DAG) const {
+  MultiHazardRecognizer *MHR = new MultiHazardRecognizer();
+
+  // We would like to restrict this hazard recognizer to only
+  // post-RA scheduling; we can tell that we're post-RA because we don't
+  // track VRegLiveness.
+  // Cortex-M7: TRM indicates that there is a single ITCM bank and two DTCM
+  //            banks banked on bit 2.  Assume that TCMs are in use.
+  if (Subtarget.isCortexM7() && !DAG->hasVRegLiveness())
+    MHR->AddHazardRecognizer(
+        std::make_unique<ARMBankConflictHazardRecognizer>(DAG, 0x4, true));
+
+  // Not inserting ARMHazardRecognizerFPMLx because that would change
+  // legacy behavior
+
+  auto BHR = TargetInstrInfo::CreateTargetMIHazardRecognizer(II, DAG);
+  MHR->AddHazardRecognizer(std::unique_ptr<ScheduleHazardRecognizer>(BHR));
+  return MHR;
+}
+
+// Called during post-RA scheduling when FeatureUseMISched is not set
 ScheduleHazardRecognizer *ARMBaseInstrInfo::
 CreateTargetPostRAHazardRecognizer(const InstrItineraryData *II,
                                    const ScheduleDAG *DAG) const {
@@ -339,8 +364,10 @@ bool ARMBaseInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
     // out.
     bool CantAnalyze = false;
 
-    // Skip over DEBUG values and predicated nonterminators.
-    while (I->isDebugInstr() || !I->isTerminator()) {
+    // Skip over DEBUG values, predicated nonterminators and speculation
+    // barrier terminators.
+    while (I->isDebugInstr() || !I->isTerminator() ||
+           isSpeculationBarrierEndBBOpcode(I->getOpcode()) ){
       if (I == MBB.instr_begin())
         return false;
       --I;
@@ -389,6 +416,9 @@ bool ARMBaseInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
         while (DI != MBB.instr_end()) {
           MachineInstr &InstToDelete = *DI;
           ++DI;
+          // Speculation barriers must not be deleted.
+          if (isSpeculationBarrierEndBBOpcode(InstToDelete.getOpcode()))
+            continue;
           InstToDelete.eraseFromParent();
         }
       }
@@ -672,12 +702,21 @@ bool ARMBaseInstrInfo::isPredicable(const MachineInstr &MI) const {
   if (!isEligibleForITBlock(&MI))
     return false;
 
+  const MachineFunction *MF = MI.getParent()->getParent();
   const ARMFunctionInfo *AFI =
-      MI.getParent()->getParent()->getInfo<ARMFunctionInfo>();
+      MF->getInfo<ARMFunctionInfo>();
 
   // Neon instructions in Thumb2 IT blocks are deprecated, see ARMARM.
   // In their ARM encoding, they can't be encoded in a conditional form.
   if ((MI.getDesc().TSFlags & ARMII::DomainMask) == ARMII::DomainNEON)
+    return false;
+
+  // Make indirect control flow changes unpredicable when SLS mitigation is
+  // enabled.
+  const ARMSubtarget &ST = MF->getSubtarget<ARMSubtarget>();
+  if (ST.hardenSlsRetBr() && isIndirectControlFlowNotComingBack(MI))
+    return false;
+  if (ST.hardenSlsBlr() && isIndirectCall(MI))
     return false;
 
   if (AFI->isThumb2Function()) {
@@ -762,6 +801,14 @@ unsigned ARMBaseInstrInfo::getInstSizeInBytes(const MachineInstr &MI) const {
       Size = alignTo(Size, 4);
     return Size;
   }
+  case ARM::SpeculationBarrierISBDSBEndBB:
+  case ARM::t2SpeculationBarrierISBDSBEndBB:
+    // This gets lowered to 2 4-byte instructions.
+    return 8;
+  case ARM::SpeculationBarrierSBEndBB:
+  case ARM::t2SpeculationBarrierSBEndBB:
+    // This gets lowered to 1 4-byte instructions.
+    return 4;
   }
 }
 
@@ -5748,10 +5795,7 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
     // Erase every candidate that violates the restrictions above. (It could be
     // true that we have viable candidates, so it's not worth bailing out in
     // the case that, say, 1 out of 20 candidates violate the restructions.)
-    RepeatedSequenceLocs.erase(std::remove_if(RepeatedSequenceLocs.begin(),
-                                              RepeatedSequenceLocs.end(),
-                                              CantGuaranteeValueAcrossCall),
-                               RepeatedSequenceLocs.end());
+    llvm::erase_if(RepeatedSequenceLocs, CantGuaranteeValueAcrossCall);
 
     // If the sequence doesn't have enough candidates left, then we're done.
     if (RepeatedSequenceLocs.size() < 2)
@@ -5781,7 +5825,9 @@ outliner::OutlinedFunction ARMBaseInstrInfo::getOutliningCandidateInfo(
     NumBytesToCreateFrame = Costs.FrameTailCall;
     SetCandidateCallInfo(MachineOutlinerTailCall, Costs.CallTailCall);
   } else if (LastInstrOpcode == ARM::BL || LastInstrOpcode == ARM::BLX ||
-             LastInstrOpcode == ARM::tBL || LastInstrOpcode == ARM::tBLXr ||
+             LastInstrOpcode == ARM::BLX_noip || LastInstrOpcode == ARM::tBL ||
+             LastInstrOpcode == ARM::tBLXr ||
+             LastInstrOpcode == ARM::tBLXr_noip ||
              LastInstrOpcode == ARM::tBLXi) {
     FrameID = MachineOutlinerThunk;
     NumBytesToCreateFrame = Costs.FrameThunk;
@@ -6029,7 +6075,8 @@ ARMBaseInstrInfo::getOutliningType(MachineBasicBlock::iterator &MIT,
     // we don't get unexpected results with call pseudo-instructions.
     auto UnknownCallOutlineType = outliner::InstrType::Illegal;
     if (Opc == ARM::BL || Opc == ARM::tBL || Opc == ARM::BLX ||
-        Opc == ARM::tBLXr || Opc == ARM::tBLXi)
+        Opc == ARM::BLX_noip || Opc == ARM::tBLXr || Opc == ARM::tBLXr_noip ||
+        Opc == ARM::tBLXi)
       UnknownCallOutlineType = outliner::InstrType::LegalTerminator;
 
     if (!Callee)
@@ -6209,7 +6256,7 @@ void ARMBaseInstrInfo::buildOutlinedFrame(
   auto IsNonTailCall = [](MachineInstr &MI) {
     return MI.isCall() && !MI.isReturn();
   };
-  if (std::any_of(MBB.instr_begin(), MBB.instr_end(), IsNonTailCall)) {
+  if (llvm::any_of(MBB.instrs(), IsNonTailCall)) {
     MachineBasicBlock::iterator It = MBB.begin();
     MachineBasicBlock::iterator Et = MBB.end();
 
@@ -6321,3 +6368,19 @@ bool ARMBaseInstrInfo::isReallyTriviallyReMaterializable(const MachineInstr &MI,
   // spill/restore and VPT predication.
   return isVCTP(&MI) && !isPredicated(MI);
 }
+
+unsigned llvm::getBLXOpcode(const MachineFunction &MF) {
+  return (MF.getSubtarget<ARMSubtarget>().hardenSlsBlr()) ? ARM::BLX_noip
+                                                          : ARM::BLX;
+}
+
+unsigned llvm::gettBLXrOpcode(const MachineFunction &MF) {
+  return (MF.getSubtarget<ARMSubtarget>().hardenSlsBlr()) ? ARM::tBLXr_noip
+                                                          : ARM::tBLXr;
+}
+
+unsigned llvm::getBLXpredOpcode(const MachineFunction &MF) {
+  return (MF.getSubtarget<ARMSubtarget>().hardenSlsBlr()) ? ARM::BLX_pred_noip
+                                                          : ARM::BLX_pred;
+}
+

@@ -63,9 +63,11 @@ protected:
     CortexA76,
     CortexA77,
     CortexA78,
+    CortexA78C,
     CortexA8,
     CortexA9,
     CortexM3,
+    CortexM7,
     CortexR4,
     CortexR4F,
     CortexR5,
@@ -464,6 +466,13 @@ protected:
   /// cannot be encoded. For example, ADD r0, r1, #FFFFFFFF -> SUB r0, r1, #1.
   bool NegativeImmediates = true;
 
+  /// Harden against Straight Line Speculation for Returns and Indirect
+  /// Branches.
+  bool HardenSlsRetBr = false;
+
+  /// Harden against Straight Line Speculation for indirect calls.
+  bool HardenSlsBlr = false;
+
   /// stackAlignment - The minimum alignment known to hold of the stack frame on
   /// entry to the function and which must be maintained by every function.
   Align stackAlignment = Align(4);
@@ -618,6 +627,7 @@ public:
   bool isCortexA15() const { return ARMProcFamily == CortexA15; }
   bool isSwift()    const { return ARMProcFamily == Swift; }
   bool isCortexM3() const { return ARMProcFamily == CortexM3; }
+  bool isCortexM7() const { return ARMProcFamily == CortexM7; }
   bool isLikeA9() const { return isCortexA9() || isCortexA15() || isKrait(); }
   bool isCortexR5() const { return ARMProcFamily == CortexR5; }
   bool isKrait() const { return ARMProcFamily == Krait; }
@@ -905,6 +915,9 @@ public:
   bool ignoreCSRForAllocationOrder(const MachineFunction &MF,
                                    unsigned PhysReg) const override;
   unsigned getGPRAllocationOrder(const MachineFunction &MF) const;
+
+  bool hardenSlsRetBr() const { return HardenSlsRetBr; }
+  bool hardenSlsBlr() const { return HardenSlsBlr; }
 };
 
 } // end namespace llvm

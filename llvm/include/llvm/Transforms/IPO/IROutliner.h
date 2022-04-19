@@ -70,6 +70,32 @@ struct OutlinableRegion {
   IRInstructionData *NewFront = nullptr;
   IRInstructionData *NewBack = nullptr;
 
+  /// The number of extracted inputs from the CodeExtractor.
+  unsigned NumExtractedInputs;
+
+  /// The corresponding BasicBlock with the appropriate stores for this
+  /// OutlinableRegion in the overall function.
+  unsigned OutputBlockNum;
+
+  /// Mapping the extracted argument number to the argument number in the
+  /// overall function.  Since there will be inputs, such as elevated constants
+  /// that are not the same in each region in a SimilarityGroup, or values that
+  /// cannot be sunk into the extracted section in every region, we must keep
+  /// track of which extracted argument maps to which overall argument.
+  DenseMap<unsigned, unsigned> ExtractedArgToAgg;
+  DenseMap<unsigned, unsigned> AggArgToExtracted;
+
+  /// Mapping of the argument number in the deduplicated function
+  /// to a given constant, which is used when creating the arguments to the call
+  /// to the newly created deduplicated function.  This is handled separately
+  /// since the CodeExtractor does not recognize constants.
+  DenseMap<unsigned, Constant *> AggArgToConstant;
+
+  /// The global value numbers that are used as outputs for this section. Once
+  /// extracted, each output will be stored to an output register.  This
+  /// documents the global value numbers that are used in this pattern.
+  SmallVector<unsigned, 4> GVNStores;
+
   /// Used to create an outlined function.
   CodeExtractor *CE = nullptr;
 
@@ -119,6 +145,12 @@ struct OutlinableRegion {
   /// function has been extracted, the start and end of the BasicBlock
   /// containing the called function.
   void reattachCandidate();
+
+  /// Get the size of the code removed from the region.
+  ///
+  /// \param [in] TTI - The TargetTransformInfo for the parent function.
+  /// \returns the code size of the region
+  unsigned getBenefit(TargetTransformInfo &TTI);
 };
 
 /// This class is a pass that identifies similarity in a Module, extracts
@@ -130,8 +162,9 @@ struct OutlinableRegion {
 class IROutliner {
 public:
   IROutliner(function_ref<TargetTransformInfo &(Function &)> GTTI,
-             function_ref<IRSimilarityIdentifier &(Module &)> GIRSI)
-      : getTTI(GTTI), getIRSI(GIRSI) {}
+             function_ref<IRSimilarityIdentifier &(Module &)> GIRSI,
+             function_ref<OptimizationRemarkEmitter &(Function &)> GORE)
+      : getTTI(GTTI), getIRSI(GIRSI), getORE(GORE) {}
   bool run(Module &M);
 
 private:
@@ -154,11 +187,85 @@ private:
   pruneIncompatibleRegions(std::vector<IRSimilarityCandidate> &CandidateVec,
                            OutlinableGroup &CurrentGroup);
 
+  /// Create the function based on the overall types found in the current
+  /// regions being outlined.
+  ///
+  /// \param M - The module to outline from.
+  /// \param [in,out] CG - The OutlinableGroup for the regions to be outlined.
+  /// \param [in] FunctionNameSuffix - How many functions have we previously
+  /// created.
+  /// \returns the newly created function.
+  Function *createFunction(Module &M, OutlinableGroup &CG,
+                           unsigned FunctionNameSuffix);
+
+  /// Identify the needed extracted inputs in a section, and add to the overall
+  /// function if needed.
+  ///
+  /// \param [in] M - The module to outline from.
+  /// \param [in,out] Region - The region to be extracted.
+  /// \param [in] NotSame - The global value numbers of the Values in the region
+  /// that do not have the same Constant in each strucutrally similar region.
+  void findAddInputsOutputs(Module &M, OutlinableRegion &Region,
+                            DenseSet<unsigned> &NotSame);
+
+  /// Find the number of instructions that will be removed by extracting the
+  /// OutlinableRegions in \p CurrentGroup.
+  ///
+  /// \param [in] CurrentGroup - The collection of OutlinableRegions to be
+  /// analyzed.
+  /// \returns the number of outlined instructions across all regions.
+  unsigned findBenefitFromAllRegions(OutlinableGroup &CurrentGroup);
+
+  /// Find the number of instructions that will be added by reloading arguments.
+  ///
+  /// \param [in] CurrentGroup - The collection of OutlinableRegions to be
+  /// analyzed.
+  /// \returns the number of added reload instructions across all regions.
+  unsigned findCostOutputReloads(OutlinableGroup &CurrentGroup);
+
+  /// Find the cost and the benefit of \p CurrentGroup and save it back to
+  /// \p CurrentGroup.
+  ///
+  /// \param [in] M - The module being analyzed
+  /// \param [in,out] CurrentGroup - The overall outlined section
+  void findCostBenefit(Module &M, OutlinableGroup &CurrentGroup);
+
+  /// Update the output mapping based on the load instruction, and the outputs
+  /// of the extracted function.
+  ///
+  /// \param Region - The region extracted
+  /// \param Outputs - The outputs from the extracted function.
+  /// \param LI - The load instruction used to update the mapping.
+  void updateOutputMapping(OutlinableRegion &Region,
+                           ArrayRef<Value *> Outputs, LoadInst *LI);
+
   /// Extract \p Region into its own function.
   ///
   /// \param [in] Region - The region to be extracted into its own function.
   /// \returns True if it was successfully outlined.
   bool extractSection(OutlinableRegion &Region);
+
+  /// For the similarities found, and the extracted sections, create a single
+  /// outlined function with appropriate output blocks as necessary.
+  ///
+  /// \param [in] M - The module to outline from
+  /// \param [in] CurrentGroup - The set of extracted sections to consolidate.
+  /// \param [in,out] FuncsToRemove - List of functions to remove from the
+  /// module after outlining is completed.
+  /// \param [in,out] OutlinedFunctionNum - the number of new outlined
+  /// functions.
+  void deduplicateExtractedSections(Module &M, OutlinableGroup &CurrentGroup,
+                                    std::vector<Function *> &FuncsToRemove,
+                                    unsigned &OutlinedFunctionNum);
+
+  /// If true, enables us to outline from functions that have LinkOnceFromODR
+  /// linkages.
+  bool OutlineFromLinkODRs = false;
+
+  /// If false, we do not worry if the cost is greater than the benefit.  This
+  /// is for debugging and testing, so that we can test small cases to ensure
+  /// that the outlining is being done correctly.
+  bool CostModel = true;
 
   /// The set of outlined Instructions, identified by their location in the
   /// sequential ordering of instructions in a Module.
@@ -167,8 +274,16 @@ private:
   /// TargetTransformInfo lambda for target specific information.
   function_ref<TargetTransformInfo &(Function &)> getTTI;
 
+  /// A mapping from newly created reloaded output values to the original value.
+  /// If an value is replace by an output from an outlined region, this maps
+  /// that Value, back to its original Value.
+  DenseMap<Value *, Value *> OutputMappings;
+
   /// IRSimilarityIdentifier lambda to retrieve IRSimilarityIdentifier.
   function_ref<IRSimilarityIdentifier &(Module &)> getIRSI;
+
+  /// The optimization remark emitter for the pass.
+  function_ref<OptimizationRemarkEmitter &(Function &)> getORE;
 
   /// The memory allocator used to allocate the CodeExtractors.
   SpecificBumpPtrAllocator<CodeExtractor> ExtractorAllocator;
@@ -182,8 +297,7 @@ private:
   /// Custom InstVisitor to classify different instructions for whether it can
   /// be analyzed for similarity.  This is needed as there may be instruction we
   /// can identify as having similarity, but are more complicated to outline.
-  struct InstructionAllowed
-      : public InstVisitor<InstructionAllowed, bool> {
+  struct InstructionAllowed : public InstVisitor<InstructionAllowed, bool> {
     InstructionAllowed() {}
 
     // TODO: Determine a scheme to resolve when the label is similar enough.
@@ -203,19 +317,18 @@ private:
     // DebugInfo should be included in the regions, but should not be
     // analyzed for similarity as it has no bearing on the outcome of the
     // program.
-    bool visitDbgInfoIntrinsic(DbgInfoIntrinsic &DII) {
-      return true;
-    }
-    // TODO: Handle GetElementPtrInsts
-    bool visitGetElementPtrInst(GetElementPtrInst &GEPI) {
-      return false;
-    }
+    bool visitDbgInfoIntrinsic(DbgInfoIntrinsic &DII) { return true; }
     // TODO: Handle specific intrinsics individually from those that can be
     // handled.
     bool IntrinsicInst(IntrinsicInst &II) { return false; }
-    // TODO: Handle CallInsts, there will need to be handling for special kinds
-    // of calls, as well as calls to intrinsics.
-    bool visitCallInst(CallInst &CI) { return false; }
+    // We only handle CallInsts that are not indirect, since we cannot guarantee
+    // that they have a name in these cases.
+    bool visitCallInst(CallInst &CI) {
+      Function *F = CI.getCalledFunction();
+      if (!F || CI.isIndirectCall() || !F->hasName())
+        return false;
+      return true;
+    }
     // TODO: Handle FreezeInsts.  Since a frozen value could be frozen inside
     // the outlined region, and then returned as an output, this will have to be
     // handled differently.
@@ -226,9 +339,7 @@ private:
     bool visitCallBrInst(CallBrInst &CBI) { return false; }
     // TODO: Handle interblock similarity.
     bool visitTerminator(Instruction &I) { return false; }
-    bool visitInstruction(Instruction &I) { 
-      return true;
-    }
+    bool visitInstruction(Instruction &I) { return true; }
   };
 
   /// A InstVisitor used to exclude certain instructions from being outlined.
