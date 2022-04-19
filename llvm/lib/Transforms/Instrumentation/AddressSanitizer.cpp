@@ -537,7 +537,7 @@ static ShadowMapping getShadowMapping(Triple &TargetTriple, int LongSize,
   return Mapping;
 }
 
-static size_t RedzoneSizeForScale(int MappingScale) {
+static uint64_t getRedzoneSizeForScale(int MappingScale) {
   // Redzone used for stack and globals is at least 32 bytes.
   // For scales 6 and 7, the redzone has to be 64 and 128 bytes respectively.
   return std::max(32U, 1U << MappingScale);
@@ -693,7 +693,6 @@ private:
   FunctionCallee AsanMemoryAccessCallbackSized[2][2];
 
   FunctionCallee AsanMemmove, AsanMemcpy, AsanMemset;
-  InlineAsm *EmptyAsm;
   Value *LocalDynamicShadow = nullptr;
   const GlobalsMetadata &GlobalsMD;
   DenseMap<const AllocaInst *, bool> ProcessedAllocas;
@@ -797,9 +796,10 @@ private:
   StringRef getGlobalMetadataSection() const;
   void poisonOneInitializer(Function &GlobalInit, GlobalValue *ModuleName);
   void createInitializerPoisonCalls(Module &M, GlobalValue *ModuleName);
-  size_t MinRedzoneSizeForGlobal() const {
-    return RedzoneSizeForScale(Mapping.Scale);
+  uint64_t getMinRedzoneSizeForGlobal() const {
+    return getRedzoneSizeForScale(Mapping.Scale);
   }
+  uint64_t getRedzoneSizeForGlobal(uint64_t SizeInBytes) const;
   int GetAsanVersion(const Module &M) const;
 
   const GlobalsMetadata &GlobalsMD;
@@ -910,16 +910,14 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
   using AllocaForValueMapTy = DenseMap<Value *, AllocaInst *>;
   AllocaForValueMapTy AllocaForValue;
 
-  bool HasNonEmptyInlineAsm = false;
+  bool HasInlineAsm = false;
   bool HasReturnsTwiceCall = false;
-  std::unique_ptr<CallInst> EmptyInlineAsm;
 
   FunctionStackPoisoner(Function &F, AddressSanitizer &ASan)
       : F(F), ASan(ASan), DIB(*F.getParent(), /*AllowUnresolved*/ false),
         C(ASan.C), IntptrTy(ASan.IntptrTy),
         IntptrPtrTy(PointerType::get(IntptrTy, 0)), Mapping(ASan.Mapping),
-        StackAlignment(1 << Mapping.Scale),
-        EmptyInlineAsm(CallInst::Create(ASan.EmptyAsm)) {}
+        StackAlignment(1 << Mapping.Scale) {}
 
   bool runOnFunction() {
     if (!ClStack) return false;
@@ -1081,9 +1079,7 @@ struct FunctionStackPoisoner : public InstVisitor<FunctionStackPoisoner> {
 
   void visitCallBase(CallBase &CB) {
     if (CallInst *CI = dyn_cast<CallInst>(&CB)) {
-      HasNonEmptyInlineAsm |= CI->isInlineAsm() &&
-                              !CI->isIdenticalTo(EmptyInlineAsm.get()) &&
-                              &CB != ASan.LocalDynamicShadow;
+      HasInlineAsm |= CI->isInlineAsm() && &CB != ASan.LocalDynamicShadow;
       HasReturnsTwiceCall |= CI->canReturnTwice();
     }
   }
@@ -1149,9 +1145,9 @@ GlobalsMetadata::GlobalsMetadata(Module &M) {
       E.Name = Name->getString();
     ConstantInt *IsDynInit = mdconst::extract<ConstantInt>(MDN->getOperand(3));
     E.IsDynInit |= IsDynInit->isOne();
-    ConstantInt *IsBlacklisted =
+    ConstantInt *IsExcluded =
         mdconst::extract<ConstantInt>(MDN->getOperand(4));
-    E.IsBlacklisted |= IsBlacklisted->isOne();
+    E.IsExcluded |= IsExcluded->isOne();
   }
 }
 
@@ -1620,10 +1616,7 @@ Instruction *AddressSanitizer::generateCrashCode(Instruction *InsertBefore,
                             {Addr, ExpVal});
   }
 
-  // We don't do Call->setDoesNotReturn() because the BB already has
-  // UnreachableInst at the end.
-  // This EmptyAsm is required to avoid callback merge.
-  IRB.CreateCall(EmptyAsm, {});
+  Call->setCannotMerge();
   return Call;
 }
 
@@ -1813,7 +1806,7 @@ bool ModuleAddressSanitizer::shouldInstrumentGlobal(GlobalVariable *G) const {
 
   // FIXME: Metadata should be attched directly to the global directly instead
   // of being added to llvm.asan.globals.
-  if (GlobalsMD.get(G).IsBlacklisted) return false;
+  if (GlobalsMD.get(G).IsExcluded) return false;
   if (!Ty->isSized()) return false;
   if (!G->hasInitializer()) return false;
   // Only instrument globals of default address spaces
@@ -1824,7 +1817,7 @@ bool ModuleAddressSanitizer::shouldInstrumentGlobal(GlobalVariable *G) const {
   //   - Need to poison all copies, not just the main thread's one.
   if (G->isThreadLocal()) return false;
   // For now, just ignore this Global if the alignment is large.
-  if (G->getAlignment() > MinRedzoneSizeForGlobal()) return false;
+  if (G->getAlignment() > getMinRedzoneSizeForGlobal()) return false;
 
   // For non-COFF targets, only instrument globals known to be defined by this
   // TU.
@@ -2264,19 +2257,19 @@ bool ModuleAddressSanitizer::InstrumentGlobals(IRBuilder<> &IRB, Module &M,
 
   // Build set of globals that are aliased by some GA, where
   // canInstrumentAliasedGlobal(GA) returns false.
-  SmallPtrSet<const GlobalVariable *, 16> AliasedGlobalBlacklist;
+  SmallPtrSet<const GlobalVariable *, 16> AliasedGlobalExclusions;
   if (CompileKernel) {
     for (auto &GA : M.aliases()) {
       if (const auto *GV = dyn_cast<GlobalVariable>(GA.getAliasee())) {
         if (!canInstrumentAliasedGlobal(GA))
-          AliasedGlobalBlacklist.insert(GV);
+          AliasedGlobalExclusions.insert(GV);
       }
     }
   }
 
   SmallVector<GlobalVariable *, 16> GlobalsToChange;
   for (auto &G : M.globals()) {
-    if (!AliasedGlobalBlacklist.count(&G) && shouldInstrumentGlobal(&G))
+    if (!AliasedGlobalExclusions.count(&G) && shouldInstrumentGlobal(&G))
       GlobalsToChange.push_back(&G);
   }
 
@@ -2312,7 +2305,6 @@ bool ModuleAddressSanitizer::InstrumentGlobals(IRBuilder<> &IRB, Module &M,
       M, M.getModuleIdentifier(), /*AllowMerging*/ false, kAsanGenPrefix);
 
   for (size_t i = 0; i < n; i++) {
-    static const uint64_t kMaxGlobalRedzone = 1 << 18;
     GlobalVariable *G = GlobalsToChange[i];
 
     // FIXME: Metadata should be attched directly to the global directly instead
@@ -2326,16 +2318,8 @@ bool ModuleAddressSanitizer::InstrumentGlobals(IRBuilder<> &IRB, Module &M,
         /*AllowMerging*/ true, kAsanGenPrefix);
 
     Type *Ty = G->getValueType();
-    uint64_t SizeInBytes = DL.getTypeAllocSize(Ty);
-    uint64_t MinRZ = MinRedzoneSizeForGlobal();
-    // MinRZ <= RZ <= kMaxGlobalRedzone
-    // and trying to make RZ to be ~ 1/4 of SizeInBytes.
-    uint64_t RZ = std::max(
-        MinRZ, std::min(kMaxGlobalRedzone, (SizeInBytes / MinRZ / 4) * MinRZ));
-    uint64_t RightRedzoneSize = RZ;
-    // Round up to MinRZ
-    if (SizeInBytes % MinRZ) RightRedzoneSize += MinRZ - (SizeInBytes % MinRZ);
-    assert(((RightRedzoneSize + SizeInBytes) % MinRZ) == 0);
+    const uint64_t SizeInBytes = DL.getTypeAllocSize(Ty);
+    const uint64_t RightRedzoneSize = getRedzoneSizeForGlobal(SizeInBytes);
     Type *RightRedZoneTy = ArrayType::get(IRB.getInt8Ty(), RightRedzoneSize);
 
     StructType *NewTy = StructType::get(Ty, RightRedZoneTy);
@@ -2351,7 +2335,7 @@ bool ModuleAddressSanitizer::InstrumentGlobals(IRBuilder<> &IRB, Module &M,
                            "", G, G->getThreadLocalMode());
     NewGlobal->copyAttributesFrom(G);
     NewGlobal->setComdat(G->getComdat());
-    NewGlobal->setAlignment(MaybeAlign(MinRZ));
+    NewGlobal->setAlignment(MaybeAlign(getMinRedzoneSizeForGlobal()));
     // Don't fold globals with redzones. ODR violation detector and redzone
     // poisoning implicitly creates a dependence on the global's address, so it
     // is no longer valid for it to be marked unnamed_addr.
@@ -2473,6 +2457,23 @@ bool ModuleAddressSanitizer::InstrumentGlobals(IRBuilder<> &IRB, Module &M,
   return true;
 }
 
+uint64_t
+ModuleAddressSanitizer::getRedzoneSizeForGlobal(uint64_t SizeInBytes) const {
+  constexpr uint64_t kMaxRZ = 1 << 18;
+  const uint64_t MinRZ = getMinRedzoneSizeForGlobal();
+
+  // Calculate RZ, where MinRZ <= RZ <= MaxRZ, and RZ ~ 1/4 * SizeInBytes.
+  uint64_t RZ =
+      std::max(MinRZ, std::min(kMaxRZ, (SizeInBytes / MinRZ / 4) * MinRZ));
+
+  // Round up to multiple of MinRZ.
+  if (SizeInBytes % MinRZ)
+    RZ += MinRZ - (SizeInBytes % MinRZ);
+  assert((RZ + SizeInBytes) % MinRZ == 0);
+
+  return RZ;
+}
+
 int ModuleAddressSanitizer::GetAsanVersion(const Module &M) const {
   int LongSize = M.getDataLayout().getPointerSizeInBits();
   bool isAndroid = Triple(M.getTargetTriple()).isAndroid();
@@ -2589,10 +2590,6 @@ void AddressSanitizer::initializeCallbacks(Module &M) {
       M.getOrInsertFunction(kAsanPtrCmp, IRB.getVoidTy(), IntptrTy, IntptrTy);
   AsanPtrSubFunction =
       M.getOrInsertFunction(kAsanPtrSub, IRB.getVoidTy(), IntptrTy, IntptrTy);
-  // We insert an empty inline asm after __asan_report* to avoid callback merge.
-  EmptyAsm = InlineAsm::get(FunctionType::get(IRB.getVoidTy(), false),
-                            StringRef(""), StringRef(""),
-                            /*hasSideEffects=*/true);
   if (Mapping.InGlobal)
     AsanShadowGlobal = M.getOrInsertGlobal("__asan_shadow",
                                            ArrayType::get(IRB.getInt8Ty(), 0));
@@ -3196,8 +3193,8 @@ void FunctionStackPoisoner::processStaticAllocas() {
   // 2) There is a returns_twice call (typically setjmp), which is
   //    optimization-hostile, and doesn't play well with introduced indirect
   //    register-relative calculation of local variable addresses.
-  DoDynamicAlloca &= !HasNonEmptyInlineAsm && !HasReturnsTwiceCall;
-  DoStackMalloc &= !HasNonEmptyInlineAsm && !HasReturnsTwiceCall;
+  DoDynamicAlloca &= !HasInlineAsm && !HasReturnsTwiceCall;
+  DoStackMalloc &= !HasInlineAsm && !HasReturnsTwiceCall;
 
   Value *StaticAlloca =
       DoDynamicAlloca ? nullptr : createAllocaForLayout(IRB, L, false);

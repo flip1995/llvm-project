@@ -55,13 +55,15 @@ public:
 private:
   Module *M = nullptr;
   std::function<const StackSafetyInfo &(Function &F)> GetSSI;
+  const ModuleSummaryIndex *Index = nullptr;
   mutable std::unique_ptr<InfoTy> Info;
   const InfoTy &getInfo() const;
 
 public:
   StackSafetyGlobalInfo();
   StackSafetyGlobalInfo(
-      Module *M, std::function<const StackSafetyInfo &(Function &F)> GetSSI);
+      Module *M, std::function<const StackSafetyInfo &(Function &F)> GetSSI,
+      const ModuleSummaryIndex *Index);
   StackSafetyGlobalInfo(StackSafetyGlobalInfo &&);
   StackSafetyGlobalInfo &operator=(StackSafetyGlobalInfo &&);
   ~StackSafetyGlobalInfo();
@@ -148,6 +150,8 @@ public:
 };
 
 bool needsParamAccessSummary(const Module &M);
+
+void generateParamAccessSummary(ModuleSummaryIndex &Index);
 
 } // end namespace llvm
 

@@ -1411,7 +1411,7 @@ SDValue SelectionDAG::getConstantFP(double Val, const SDLoc &DL, EVT VT,
   else if (EltVT == MVT::f64)
     return getConstantFP(APFloat(Val), DL, VT, isTarget);
   else if (EltVT == MVT::f80 || EltVT == MVT::f128 || EltVT == MVT::ppcf128 ||
-           EltVT == MVT::f16) {
+           EltVT == MVT::f16 || EltVT == MVT::bf16) {
     bool Ignored;
     APFloat APF = APFloat(Val);
     APF.convert(EVTToAPFloatSemantics(EltVT), APFloat::rmNearestTiesToEven,
@@ -2306,11 +2306,7 @@ bool SelectionDAG::SignBitIsZero(SDValue Op, unsigned Depth) const {
 /// for bits that V cannot have.
 bool SelectionDAG::MaskedValueIsZero(SDValue V, const APInt &Mask,
                                      unsigned Depth) const {
-  EVT VT = V.getValueType();
-  APInt DemandedElts = VT.isVector()
-                           ? APInt::getAllOnesValue(VT.getVectorNumElements())
-                           : APInt(1, 1);
-  return MaskedValueIsZero(V, Mask, DemandedElts, Depth);
+  return Mask.isSubsetOf(computeKnownBits(V, Depth).Zero);
 }
 
 /// MaskedValueIsZero - Return true if 'V & Mask' is known to be zero in
@@ -2579,6 +2575,14 @@ const APInt *SelectionDAG::getValidMaximumShiftAmountConstant(
 /// every vector element.
 KnownBits SelectionDAG::computeKnownBits(SDValue Op, unsigned Depth) const {
   EVT VT = Op.getValueType();
+
+  // TOOD: Until we have a plan for how to represent demanded elements for
+  // scalable vectors, we can just bail out for now.
+  if (Op.getValueType().isScalableVector()) {
+    unsigned BitWidth = Op.getScalarValueSizeInBits();
+    return KnownBits(BitWidth);
+  }
+
   APInt DemandedElts = VT.isVector()
                            ? APInt::getAllOnesValue(VT.getVectorNumElements())
                            : APInt(1, 1);
@@ -2593,6 +2597,11 @@ KnownBits SelectionDAG::computeKnownBits(SDValue Op, const APInt &DemandedElts,
   unsigned BitWidth = Op.getScalarValueSizeInBits();
 
   KnownBits Known(BitWidth);   // Don't know anything.
+
+  // TOOD: Until we have a plan for how to represent demanded elements for
+  // scalable vectors, we can just bail out for now.
+  if (Op.getValueType().isScalableVector())
+    return Known;
 
   if (auto *C = dyn_cast<ConstantSDNode>(Op)) {
     // We know all of the bits for a constant!
@@ -3188,6 +3197,15 @@ KnownBits SelectionDAG::computeKnownBits(SDValue Op, const APInt &DemandedElts,
     Known.One  &= (~Known.Zero);
     break;
   }
+  case ISD::AssertAlign: {
+    unsigned LogOfAlign = Log2(cast<AssertAlignSDNode>(Op)->getAlign());
+    assert(LogOfAlign != 0);
+    // If a node is guaranteed to be aligned, set low zero bits accordingly as
+    // well as clearing one bits.
+    Known.Zero.setLowBits(LogOfAlign);
+    Known.One.clearLowBits(LogOfAlign);
+    break;
+  }
   case ISD::FGETSIGN:
     // All bits are zero except the low bit.
     Known.Zero.setBitsFrom(1);
@@ -3561,6 +3579,11 @@ bool SelectionDAG::isKnownToBeAPowerOfTwo(SDValue Val) const {
 
 unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, unsigned Depth) const {
   EVT VT = Op.getValueType();
+
+  // TODO: Assume we don't know anything for now.
+  if (VT.isScalableVector())
+    return 1;
+
   APInt DemandedElts = VT.isVector()
                            ? APInt::getAllOnesValue(VT.getVectorNumElements())
                            : APInt(1, 1);
@@ -3584,7 +3607,7 @@ unsigned SelectionDAG::ComputeNumSignBits(SDValue Op, const APInt &DemandedElts,
   if (Depth >= MaxRecursionDepth)
     return 1;  // Limit search depth.
 
-  if (!DemandedElts)
+  if (!DemandedElts || VT.isScalableVector())
     return 1;  // No demanded elts, better to assume we don't know anything.
 
   unsigned Opcode = Op.getOpcode();
@@ -4344,8 +4367,8 @@ static SDValue foldCONCAT_VECTORS(const SDLoc &DL, EVT VT,
                         return Ops[0].getValueType() == Op.getValueType();
                       }) &&
          "Concatenation of vectors with inconsistent value types!");
-  assert((Ops.size() * Ops[0].getValueType().getVectorNumElements()) ==
-             VT.getVectorNumElements() &&
+  assert((Ops[0].getValueType().getVectorElementCount() * Ops.size()) ==
+             VT.getVectorElementCount() &&
          "Incorrect element count in vector concatenation!");
 
   if (Ops.size() == 1)
@@ -4362,7 +4385,7 @@ static SDValue foldCONCAT_VECTORS(const SDLoc &DL, EVT VT,
   bool IsIdentity = true;
   for (unsigned i = 0, e = Ops.size(); i != e; ++i) {
     SDValue Op = Ops[i];
-    unsigned IdentityIndex = i * Op.getValueType().getVectorNumElements();
+    unsigned IdentityIndex = i * Op.getValueType().getVectorMinNumElements();
     if (Op.getOpcode() != ISD::EXTRACT_SUBVECTOR ||
         Op.getOperand(0).getValueType() != VT ||
         (IdentitySrc && Op.getOperand(0) != IdentitySrc) ||
@@ -4378,6 +4401,11 @@ static SDValue foldCONCAT_VECTORS(const SDLoc &DL, EVT VT,
     assert(IdentitySrc && "Failed to set source vector of extracts");
     return IdentitySrc;
   }
+
+  // The code below this point is only designed to work for fixed width
+  // vectors, so we bail out for now.
+  if (VT.isScalableVector())
+    return SDValue();
 
   // A CONCAT_VECTOR with all UNDEF/BUILD_VECTOR operands can be
   // simplified to one big BUILD_VECTOR.
@@ -5203,6 +5231,34 @@ SDValue SelectionDAG::foldConstantFPMath(unsigned Opcode, const SDLoc &DL,
       return getConstantFP(APFloat::getNaN(EVTToAPFloatSemantics(VT)), DL, VT);
   }
   return SDValue();
+}
+
+SDValue SelectionDAG::getAssertAlign(const SDLoc &DL, SDValue Val, Align A) {
+  assert(Val.getValueType().isInteger() && "Invalid AssertAlign!");
+
+  // There's no need to assert on a byte-aligned pointer. All pointers are at
+  // least byte aligned.
+  if (A == Align(1))
+    return Val;
+
+  FoldingSetNodeID ID;
+  AddNodeIDNode(ID, ISD::AssertAlign, getVTList(Val.getValueType()), {Val});
+  ID.AddInteger(A.value());
+
+  void *IP = nullptr;
+  if (SDNode *E = FindNodeOrInsertPos(ID, DL, IP))
+    return SDValue(E, 0);
+
+  auto *N = newSDNode<AssertAlignSDNode>(DL.getIROrder(), DL.getDebugLoc(),
+                                         Val.getValueType(), A);
+  createOperands(N, {Val});
+
+  CSEMap.InsertNode(N, IP);
+  InsertNode(N);
+
+  SDValue V(N, 0);
+  NewSDValueDbgMsg(V, "Creating new node: ", this);
+  return V;
 }
 
 SDValue SelectionDAG::getNode(unsigned Opcode, const SDLoc &DL, EVT VT,

@@ -1732,6 +1732,9 @@ public:
 
   /// Determine if the call cannot be tail merged.
   bool cannotMerge() const { return hasFnAttr(Attribute::NoMerge); }
+  void setCannotMerge() {
+    addAttribute(AttributeList::FunctionIndex, Attribute::NoMerge);
+  }
 
   /// Determine if the invoke is convergent
   bool isConvergent() const { return hasFnAttr(Attribute::Convergent); }
@@ -2137,7 +2140,7 @@ private:
   bool hasFnAttrOnCalledFunction(StringRef Kind) const;
 
   template <typename AttrKind> bool hasFnAttrImpl(AttrKind Kind) const {
-    if (Attrs.hasAttribute(AttributeList::FunctionIndex, Kind))
+    if (Attrs.hasFnAttribute(Kind))
       return true;
 
     // Operand bundles override attributes on the called function, but don't

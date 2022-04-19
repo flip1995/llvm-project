@@ -1091,13 +1091,16 @@ LambdaExpr::LambdaExpr(QualType T, SourceRange IntroducerRange,
                        bool ContainsUnexpandedParameterPack)
     : Expr(LambdaExprClass, T, VK_RValue, OK_Ordinary),
       IntroducerRange(IntroducerRange), CaptureDefaultLoc(CaptureDefaultLoc),
-      NumCaptures(CaptureInits.size()), CaptureDefault(CaptureDefault),
-      ExplicitParams(ExplicitParams), ExplicitResultType(ExplicitResultType),
       ClosingBrace(ClosingBrace) {
+  LambdaExprBits.NumCaptures = CaptureInits.size();
+  LambdaExprBits.CaptureDefault = CaptureDefault;
+  LambdaExprBits.ExplicitParams = ExplicitParams;
+  LambdaExprBits.ExplicitResultType = ExplicitResultType;
+
   CXXRecordDecl *Class = getLambdaClass();
   (void)Class;
-  assert(NumCaptures == Class->capture_size() && "Wrong number of captures");
-  assert(CaptureDefault == Class->getLambdaCaptureDefault());
+  assert(capture_size() == Class->capture_size() && "Wrong number of captures");
+  assert(getCaptureDefault() == Class->getLambdaCaptureDefault());
 
   // Copy initialization expressions for the non-static data members.
   Stmt **Stored = getStoredStmts();
@@ -1108,6 +1111,11 @@ LambdaExpr::LambdaExpr(QualType T, SourceRange IntroducerRange,
   *Stored++ = getCallOperator()->getBody();
 
   setDependence(computeDependence(this, ContainsUnexpandedParameterPack));
+}
+
+LambdaExpr::LambdaExpr(EmptyShell Empty, unsigned NumCaptures)
+    : Expr(LambdaExprClass, Empty) {
+  LambdaExprBits.NumCaptures = NumCaptures;
 }
 
 LambdaExpr *LambdaExpr::Create(const ASTContext &Context, CXXRecordDecl *Class,
@@ -1147,7 +1155,7 @@ LambdaExpr::capture_iterator LambdaExpr::capture_begin() const {
 }
 
 LambdaExpr::capture_iterator LambdaExpr::capture_end() const {
-  return capture_begin() + NumCaptures;
+  return capture_begin() + capture_size();
 }
 
 LambdaExpr::capture_range LambdaExpr::captures() const {
@@ -1204,20 +1212,7 @@ ArrayRef<NamedDecl *> LambdaExpr::getExplicitTemplateParameters() const {
   return Record->getLambdaExplicitTemplateParameters();
 }
 
-CompoundStmt *LambdaExpr::getBody() const {
-  // FIXME: this mutation in getBody is bogus. It should be
-  // initialized in ASTStmtReader::VisitLambdaExpr, but for reasons I
-  // don't understand, that doesn't work.
-  if (!getStoredStmts()[NumCaptures])
-    *const_cast<Stmt **>(&getStoredStmts()[NumCaptures]) =
-        getCallOperator()->getBody();
-
-  return static_cast<CompoundStmt *>(getStoredStmts()[NumCaptures]);
-}
-
-bool LambdaExpr::isMutable() const {
-  return !getCallOperator()->isConst();
-}
+bool LambdaExpr::isMutable() const { return !getCallOperator()->isConst(); }
 
 ExprWithCleanups::ExprWithCleanups(Expr *subexpr,
                                    bool CleanupsHaveSideEffects,
@@ -1577,6 +1572,7 @@ TypeTraitExpr::TypeTraitExpr(QualType T, SourceLocation Loc, TypeTrait Kind,
                              SourceLocation RParenLoc, bool Value)
     : Expr(TypeTraitExprClass, T, VK_RValue, OK_Ordinary), Loc(Loc),
       RParenLoc(RParenLoc) {
+  assert(Kind <= TT_Last && "invalid enum value!");
   TypeTraitExprBits.Kind = Kind;
   assert(static_cast<unsigned>(Kind) == TypeTraitExprBits.Kind &&
          "TypeTraitExprBits.Kind overflow!");

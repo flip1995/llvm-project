@@ -130,8 +130,8 @@ public:
     return (m_type >= e_sint) && (m_type <= e_long_double);
   }
 
-  /// Convert integer to \p type, limited to \p bits size.
-  void TruncOrExtendTo(Scalar::Type type, uint16_t bits);
+  /// Convert to an integer with \p bits and the given signedness.
+  void TruncOrExtendTo(uint16_t bits, bool sign);
 
   bool Promote(Scalar::Type type);
 
@@ -153,16 +153,6 @@ public:
   // automagically by the compiler, so no temporary objects will need to be
   // created. As a result, we currently don't need a variety of overloaded set
   // value accessors.
-  Scalar &operator=(const int i);
-  Scalar &operator=(unsigned int v);
-  Scalar &operator=(long v);
-  Scalar &operator=(unsigned long v);
-  Scalar &operator=(long long v);
-  Scalar &operator=(unsigned long long v);
-  Scalar &operator=(float v);
-  Scalar &operator=(double v);
-  Scalar &operator=(long double v);
-  Scalar &operator=(llvm::APInt v);
   Scalar &operator+=(const Scalar &rhs);
   Scalar &operator<<=(const Scalar &rhs); // Shift left
   Scalar &operator>>=(const Scalar &rhs); // Shift right (arithmetic)
