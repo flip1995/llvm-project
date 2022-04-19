@@ -17,6 +17,7 @@
 #include "clang/AST/DeclarationName.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/ExprConcepts.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/PrettyPrinter.h"
@@ -279,6 +280,9 @@ public:
       void VisitCallExpr(const CallExpr *CE) {
         Outer.add(CE->getCalleeDecl(), Flags);
       }
+      void VisitConceptSpecializationExpr(const ConceptSpecializationExpr *E) {
+        Outer.add(E->getNamedConcept(), Flags);
+      }
       void VisitDeclRefExpr(const DeclRefExpr *DRE) {
         const Decl *D = DRE->getDecl();
         // UsingShadowDecl allows us to record the UsingDecl.
@@ -374,6 +378,11 @@ public:
       void VisitTagType(const TagType *TT) {
         Outer.add(TT->getAsTagDecl(), Flags);
       }
+
+      void VisitInjectedClassNameType(const InjectedClassNameType *ICNT) {
+        Outer.add(ICNT->getDecl(), Flags);
+      }
+
       void VisitDecltypeType(const DecltypeType *DTT) {
         Outer.add(DTT->getUnderlyingType(), Flags | Rel::Underlying);
       }
@@ -581,6 +590,13 @@ llvm::SmallVector<ReferenceLoc, 2> refInDecl(const Decl *D) {
     }
 
     void VisitNamedDecl(const NamedDecl *ND) {
+      // We choose to ignore {Class, Function, Var, TypeAlias}TemplateDecls. As
+      // as their underlying decls, covering the same range, will be visited.
+      if (llvm::isa<ClassTemplateDecl>(ND) ||
+          llvm::isa<FunctionTemplateDecl>(ND) ||
+          llvm::isa<VarTemplateDecl>(ND) ||
+          llvm::isa<TypeAliasTemplateDecl>(ND))
+        return;
       // FIXME: decide on how to surface destructors when we need them.
       if (llvm::isa<CXXDestructorDecl>(ND))
         return;
@@ -606,6 +622,12 @@ llvm::SmallVector<ReferenceLoc, 2> refInExpr(const Expr *E) {
     // FIXME: handle more complicated cases, e.g. ObjC, designated initializers.
     llvm::SmallVector<ReferenceLoc, 2> Refs;
 
+    void VisitConceptSpecializationExpr(const ConceptSpecializationExpr *E) {
+      Refs.push_back(ReferenceLoc{E->getNestedNameSpecifierLoc(),
+                                  E->getConceptNameLoc(),
+                                  /*IsDecl=*/false,
+                                  {E->getNamedConcept()}});
+    }
     void VisitDeclRefExpr(const DeclRefExpr *E) {
       Refs.push_back(ReferenceLoc{E->getQualifierLoc(),
                                   E->getNameInfo().getLoc(),
@@ -614,6 +636,10 @@ llvm::SmallVector<ReferenceLoc, 2> refInExpr(const Expr *E) {
     }
 
     void VisitMemberExpr(const MemberExpr *E) {
+      // Skip destructor calls to avoid duplication: TypeLoc within will be
+      // visited separately.
+      if (llvm::dyn_cast<CXXDestructorDecl>(E->getFoundDecl().getDecl()))
+        return;
       Refs.push_back(ReferenceLoc{E->getQualifierLoc(),
                                   E->getMemberNameInfo().getLoc(),
                                   /*IsDecl=*/false,
@@ -689,6 +715,13 @@ llvm::SmallVector<ReferenceLoc, 2> refInTypeLoc(TypeLoc L) {
           NestedNameSpecifierLoc(), L.getNameLoc(), /*IsDecl=*/false,
           explicitReferenceTargets(DynTypedNode::create(L.getType()),
                                    DeclRelation::Alias)};
+    }
+
+    void VisitInjectedClassNameTypeLoc(InjectedClassNameTypeLoc TL) {
+      Ref = ReferenceLoc{NestedNameSpecifierLoc(),
+                         TL.getNameLoc(),
+                         /*IsDecl=*/false,
+                         {TL.getDecl()}};
     }
 
     void VisitDependentTemplateSpecializationTypeLoc(

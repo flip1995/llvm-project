@@ -143,10 +143,9 @@ private:
 
 AppleObjCDeclVendor::AppleObjCDeclVendor(ObjCLanguageRuntime &runtime)
     : ClangDeclVendor(eAppleObjCDeclVendor), m_runtime(runtime),
-      m_ast_ctx(runtime.GetProcess()
-                    ->GetTarget()
-                    .GetArchitecture()
-                    .GetTriple()),
+      m_ast_ctx(
+          "AppleObjCDeclVendor AST",
+          runtime.GetProcess()->GetTarget().GetArchitecture().GetTriple()),
       m_type_realizer_sp(m_runtime.GetEncodingToType()) {
   m_external_source = new AppleObjCExternalASTSource(*this);
   llvm::IntrusiveRefCntPtr<clang::ExternalASTSource> external_source_owning_ptr(
@@ -309,7 +308,7 @@ public:
   }
 
   clang::ObjCMethodDecl *
-  BuildMethod(ClangASTContext &clang_ast_ctxt,
+  BuildMethod(TypeSystemClang &clang_ast_ctxt,
               clang::ObjCInterfaceDecl *interface_decl, const char *name,
               bool instance,
               ObjCLanguageRuntime::EncodingToTypeSP type_realizer_sp) {

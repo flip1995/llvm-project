@@ -1327,7 +1327,10 @@ class PredOpTrait<string descr, Pred pred> : OpTrait {
 }
 
 // Op supports operand broadcast behavior.
-def Broadcastable  : NativeOpTrait<"BroadcastableTwoOperandsOneResult">;
+def ResultsBroadcastableShape :
+  NativeOpTrait<"ResultsBroadcastableShape">;
+// TODO: Alias of the above, remove post integrate.
+def Broadcastable : NativeOpTrait<"ResultsBroadcastableShape">;
 // X op Y == Y op X
 def Commutative  : NativeOpTrait<"IsCommutative">;
 // Op behaves like a function.
@@ -1408,8 +1411,12 @@ def ins;
 // OpInterfaceTrait corresponds to a specific 'OpInterface' class defined in
 // C++. The purpose to wrap around C++ symbol string with this class is to make
 // interfaces specified for ops in TableGen less alien and more integrated.
-class OpInterfaceTrait<string name> : NativeOpTrait<""> {
+class OpInterfaceTrait<string name, code verifyBody = [{}]> : NativeOpTrait<""> {
   let trait = name # "::Trait";
+
+  // Specify the body of the verification function. `$_op` will be replaced with
+  // the operation being verified.
+  code verify = verifyBody;
 }
 
 // This class represents a single, optionally static, interface method.

@@ -158,7 +158,9 @@ public:
 
   bool isLegalMaskedGather(Type *Ty, MaybeAlign Alignment);
 
-  bool isLegalMaskedScatter(Type *Ty, MaybeAlign Alignment) { return false; }
+  bool isLegalMaskedScatter(Type *Ty, MaybeAlign Alignment) {
+    return isLegalMaskedGather(Ty, Alignment);
+  }
 
   int getMemcpyCost(const Instruction *I);
 
@@ -199,6 +201,9 @@ public:
                                  unsigned AddressSpace,
                                  bool UseMaskForCond = false,
                                  bool UseMaskForGaps = false);
+
+  unsigned getGatherScatterOpCost(unsigned Opcode, Type *DataTy, Value *Ptr,
+                                  bool VariableMask, unsigned Alignment);
 
   bool isLoweredToCall(const Function *F);
   bool isHardwareLoopProfitable(Loop *L, ScalarEvolution &SE,

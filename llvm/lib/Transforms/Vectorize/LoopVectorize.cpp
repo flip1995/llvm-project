@@ -2263,12 +2263,12 @@ void InnerLoopVectorizer::vectorizeInterleaveGroup(Instruction *Instr,
                           : ShuffledMask;
         }
         NewLoad =
-            Builder.CreateMaskedLoad(AddrParts[Part], Group->getAlignment(),
+            Builder.CreateMaskedLoad(AddrParts[Part], Group->getAlign(),
                                      GroupMask, UndefVec, "wide.masked.vec");
       }
       else
         NewLoad = Builder.CreateAlignedLoad(VecTy, AddrParts[Part],
-                                            Group->getAlignment(), "wide.vec");
+                                            Group->getAlign(), "wide.vec");
       Group->addMetadata(NewLoad);
       NewLoads.push_back(NewLoad);
     }
@@ -2343,11 +2343,11 @@ void InnerLoopVectorizer::vectorizeInterleaveGroup(Instruction *Instr,
       Value *ShuffledMask = Builder.CreateShuffleVector(
           BlockInMaskPart, Undefs, RepMask, "interleaved.mask");
       NewStoreInstr = Builder.CreateMaskedStore(
-          IVec, AddrParts[Part], Group->getAlignment(), ShuffledMask);
+          IVec, AddrParts[Part], Group->getAlign(), ShuffledMask);
     }
     else
-      NewStoreInstr = Builder.CreateAlignedStore(IVec, AddrParts[Part],
-                                                 Group->getAlignment());
+      NewStoreInstr =
+          Builder.CreateAlignedStore(IVec, AddrParts[Part], Group->getAlign());
 
     Group->addMetadata(NewStoreInstr);
   }
@@ -2449,11 +2449,10 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr,
         }
         auto *VecPtr = CreateVecPtr(Part, State.get(Addr, {0, 0}));
         if (isMaskRequired)
-          NewSI = Builder.CreateMaskedStore(
-              StoredVal, VecPtr, Alignment.value(), BlockInMaskParts[Part]);
+          NewSI = Builder.CreateMaskedStore(StoredVal, VecPtr, Alignment,
+                                            BlockInMaskParts[Part]);
         else
-          NewSI =
-              Builder.CreateAlignedStore(StoredVal, VecPtr, Alignment.value());
+          NewSI = Builder.CreateAlignedStore(StoredVal, VecPtr, Alignment);
       }
       addMetadata(NewSI, SI);
     }
@@ -2475,11 +2474,11 @@ void InnerLoopVectorizer::vectorizeMemoryInstruction(Instruction *Instr,
       auto *VecPtr = CreateVecPtr(Part, State.get(Addr, {0, 0}));
       if (isMaskRequired)
         NewLI = Builder.CreateMaskedLoad(
-            VecPtr, Alignment.value(), BlockInMaskParts[Part],
-            UndefValue::get(DataTy), "wide.masked.load");
+            VecPtr, Alignment, BlockInMaskParts[Part], UndefValue::get(DataTy),
+            "wide.masked.load");
       else
-        NewLI = Builder.CreateAlignedLoad(DataTy, VecPtr, Alignment.value(),
-                                          "wide.load");
+        NewLI =
+            Builder.CreateAlignedLoad(DataTy, VecPtr, Alignment, "wide.load");
 
       // Add metadata to the load, but setVectorValue to the reverse shuffle.
       addMetadata(NewLI, LI);
@@ -6729,7 +6728,7 @@ VPValue *VPRecipeBuilder::createEdgeMask(BasicBlock *Src, BasicBlock *Dst,
   BranchInst *BI = dyn_cast<BranchInst>(Src->getTerminator());
   assert(BI && "Unexpected terminator found");
 
-  if (!BI->isConditional())
+  if (!BI->isConditional() || BI->getSuccessor(0) == BI->getSuccessor(1))
     return EdgeMaskCache[Edge] = SrcMask;
 
   VPValue *EdgeMask = Plan->getVPValue(BI->getCondition());
