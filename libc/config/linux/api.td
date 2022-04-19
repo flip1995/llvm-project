@@ -84,6 +84,13 @@ def StdIOAPI : PublicAPI<"stdio.h"> {
   ];
 }
 
+def StdlibAPI : PublicAPI<"stdlib.h"> {
+  let Functions = [
+    "_Exit",
+    "abort",
+  ];
+}
+
 def ErrnoAPI : PublicAPI<"errno.h"> {
   let Macros = [
     ErrnoMacro,
@@ -135,12 +142,11 @@ def SysMManAPI : PublicAPI<"sys/mman.h"> {
 }
 
 def SignalAPI : PublicAPI<"signal.h"> {
-  let TypeDeclarations = [
-    SizeT, // This is needed by <linux/signal.h>.
-  ];
-
   let Functions = [
     "raise",
+    "sigprocmask",
+    "sigemptyset",
+    "sigaddset",
   ];
 }
 
