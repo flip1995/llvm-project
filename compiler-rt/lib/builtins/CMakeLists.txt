@@ -20,7 +20,7 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   if(APPLE)
     include(CompilerRTDarwinUtils)
   endif()
-  if(CMAKE_HOST_APPLE AND APPLE)
+  if(APPLE)
     include(UseLibtool)
   endif()
   include(AddCompilerRT)
@@ -556,11 +556,8 @@ set(mips64c256_SOURCES ${GENERIC_TF_SOURCES} ${mips_SOURCES})
 
 set(powerpc64_SOURCES
   ppc/divtc3.c
-  ppc/fixtfti.c
   ppc/fixtfdi.c
-  ppc/fixunstfti.c
   ppc/fixunstfdi.c
-  ppc/floattitf.c
   ppc/floatditf.c
   ppc/floatunditf.c
   ppc/gcc_qadd.c
@@ -570,6 +567,15 @@ set(powerpc64_SOURCES
   ppc/multc3.c
   ${GENERIC_SOURCES}
 )
+# These routines require __int128, which isn't supported on AIX.
+if (NOT ${CMAKE_SYSTEM_NAME} MATCHES "AIX")
+  set(powerpc64_SOURCES
+    ppc/floattitf.c
+    ppc/fixtfti.c
+    ppc/fixunstfti.c
+    ${powerpc64_SOURCES}
+  )
+endif()
 set(powerpc64le_SOURCES ${powerpc64_SOURCES})
 
 set(riscv_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})
@@ -577,7 +583,10 @@ set(riscv32_SOURCES
   riscv/mulsi3.S
   ${riscv_SOURCES}
 )
-set(riscv64_SOURCES ${riscv_SOURCES})
+set(riscv64_SOURCES
+  riscv/muldi3.S
+  ${riscv_SOURCES}
+)
 
 set(sparc_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})
 set(sparcv9_SOURCES ${GENERIC_SOURCES} ${GENERIC_TF_SOURCES})

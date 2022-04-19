@@ -146,9 +146,13 @@ void DAGTypeLegalizer::ScalarizeVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::SHL:
   case ISD::SRA:
   case ISD::SRL:
+  case ISD::ROTL:
+  case ISD::ROTR:
     R = ScalarizeVecRes_BinOp(N);
     break;
   case ISD::FMA:
+  case ISD::FSHL:
+  case ISD::FSHR:
     R = ScalarizeVecRes_TernaryOp(N);
     break;
 
@@ -946,9 +950,13 @@ void DAGTypeLegalizer::SplitVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::USUBSAT:
   case ISD::SSHLSAT:
   case ISD::USHLSAT:
+  case ISD::ROTL:
+  case ISD::ROTR:
     SplitVecRes_BinOp(N, Lo, Hi);
     break;
   case ISD::FMA:
+  case ISD::FSHL:
+  case ISD::FSHR:
     SplitVecRes_TernaryOp(N, Lo, Hi);
     break;
 
@@ -2792,6 +2800,9 @@ void DAGTypeLegalizer::WidenVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::OR:
   case ISD::SUB:
   case ISD::XOR:
+  case ISD::SHL:
+  case ISD::SRA:
+  case ISD::SRL:
   case ISD::FMINNUM:
   case ISD::FMAXNUM:
   case ISD::FMINIMUM:
@@ -2806,6 +2817,8 @@ void DAGTypeLegalizer::WidenVectorResult(SDNode *N, unsigned ResNo) {
   case ISD::SSUBSAT:
   case ISD::SSHLSAT:
   case ISD::USHLSAT:
+  case ISD::ROTL:
+  case ISD::ROTR:
     Res = WidenVecRes_Binary(N);
     break;
 
@@ -2852,12 +2865,6 @@ void DAGTypeLegalizer::WidenVectorResult(SDNode *N, unsigned ResNo) {
 
   case ISD::FPOWI:
     Res = WidenVecRes_POWI(N);
-    break;
-
-  case ISD::SHL:
-  case ISD::SRA:
-  case ISD::SRL:
-    Res = WidenVecRes_Shift(N);
     break;
 
   case ISD::ANY_EXTEND_VECTOR_INREG:
@@ -2926,6 +2933,8 @@ void DAGTypeLegalizer::WidenVectorResult(SDNode *N, unsigned ResNo) {
     Res = WidenVecRes_Unary(N);
     break;
   case ISD::FMA:
+  case ISD::FSHL:
+  case ISD::FSHR:
     Res = WidenVecRes_Ternary(N);
     break;
   }
@@ -3474,25 +3483,6 @@ SDValue DAGTypeLegalizer::WidenVecRes_POWI(SDNode *N) {
   EVT WidenVT = TLI.getTypeToTransformTo(*DAG.getContext(), N->getValueType(0));
   SDValue InOp = GetWidenedVector(N->getOperand(0));
   SDValue ShOp = N->getOperand(1);
-  return DAG.getNode(N->getOpcode(), SDLoc(N), WidenVT, InOp, ShOp);
-}
-
-SDValue DAGTypeLegalizer::WidenVecRes_Shift(SDNode *N) {
-  EVT WidenVT = TLI.getTypeToTransformTo(*DAG.getContext(), N->getValueType(0));
-  SDValue InOp = GetWidenedVector(N->getOperand(0));
-  SDValue ShOp = N->getOperand(1);
-
-  EVT ShVT = ShOp.getValueType();
-  if (getTypeAction(ShVT) == TargetLowering::TypeWidenVector) {
-    ShOp = GetWidenedVector(ShOp);
-    ShVT = ShOp.getValueType();
-  }
-  EVT ShWidenVT = EVT::getVectorVT(*DAG.getContext(),
-                                   ShVT.getVectorElementType(),
-                                   WidenVT.getVectorNumElements());
-  if (ShVT != ShWidenVT)
-    ShOp = ModifyToType(ShOp, ShWidenVT);
-
   return DAG.getNode(N->getOpcode(), SDLoc(N), WidenVT, InOp, ShOp);
 }
 

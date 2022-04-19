@@ -83,6 +83,11 @@ class NoAlias<AttrIndex idx> : IntrinsicProperty {
   int ArgNo = idx.Value;
 }
 
+// NoUndef - The specified argument is neither undef nor poison.
+class NoUndef<AttrIndex idx> : IntrinsicProperty {
+  int ArgNo = idx.Value;
+}
+
 class Align<AttrIndex idx, int align> : IntrinsicProperty {
   int ArgNo = idx.Value;
   int Align = align;
@@ -527,7 +532,8 @@ def int_readcyclecounter : Intrinsic<[llvm_i64_ty]>;
 
 // The assume intrinsic is marked as arbitrarily writing so that proper
 // control dependencies will be maintained.
-def int_assume        : Intrinsic<[], [llvm_i1_ty], [IntrWillReturn]>;
+def int_assume        : Intrinsic<[], [llvm_i1_ty], [IntrWillReturn,
+                                                     NoUndef<ArgIndex<0>>]>;
 
 // Stack Protector Intrinsic - The stackprotector intrinsic writes the stack
 // guard to the correct place on the stack frame.

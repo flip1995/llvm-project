@@ -604,12 +604,19 @@ ComplexPattern::ComplexPattern(Record *R) {
 //===----------------------------------------------------------------------===//
 
 CodeGenIntrinsicTable::CodeGenIntrinsicTable(const RecordKeeper &RC) {
-  std::vector<Record*> Defs = RC.getAllDerivedDefinitions("Intrinsic");
+  std::vector<Record *> IntrProperties =
+      RC.getAllDerivedDefinitions("IntrinsicProperty");
 
+  std::vector<Record *> DefaultProperties;
+  for (Record *Rec : IntrProperties)
+    if (Rec->getValueAsBit("IsDefault"))
+      DefaultProperties.push_back(Rec);
+
+  std::vector<Record *> Defs = RC.getAllDerivedDefinitions("Intrinsic");
   Intrinsics.reserve(Defs.size());
 
   for (unsigned I = 0, e = Defs.size(); I != e; ++I)
-    Intrinsics.push_back(CodeGenIntrinsic(Defs[I]));
+    Intrinsics.push_back(CodeGenIntrinsic(Defs[I], DefaultProperties));
 
   llvm::sort(Intrinsics,
              [](const CodeGenIntrinsic &LHS, const CodeGenIntrinsic &RHS) {
@@ -625,7 +632,8 @@ CodeGenIntrinsicTable::CodeGenIntrinsicTable(const RecordKeeper &RC) {
   Targets.back().Count = Intrinsics.size() - Targets.back().Offset;
 }
 
-CodeGenIntrinsic::CodeGenIntrinsic(Record *R) {
+CodeGenIntrinsic::CodeGenIntrinsic(Record *R,
+                                   std::vector<Record *> DefaultProperties) {
   TheDef = R;
   std::string DefName = std::string(R->getName());
   ArrayRef<SMLoc> DefLoc = R->getLoc();
@@ -778,7 +786,7 @@ CodeGenIntrinsic::CodeGenIntrinsic(Record *R) {
   }
 
   // Set default properties to true.
-  setDefaultProperties(R);
+  setDefaultProperties(R, DefaultProperties);
 
   // Parse the intrinsic properties.
   ListInit *PropList = R->getValueAsListInit("IntrProperties");
@@ -797,17 +805,14 @@ CodeGenIntrinsic::CodeGenIntrinsic(Record *R) {
   llvm::sort(ArgumentAttributes);
 }
 
-void CodeGenIntrinsic::setDefaultProperties(Record *R) {
+void CodeGenIntrinsic::setDefaultProperties(
+    Record *R, std::vector<Record *> DefaultProperties) {
   // opt-out of using default attributes.
   if (R->getValueAsBit("DisableDefaultAttributes"))
     return;
 
-  std::vector<Record *> Defs =
-      R->getRecords().getAllDerivedDefinitions("IntrinsicProperty");
-
-  for (Record *Rec : Defs)
-    if (Rec->getValueAsBit("IsDefault"))
-      setProperty(Rec);
+  for (Record *Rec : DefaultProperties)
+    setProperty(Rec);
 }
 
 void CodeGenIntrinsic::setProperty(Record *R) {
@@ -852,6 +857,9 @@ void CodeGenIntrinsic::setProperty(Record *R) {
   } else if (R->isSubClassOf("NoAlias")) {
     unsigned ArgNo = R->getValueAsInt("ArgNo");
     ArgumentAttributes.emplace_back(ArgNo, NoAlias, 0);
+  } else if (R->isSubClassOf("NoUndef")) {
+    unsigned ArgNo = R->getValueAsInt("ArgNo");
+    ArgumentAttributes.emplace_back(ArgNo, NoUndef, 0);
   } else if (R->isSubClassOf("Returned")) {
     unsigned ArgNo = R->getValueAsInt("ArgNo");
     ArgumentAttributes.emplace_back(ArgNo, Returned, 0);

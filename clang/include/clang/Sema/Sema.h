@@ -1916,6 +1916,12 @@ public:
 
   bool isModuleVisible(const Module *M, bool ModulePrivate = false);
 
+  // When loading a non-modular PCH files, this is used to restore module
+  // visibility.
+  void makeModuleVisible(Module *Mod, SourceLocation ImportLoc) {
+    VisibleModules.setVisible(Mod, ImportLoc);
+  }
+
   /// Determine whether a declaration is visible to name lookup.
   bool isVisible(const NamedDecl *D) {
     return D->isUnconditionallyVisible() || isVisibleSlow(D);
@@ -3217,7 +3223,7 @@ public:
     CCEK_CaseValue,   ///< Expression in a case label.
     CCEK_Enumerator,  ///< Enumerator value with fixed underlying type.
     CCEK_TemplateArg, ///< Value of a non-type template parameter.
-    CCEK_NewExpr,     ///< Constant expression in a noptr-new-declarator.
+    CCEK_ArrayBound,  ///< Array bound in array declarator or new-expression.
     CCEK_ConstexprIf, ///< Condition in a constexpr if statement.
     CCEK_ExplicitBool ///< Condition in an explicit(bool) specifier.
   };
@@ -10009,7 +10015,7 @@ public:
 private:
   void *VarDataSharingAttributesStack;
   /// Number of nested '#pragma omp declare target' directives.
-  unsigned DeclareTargetNestingLevel = 0;
+  SmallVector<SourceLocation, 4> DeclareTargetNesting;
   /// Initialization of data-sharing attributes stack.
   void InitDataSharingAttributesStack();
   void DestroyDataSharingAttributesStack();
@@ -10269,7 +10275,7 @@ public:
                                      SourceLocation Loc);
   /// Return true inside OpenMP declare target region.
   bool isInOpenMPDeclareTargetContext() const {
-    return DeclareTargetNestingLevel > 0;
+    return !DeclareTargetNesting.empty();
   }
   /// Return true inside OpenMP target region.
   bool isInOpenMPTargetExecutionDirective() const;
