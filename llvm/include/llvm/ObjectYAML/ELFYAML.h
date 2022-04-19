@@ -25,6 +25,8 @@
 namespace llvm {
 namespace ELFYAML {
 
+StringRef dropUniqueSuffix(StringRef S);
+
 // These types are invariant across 32/64-bit ELF, so for simplicity just
 // directly give them their exact sizes. We don't need to worry about
 // endianness because these are just the types in the YAMLIO structures,
@@ -129,6 +131,7 @@ struct Section {
     RawContent,
     Relocation,
     NoBits,
+    Hash,
     Verdef,
     Verneed,
     StackSizes,
@@ -171,6 +174,7 @@ struct Section {
 
 struct StackSizesSection : Section {
   Optional<yaml::BinaryRef> Content;
+  Optional<llvm::yaml::Hex64> Size;
   Optional<std::vector<StackSizeEntry>> Entries;
 
   StackSizesSection() : Section(SectionKind::StackSizes) {}
@@ -215,6 +219,16 @@ struct NoBitsSection : Section {
   static bool classof(const Section *S) {
     return S->Kind == SectionKind::NoBits;
   }
+};
+
+struct HashSection : Section {
+  Optional<yaml::BinaryRef> Content;
+  Optional<std::vector<uint32_t>> Bucket;
+  Optional<std::vector<uint32_t>> Chain;
+
+  HashSection() : Section(SectionKind::Hash) {}
+
+  static bool classof(const Section *S) { return S->Kind == SectionKind::Hash; }
 };
 
 struct VernauxEntry {

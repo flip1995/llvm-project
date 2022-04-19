@@ -91,10 +91,12 @@
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
+#include "llvm/MC/MCSectionXCOFF.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolELF.h"
+#include "llvm/MC/MCSymbolXCOFF.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/SectionKind.h"
@@ -161,29 +163,28 @@ static gcp_map_type &getGCMap(void *&P) {
 
 /// getGVAlignment - Return the alignment to use for the specified global
 /// value.  This rounds up to the preferred alignment if possible and legal.
-llvm::Align AsmPrinter::getGVAlignment(const GlobalValue *GV,
-                                       const DataLayout &DL,
-                                       llvm::Align InAlign) {
-  llvm::Align Align;
+Align AsmPrinter::getGVAlignment(const GlobalValue *GV, const DataLayout &DL,
+                                 Align InAlign) {
+  Align Alignment;
   if (const GlobalVariable *GVar = dyn_cast<GlobalVariable>(GV))
-    Align = llvm::Align(DL.getPreferredAlignment(GVar));
+    Alignment = Align(DL.getPreferredAlignment(GVar));
 
   // If InAlign is specified, round it to it.
-  if (InAlign > Align)
-    Align = InAlign;
+  if (InAlign > Alignment)
+    Alignment = InAlign;
 
   // If the GV has a specified alignment, take it into account.
-  const llvm::MaybeAlign GVAlign(GV->getAlignment());
+  const MaybeAlign GVAlign(GV->getAlignment());
   if (!GVAlign)
-    return Align;
+    return Alignment;
 
   assert(GVAlign && "GVAlign must be set");
 
   // If the GVAlign is larger than NumBits, or if we are required to obey
   // NumBits because the GV has an assigned section, obey it.
-  if (*GVAlign > Align || GV->hasSection())
-    Align = *GVAlign;
-  return Align;
+  if (*GVAlign > Alignment || GV->hasSection())
+    Alignment = *GVAlign;
+  return Alignment;
 }
 
 AsmPrinter::AsmPrinter(TargetMachine &tm, std::unique_ptr<MCStreamer> Streamer)
@@ -249,13 +250,14 @@ const MCSection *AsmPrinter::getCurrentSection() const {
 void AsmPrinter::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   MachineFunctionPass::getAnalysisUsage(AU);
-  AU.addRequired<MachineModuleInfo>();
+  AU.addRequired<MachineModuleInfoWrapperPass>();
   AU.addRequired<MachineOptimizationRemarkEmitterPass>();
   AU.addRequired<GCModuleInfo>();
 }
 
 bool AsmPrinter::doInitialization(Module &M) {
-  MMI = getAnalysisIfAvailable<MachineModuleInfo>();
+  auto *MMIWP = getAnalysisIfAvailable<MachineModuleInfoWrapperPass>();
+  MMI = MMIWP ? &MMIWP->getMMI() : nullptr;
 
   // Initialize TargetLoweringObjectFile.
   const_cast<TargetLoweringObjectFile&>(getObjFileLowering())
@@ -426,7 +428,10 @@ void AsmPrinter::EmitLinkage(const GlobalValue *GV, MCSymbol *GVSym) const {
     OutStreamer->EmitSymbolAttribute(GVSym, MCSA_Global);
     return;
   case GlobalValue::PrivateLinkage:
+    return;
   case GlobalValue::InternalLinkage:
+    if (MAI->hasDotLGloblDirective())
+      OutStreamer->EmitSymbolAttribute(GVSym, MCSA_LGlobal);
     return;
   case GlobalValue::AppendingLinkage:
   case GlobalValue::AvailableExternallyLinkage:
@@ -502,7 +507,7 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
   // If the alignment is specified, we *must* obey it.  Overaligning a global
   // with a specified alignment is a prompt way to break globals emitted to
   // sections and expected to be contiguous (e.g. ObjC metadata).
-  llvm::Align Align = getGVAlignment(GV, DL);
+  const Align Alignment = getGVAlignment(GV, DL);
 
   const TailPaddingAmount TailPadding =
       getObjFileLowering().getTailPaddingForPreciseBounds(Size);
@@ -537,7 +542,7 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
     const bool SupportsAlignment =
         getObjFileLowering().getCommDirectiveSupportsAlignment();
     OutStreamer->EmitCommonSymbol(GVSym, Size,
-                                  SupportsAlignment ? Align.value() : 0,
+                                  SupportsAlignment ? Alignment.value() : 0,
                                   TailPadding);
     return;
   }
@@ -553,7 +558,7 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
       Size = 1; // zerofill of 0 bytes is undefined.
     EmitLinkage(GV, GVSym);
     // .zerofill __DATA, __bss, _foo, 400, 5
-    OutStreamer->EmitZerofill(TheSection, GVSym, Size, Align.value(),
+    OutStreamer->EmitZerofill(TheSection, GVSym, Size, Alignment.value(),
                               TailPadding);
     return;
   }
@@ -573,7 +578,7 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
     // Prefer to simply fall back to .local / .comm in this case.
     if (MAI->getLCOMMDirectiveAlignmentType() != LCOMM::NoAlignment) {
       // .lcomm _foo, 42
-      OutStreamer->EmitLocalCommonSymbol(GVSym, Size, Align.value(),
+      OutStreamer->EmitLocalCommonSymbol(GVSym, Size, Alignment.value(),
                                          TailPadding);
       return;
     }
@@ -584,7 +589,7 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
     const bool SupportsAlignment =
         getObjFileLowering().getCommDirectiveSupportsAlignment();
     OutStreamer->EmitCommonSymbol(GVSym, Size,
-                                  SupportsAlignment ? Align.value() : 0,
+                                  SupportsAlignment ? Alignment.value() : 0,
                                   TailPadding);
     return;
   }
@@ -606,12 +611,12 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
 
     if (GVKind.isThreadBSS()) {
       TheSection = getObjFileLowering().getTLSBSSSection();
-      OutStreamer->EmitTBSSSymbol(TheSection, MangSym, Size, Align.value(),
+      OutStreamer->EmitTBSSSymbol(TheSection, MangSym, Size, Alignment.value(),
                                   TailPadding);
     } else if (GVKind.isThreadData()) {
       OutStreamer->SwitchSection(TheSection);
 
-      EmitAlignment(Align, GV);
+      EmitAlignment(Alignment, GV);
       OutStreamer->EmitLabel(MangSym);
 
       EmitGlobalConstant(GV->getParent()->getDataLayout(), GV->getInitializer(),
@@ -647,7 +652,7 @@ void AsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
   OutStreamer->SwitchSection(TheSection);
 
   EmitLinkage(GV, EmittedInitSym);
-  EmitAlignment(Align, GV);
+  EmitAlignment(Alignment, GV);
 
   OutStreamer->EmitLabel(EmittedInitSym);
 
@@ -687,6 +692,10 @@ void AsmPrinter::EmitFunctionHeader() {
   OutStreamer->SwitchSection(getObjFileLowering().SectionForGlobal(&F, TM));
   EmitVisibility(CurrentFnSym, F.getVisibility());
 
+  if (MAI->needsFunctionDescriptors() &&
+      F.getLinkage() != GlobalValue::InternalLinkage)
+    EmitLinkage(&F, CurrentFnDescSym);
+
   EmitLinkage(&F, CurrentFnSym);
   if (MAI->hasFunctionAlignment())
     EmitAlignment(MF->getAlignment(), &F);
@@ -722,8 +731,13 @@ void AsmPrinter::EmitFunctionHeader() {
     }
   }
 
-  // Emit the CurrentFnSym.  This is a virtual function to allow targets to
-  // do their wild and crazy things as required.
+  // Emit the function descriptor. This is a virtual function to allow targets
+  // to emit their specific function descriptor.
+  if (MAI->needsFunctionDescriptors())
+    EmitFunctionDescriptor();
+
+  // Emit the CurrentFnSym. This is a virtual function to allow targets to do
+  // their wild and crazy things as required.
   EmitFunctionEntryLabel();
 
   // If the function had address-taken blocks that got deleted, then we have
@@ -1448,7 +1462,7 @@ bool AsmPrinter::doFinalization(Module &M) {
       unsigned AS = DL.getProgramAddressSpace();
       unsigned Size = DL.getPointerSize(AS);
 
-      EmitAlignment(llvm::Align(Size));
+      EmitAlignment(Align(Size));
       for (const auto &Stub : Stubs) {
         OutStreamer->EmitLabel(Stub.first);
         if (DL.isFatPointer(AS))
@@ -1477,7 +1491,7 @@ bool AsmPrinter::doFinalization(Module &M) {
                 COFF::IMAGE_SCN_LNK_COMDAT,
             SectionKind::getReadOnly(), Stub.first->getName(),
             COFF::IMAGE_COMDAT_SELECT_ANY));
-        EmitAlignment(llvm::Align(DL.getPointerSize()));
+        EmitAlignment(Align(DL.getPointerSize()));
         OutStreamer->EmitSymbolAttribute(Stub.first, MCSA_Global);
         OutStreamer->EmitLabel(Stub.first);
         OutStreamer->EmitSymbolValue(Stub.second.getPointer(),
@@ -1673,8 +1687,27 @@ MCSymbol *AsmPrinter::getCurExceptionSym() {
 
 void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
   this->MF = &MF;
+
   // Get the function symbol.
-  CurrentFnSym = getSymbol(&MF.getFunction());
+  if (MAI->needsFunctionDescriptors()) {
+    assert(TM.getTargetTriple().isOSAIX() && "Function descriptor is only"
+                                             " supported on AIX.");
+    assert(CurrentFnDescSym && "The function descriptor symbol needs to be"
+		                           " initalized first.");
+
+    // Get the function entry point symbol.
+    CurrentFnSym =
+        OutContext.getOrCreateSymbol("." + CurrentFnDescSym->getName());
+
+    const Function &F = MF.getFunction();
+    MCSectionXCOFF *FnEntryPointSec =
+        cast<MCSectionXCOFF>(getObjFileLowering().SectionForGlobal(&F, TM));
+    // Set the containing csect.
+    cast<MCSymbolXCOFF>(CurrentFnSym)->setContainingCsect(FnEntryPointSec);
+  } else {
+    CurrentFnSym = getSymbol(&MF.getFunction());
+  }
+
   CurrentFnSymForSize = CurrentFnSym;
   CurrentFnBegin = nullptr;
   CurExceptionSym = nullptr;
@@ -1759,7 +1792,7 @@ void AsmPrinter::EmitConstantPool() {
 
       if (CurSection != CPSections[i].S) {
         OutStreamer->SwitchSection(CPSections[i].S);
-        EmitAlignment(llvm::Align(CPSections[i].Alignment));
+        EmitAlignment(Align(CPSections[i].Alignment));
         CurSection = CPSections[i].S;
         Offset = 0;
       }
@@ -1806,7 +1839,7 @@ void AsmPrinter::EmitJumpTableInfo() {
     OutStreamer->SwitchSection(ReadOnlySection);
   }
 
-  EmitAlignment(llvm::Align(MJTI->getEntryAlignment(DL)));
+  EmitAlignment(Align(MJTI->getEntryAlignment(DL)));
 
   // Jump tables in code sections are marked with a data_region directive
   // where that's supported.
@@ -2032,7 +2065,7 @@ void AsmPrinter::EmitXXStructorList(const DataLayout &DL, const Constant *List,
   llvm::stable_sort(Structors, [](const Structor &L, const Structor &R) {
     return L.Priority < R.Priority;
   });
-  const llvm::Align Align = DL.getPointerPrefAlignment();
+  const Align Align = DL.getPointerPrefAlignment();
   for (Structor &S : Structors) {
     const TargetLoweringObjectFile &Obj = getObjFileLowering();
     const MCSymbol *KeySym = nullptr;
@@ -2156,18 +2189,17 @@ void AsmPrinter::EmitLabelPlusOffset(const MCSymbol *Label, uint64_t Offset,
 // two boundary.  If a global value is specified, and if that global has
 // an explicit alignment requested, it will override the alignment request
 // if required for correctness.
-void AsmPrinter::EmitAlignment(llvm::Align Align,
-                               const GlobalObject *GV) const {
+void AsmPrinter::EmitAlignment(Align Alignment, const GlobalObject *GV) const {
   if (GV)
-    Align = getGVAlignment(GV, GV->getParent()->getDataLayout(), Align);
+    Alignment = getGVAlignment(GV, GV->getParent()->getDataLayout(), Alignment);
 
-  if (Align == 1)
+  if (Alignment == Align::None())
     return; // 1-byte aligned: no need to emit alignment.
 
   if (getCurrentSection()->getKind().isText())
-    OutStreamer->EmitCodeAlignment(Align.value());
+    OutStreamer->EmitCodeAlignment(Alignment.value());
   else
-    OutStreamer->EmitValueToAlignment(Align.value());
+    OutStreamer->EmitValueToAlignment(Alignment.value());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2995,9 +3027,9 @@ void AsmPrinter::EmitBasicBlockStart(const MachineBasicBlock &MBB) {
   }
 
   // Emit an alignment directive for this block, if needed.
-  const llvm::Align Align = MBB.getAlignment();
-  if (Align != llvm::Align::None())
-    EmitAlignment(Align);
+  const Align Alignment = MBB.getAlignment();
+  if (Alignment != Align::None())
+    EmitAlignment(Alignment);
   MCCodePaddingContext Context;
   setupCodePaddingContext(MBB, Context);
   OutStreamer->EmitCodePaddingBasicBlockStart(Context);

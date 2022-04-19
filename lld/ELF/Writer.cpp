@@ -347,7 +347,18 @@ template <class ELFT> void elf::createSyntheticSections() {
   // you can call lld::elf::main more than once as a library.
   memset(&Out::first, 0, sizeof(Out));
 
-  auto add = [](InputSectionBase *sec) { inputSections.push_back(sec); };
+  // Add the .interp section first because it is not a SyntheticSection.
+  // The removeUnusedSyntheticSections() function relies on the
+  // SyntheticSections coming last.
+  if (needsInterpSection()) {
+    for (size_t i = 1; i <= partitions.size(); ++i) {
+      InputSection *sec = createInterpSection();
+      sec->partition = i;
+      inputSections.push_back(sec);
+    }
+  }
+
+  auto add = [](SyntheticSection *sec) { inputSections.push_back(sec); };
 
   in.shStrTab = make<StringTableSection>(".shstrtab", false);
 
@@ -406,7 +417,7 @@ template <class ELFT> void elf::createSyntheticSections() {
   StringRef relaDynName = config->isRela ? ".rela.dyn" : ".rel.dyn";
 
   for (Partition &part : partitions) {
-    auto add = [&](InputSectionBase *sec) {
+    auto add = [&](SyntheticSection *sec) {
       sec->partition = part.getNumber();
       inputSections.push_back(sec);
     };
@@ -433,9 +444,6 @@ template <class ELFT> void elf::createSyntheticSections() {
     else
       part.relaDyn =
           make<RelocationSection<ELFT>>(relaDynName, config->zCombreloc);
-
-    if (needsInterpSection())
-      add(createInterpSection());
 
     if (config->hasDynSymTab) {
       part.dynSymTab = make<SymbolTableSection<ELFT>>(*part.dynStrTab);
@@ -639,7 +647,8 @@ template <class ELFT> void Writer<ELFT>::run() {
     return;
 
   if (!config->oFormatBinary) {
-    writeTrapInstr();
+    if (config->zSeparate != SeparateSegmentKind::None)
+      writeTrapInstr();
     writeHeader();
     writeSections();
   } else {
@@ -2405,7 +2414,8 @@ template <class ELFT> void Writer<ELFT>::fixSectionAlignments() {
       // maximum page size boundary so that we can find the ELF header at the
       // start. We cannot benefit from overlapping p_offset ranges with the
       // previous segment anyway.
-      if ((config->zSeparateCode && prev &&
+      if (config->zSeparate == SeparateSegmentKind::Loadable ||
+          (config->zSeparate == SeparateSegmentKind::Code && prev &&
            (prev->p_flags & PF_X) != (p->p_flags & PF_X)) ||
           cmd->type == SHT_LLVM_PART_EHDR)
         cmd->addrExpr = [] {
@@ -2514,7 +2524,8 @@ template <class ELFT> void Writer<ELFT>::assignFileOffsets() {
     // If this is a last section of the last executable segment and that
     // segment is the last loadable segment, align the offset of the
     // following section to avoid loading non-segments parts of the file.
-    if (config->zSeparateCode && lastRX && lastRX->lastSec == sec)
+    if (config->zSeparate != SeparateSegmentKind::None && lastRX &&
+        lastRX->lastSec == sec)
       off = alignTo(off, config->commonPageSize);
   }
 
@@ -2786,9 +2797,6 @@ static void fillTrap(uint8_t *i, uint8_t *end) {
 // We'll leave other pages in segments as-is because the rest will be
 // overwritten by output sections.
 template <class ELFT> void Writer<ELFT>::writeTrapInstr() {
-  if (!config->zSeparateCode)
-    return;
-
   for (Partition &part : partitions) {
     // Fill the last page.
     for (PhdrEntry *p : part.phdrs)

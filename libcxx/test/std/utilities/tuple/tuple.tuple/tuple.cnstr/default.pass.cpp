@@ -107,6 +107,11 @@ int main(int, char**)
         IllFormedDefault v(0);
         std::tuple<IllFormedDefault> t(v);
     }
+    {
+        struct Base { };
+        struct Derived : Base { protected: Derived() = default; };
+        static_assert(!std::is_default_constructible<std::tuple<Derived, int> >::value, "");
+    }
 
-  return 0;
+    return 0;
 }

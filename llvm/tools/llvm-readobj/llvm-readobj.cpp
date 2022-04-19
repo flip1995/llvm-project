@@ -231,9 +231,11 @@ namespace opts {
       "codeview-subsection-bytes",
       cl::desc("Dump raw contents of codeview debug sections and records"));
 
-  // --arm-attributes
-  cl::opt<bool> ARMAttributes("arm-attributes",
-                              cl::desc("Display the ARM attributes section"));
+  // --arch-specific
+  cl::opt<bool> ArchSpecificInfo("arch-specific",
+                              cl::desc("Displays architecture-specific information, if there is any."));
+  cl::alias ArchSpecifcInfoShort("A", cl::desc("Alias for --arch-specific"),
+                                 cl::aliasopt(ArchSpecificInfo), cl::NotHidden);
 
   // --mips-plt-got
   cl::opt<bool>
@@ -533,8 +535,8 @@ static void dumpObject(const ObjectFile *Obj, ScopedPrinter &Writer,
   if (Obj->isELF()) {
     if (opts::ELFLinkerOptions)
       Dumper->printELFLinkerOptions();
-    if (Obj->getArch() == llvm::Triple::arm)
-      if (opts::ARMAttributes)
+    if (opts::ArchSpecificInfo)
+      if (Obj->getArch() == llvm::Triple::arm)
         Dumper->printAttributes();
     if (isMipsArch(Obj->getArch())) {
       if (opts::MipsPLTGOT)

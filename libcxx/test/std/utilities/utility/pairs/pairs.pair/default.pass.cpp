@@ -45,6 +45,11 @@ int main(int, char**)
         using P2 = std::pair<NoDefault, int>;
         static_assert(!std::is_default_constructible<P2>::value, "");
     }
+    {
+        struct Base { };
+        struct Derived : Base { protected: Derived() = default; };
+        static_assert(!std::is_default_constructible<std::pair<Derived, int> >::value, "");
+    }
 #endif
 
   return 0;

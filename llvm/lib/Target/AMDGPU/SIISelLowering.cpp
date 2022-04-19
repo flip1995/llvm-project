@@ -2972,9 +2972,9 @@ SDValue SITargetLowering::LowerCall(CallLoweringInfo &CLI,
                          IsThisReturn ? OutVals[0] : SDValue());
 }
 
-unsigned SITargetLowering::getRegisterByName(const char* RegName, EVT VT,
-                                             SelectionDAG &DAG) const {
-  unsigned Reg = StringSwitch<unsigned>(RegName)
+Register SITargetLowering::getRegisterByName(const char* RegName, EVT VT,
+                                             const MachineFunction &MF) const {
+  Register Reg = StringSwitch<Register>(RegName)
     .Case("m0", AMDGPU::M0)
     .Case("exec", AMDGPU::EXEC)
     .Case("exec_lo", AMDGPU::EXEC_LO)
@@ -2982,7 +2982,7 @@ unsigned SITargetLowering::getRegisterByName(const char* RegName, EVT VT,
     .Case("flat_scratch", AMDGPU::FLAT_SCR)
     .Case("flat_scratch_lo", AMDGPU::FLAT_SCR_LO)
     .Case("flat_scratch_hi", AMDGPU::FLAT_SCR_HI)
-    .Default(AMDGPU::NoRegister);
+    .Default(Register());
 
   if (Reg == AMDGPU::NoRegister) {
     report_fatal_error(Twine("invalid register name \""
@@ -7317,8 +7317,8 @@ SDValue SITargetLowering::LowerLOAD(SDValue Op, SelectionDAG &DAG) const {
   assert(Op.getValueType().getVectorElementType() == MVT::i32 &&
          "Custom lowering for non-i32 vectors hasn't been implemented.");
 
-  if (!allowsMemoryAccess(*DAG.getContext(), DAG.getDataLayout(), MemVT,
-                          *Load->getMemOperand())) {
+  if (!allowsMemoryAccessForAlignment(*DAG.getContext(), DAG.getDataLayout(),
+                                      MemVT, *Load->getMemOperand())) {
     SDValue Ops[2];
     std::tie(Ops[0], Ops[1]) = expandUnalignedLoad(Load, DAG);
     return DAG.getMergeValues(Ops, DL);
@@ -7819,8 +7819,8 @@ SDValue SITargetLowering::LowerSTORE(SDValue Op, SelectionDAG &DAG) const {
   assert(VT.isVector() &&
          Store->getValue().getValueType().getScalarType() == MVT::i32);
 
-  if (!allowsMemoryAccess(*DAG.getContext(), DAG.getDataLayout(), VT,
-                          *Store->getMemOperand())) {
+  if (!allowsMemoryAccessForAlignment(*DAG.getContext(), DAG.getDataLayout(),
+                                      VT, *Store->getMemOperand())) {
     return expandUnalignedStore(Store, DAG);
   }
 
@@ -10685,9 +10685,9 @@ void SITargetLowering::computeKnownBitsForFrameIndex(const SDValue Op,
   Known.Zero.setHighBits(getSubtarget()->getKnownHighZeroBitsForFrameIndex());
 }
 
-llvm::Align SITargetLowering::getPrefLoopAlignment(MachineLoop *ML) const {
-  const llvm::Align PrefAlign = TargetLowering::getPrefLoopAlignment(ML);
-  const llvm::Align CacheLineAlign = llvm::Align(64);
+Align SITargetLowering::getPrefLoopAlignment(MachineLoop *ML) const {
+  const Align PrefAlign = TargetLowering::getPrefLoopAlignment(ML);
+  const Align CacheLineAlign = Align(64);
 
   // Pre-GFX10 target did not benefit from loop alignment
   if (!ML || DisableLoopAlignment ||

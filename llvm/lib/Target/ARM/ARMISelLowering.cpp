@@ -1428,16 +1428,14 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
 
   // On ARM arguments smaller than 4 bytes are extended, so all arguments
   // are at least 4 bytes aligned.
-  setMinStackArgumentAlignment(llvm::Align(4));
+  setMinStackArgumentAlignment(Align(4));
 
   // Prefer likely predicted branches to selects on out-of-order cores.
   PredictableSelectIsExpensive = Subtarget->getSchedModel().isOutOfOrder();
 
-  setPrefLoopAlignment(
-      llvm::Align(1ULL << Subtarget->getPrefLoopLogAlignment()));
+  setPrefLoopAlignment(Align(1ULL << Subtarget->getPrefLoopLogAlignment()));
 
-  setMinFunctionAlignment(Subtarget->isThumb() ? llvm::Align(2)
-                                               : llvm::Align(4));
+  setMinFunctionAlignment(Subtarget->isThumb() ? Align(2) : Align(4));
 
   if (Subtarget->isThumb() || Subtarget->isThumb2())
     setTargetDAGCombine(ISD::ABS);
@@ -5485,9 +5483,9 @@ SDValue ARMTargetLowering::LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const {
 
 // FIXME? Maybe this could be a TableGen attribute on some registers and
 // this table could be generated automatically from RegInfo.
-unsigned ARMTargetLowering::getRegisterByName(const char* RegName, EVT VT,
-                                              SelectionDAG &DAG) const {
-  unsigned Reg = StringSwitch<unsigned>(RegName)
+Register ARMTargetLowering::getRegisterByName(const char* RegName, EVT VT,
+                                              const MachineFunction &MF) const {
+  Register Reg = StringSwitch<unsigned>(RegName)
                        .Case("sp", ARM::SP)
                        .Default(0);
   if (Reg)
@@ -6011,7 +6009,7 @@ static SDValue Expand64BitShift(SDNode *N, SelectionDAG &DAG,
     // If the shift amount is greater than 32 or has a greater bitwidth than 64
     // then do the default optimisation
     if (ShAmt->getValueType(0).getSizeInBits() > 64 ||
-        (Con && Con->getZExtValue() >= 32))
+        (Con && (Con->getZExtValue() == 0 || Con->getZExtValue() >= 32)))
       return SDValue();
 
     // Extract the lower 32 bits of the shift amount if it's not an i32

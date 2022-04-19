@@ -1029,7 +1029,15 @@ static void sectionMapping(IO &IO, ELFYAML::RawContentSection &Section) {
 static void sectionMapping(IO &IO, ELFYAML::StackSizesSection &Section) {
   commonSectionMapping(IO, Section);
   IO.mapOptional("Content", Section.Content);
+  IO.mapOptional("Size", Section.Size);
   IO.mapOptional("Entries", Section.Entries);
+}
+
+static void sectionMapping(IO &IO, ELFYAML::HashSection &Section) {
+  commonSectionMapping(IO, Section);
+  IO.mapOptional("Content", Section.Content);
+  IO.mapOptional("Bucket", Section.Bucket);
+  IO.mapOptional("Chain", Section.Chain);
 }
 
 static void sectionMapping(IO &IO, ELFYAML::NoBitsSection &Section) {
@@ -1131,6 +1139,11 @@ void MappingTraits<std::unique_ptr<ELFYAML::Section>>::mapping(
       Section.reset(new ELFYAML::NoBitsSection());
     sectionMapping(IO, *cast<ELFYAML::NoBitsSection>(Section.get()));
     break;
+  case ELF::SHT_HASH:
+    if (!IO.outputting())
+      Section.reset(new ELFYAML::HashSection());
+    sectionMapping(IO, *cast<ELFYAML::HashSection>(Section.get()));
+    break;
   case ELF::SHT_MIPS_ABIFLAGS:
     if (!IO.outputting())
       Section.reset(new ELFYAML::MipsABIFlags());
@@ -1160,6 +1173,7 @@ void MappingTraits<std::unique_ptr<ELFYAML::Section>>::mapping(
     if (!IO.outputting()) {
       StringRef Name;
       IO.mapOptional("Name", Name, StringRef());
+      Name = ELFYAML::dropUniqueSuffix(Name);
 
       if (ELFYAML::StackSizesSection::nameMatches(Name))
         Section = std::make_unique<ELFYAML::StackSizesSection>();
@@ -1185,12 +1199,42 @@ StringRef MappingTraits<std::unique_ptr<ELFYAML::Section>>::validate(
   }
 
   if (const auto *SS = dyn_cast<ELFYAML::StackSizesSection>(Section.get())) {
-    if (SS->Content && SS->Entries)
+    if (!SS->Entries && !SS->Content && !SS->Size)
+      return ".stack_sizes: one of Content, Entries and Size must be specified";
+
+    if (SS->Size && SS->Content &&
+        (uint64_t)(*SS->Size) < SS->Content->binary_size())
+      return ".stack_sizes: Size must be greater than or equal to the content "
+             "size";
+
+    // We accept Content, Size or both together when there are no Entries.
+    if (!SS->Entries)
+      return {};
+
+    if (SS->Size)
+      return ".stack_sizes: Size and Entries cannot be used together";
+    if (SS->Content)
       return ".stack_sizes: Content and Entries cannot be used together";
-    if (!SS->Content && !SS->Entries)
-      return ".stack_sizes: either Content or Entries tag must be specified";
     return {};
   }
+
+  if (const auto *HS = dyn_cast<ELFYAML::HashSection>(Section.get())) {
+    if (!HS->Content && !HS->Bucket && !HS->Chain)
+      return "one of \"Content\", \"Bucket\" or \"Chain\" must be specified";
+
+    if (HS->Content) {
+      if (HS->Bucket)
+        return "\"Content\" and \"Bucket\" cannot be used together";
+      if (HS->Chain)
+        return "\"Content\" and \"Chain\" cannot be used together";
+      return {};
+    }
+
+    if ((HS->Bucket && !HS->Chain) || (!HS->Bucket && HS->Chain))
+      return "\"Bucket\" and \"Chain\" must be used together";
+    return {};
+  }
+
   return {};
 }
 
