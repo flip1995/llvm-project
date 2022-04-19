@@ -4710,13 +4710,6 @@ SDValue SITargetLowering::LowerBRCOND(SDValue BRCOND,
     Target = BR->getOperand(1);
   }
 
-  // FIXME: This changes the types of the intrinsics instead of introducing new
-  // nodes with the correct types.
-  // e.g. llvm.amdgcn.loop
-
-  // eg: i1,ch = llvm.amdgcn.loop t0, TargetConstant:i32<6271>, t3
-  // =>     t9: ch = llvm.amdgcn.loop t0, TargetConstant:i32<6271>, t3, BasicBlock:ch<bb1 0x7fee5286d088>
-
   unsigned CFNode = isCFIntrinsic(Intr);
   if (CFNode == 0) {
     // This is a uniform branch so we don't need to legalize.
@@ -11032,30 +11025,19 @@ bool SITargetLowering::isSDNodeSourceOfDivergence(const SDNode * N,
     case ISD::CopyFromReg:
     {
       const RegisterSDNode *R = cast<RegisterSDNode>(N->getOperand(1));
-      const MachineFunction * MF = FLI->MF;
-      const GCNSubtarget &ST = MF->getSubtarget<GCNSubtarget>();
-      const MachineRegisterInfo &MRI = MF->getRegInfo();
-      const SIRegisterInfo &TRI = ST.getInstrInfo()->getRegisterInfo();
+      const MachineRegisterInfo &MRI = FLI->MF->getRegInfo();
+      const SIRegisterInfo *TRI = Subtarget->getRegisterInfo();
       Register Reg = R->getReg();
-      if (Reg.isPhysical())
-        return !TRI.isSGPRReg(MRI, Reg);
 
-      if (MRI.isLiveIn(Reg)) {
-        // workitem.id.x workitem.id.y workitem.id.z
-        // Any VGPR formal argument is also considered divergent
-        if (!TRI.isSGPRReg(MRI, Reg))
-          return true;
-        // Formal arguments of non-entry functions
-        // are conservatively considered divergent
-        else if (!AMDGPU::isEntryFunctionCC(FLI->Fn->getCallingConv()))
-          return true;
-        return false;
-      }
-      const Value *V = FLI->getValueFromVirtualReg(Reg);
-      if (V)
+      // FIXME: Why does this need to consider isLiveIn?
+      if (Reg.isPhysical() || MRI.isLiveIn(Reg))
+        return !TRI->isSGPRReg(MRI, Reg);
+
+      if (const Value *V = FLI->getValueFromVirtualReg(R->getReg()))
         return KDA->isDivergent(V);
+
       assert(Reg == FLI->DemoteRegister || isCopyFromRegOfInlineAsm(N));
-      return !TRI.isSGPRReg(MRI, Reg);
+      return !TRI->isSGPRReg(MRI, Reg);
     }
     break;
     case ISD::LOAD: {

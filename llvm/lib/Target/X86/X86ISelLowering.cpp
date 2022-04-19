@@ -3331,6 +3331,7 @@ static bool isSortedByValueNo(ArrayRef<CCValAssign> ArgLocs) {
 }
 #endif
 
+namespace {
 /// This is a helper class for lowering variable arguments parameters.
 class VarArgsLoweringHelper {
 public:
@@ -3368,6 +3369,7 @@ private:
   CallingConv::ID CallConv;
   CCState &CCInfo;
 };
+} // namespace
 
 void VarArgsLoweringHelper::createVarArgAreaAndStoreRegisters(
     SDValue &Chain, unsigned StackSize) {
@@ -6250,20 +6252,22 @@ static SDValue getShuffleVectorZeroOrUndef(SDValue V2, int Idx,
   return DAG.getVectorShuffle(VT, SDLoc(V2), V1, V2, MaskVec);
 }
 
-static const Constant *getTargetConstantFromNode(LoadSDNode *Load) {
-  if (!Load || !ISD::isNormalLoad(Load))
-    return nullptr;
-
-  SDValue Ptr = Load->getBasePtr();
-  if (Ptr->getOpcode() == X86ISD::Wrapper ||
-      Ptr->getOpcode() == X86ISD::WrapperRIP)
-    Ptr = Ptr->getOperand(0);
+static const Constant *getTargetConstantFromBasePtr(SDValue Ptr) {
+  if (Ptr.getOpcode() == X86ISD::Wrapper ||
+      Ptr.getOpcode() == X86ISD::WrapperRIP)
+    Ptr = Ptr.getOperand(0);
 
   auto *CNode = dyn_cast<ConstantPoolSDNode>(Ptr);
   if (!CNode || CNode->isMachineConstantPoolEntry() || CNode->getOffset() != 0)
     return nullptr;
 
   return CNode->getConstVal();
+}
+
+static const Constant *getTargetConstantFromNode(LoadSDNode *Load) {
+  if (!Load || !ISD::isNormalLoad(Load))
+    return nullptr;
+  return getTargetConstantFromBasePtr(Load->getBasePtr());
 }
 
 static const Constant *getTargetConstantFromNode(SDValue Op) {
@@ -6446,23 +6450,6 @@ static bool getTargetConstantBitsFromNode(SDValue Op, unsigned EltSizeInBits,
   }
 
   // Extract constant bits from a broadcasted constant pool scalar.
-  if (Op.getOpcode() == X86ISD::VBROADCAST &&
-      EltSizeInBits <= VT.getScalarSizeInBits()) {
-    if (auto *Broadcast = getTargetConstantFromNode(Op.getOperand(0))) {
-      unsigned SrcEltSizeInBits = Broadcast->getType()->getScalarSizeInBits();
-      unsigned NumSrcElts = SizeInBits / SrcEltSizeInBits;
-
-      APInt UndefSrcElts(NumSrcElts, 0);
-      SmallVector<APInt, 64> SrcEltBits(1, APInt(SrcEltSizeInBits, 0));
-      if (CollectConstantBits(Broadcast, SrcEltBits[0], UndefSrcElts, 0)) {
-        if (UndefSrcElts[0])
-          UndefSrcElts.setBits(0, NumSrcElts);
-        SrcEltBits.append(NumSrcElts - 1, SrcEltBits[0]);
-        return CastBitData(UndefSrcElts, SrcEltBits);
-      }
-    }
-  }
-
   if (Op.getOpcode() == X86ISD::VBROADCAST_LOAD &&
       EltSizeInBits <= VT.getScalarSizeInBits()) {
     auto *MemIntr = cast<MemIntrinsicSDNode>(Op);
@@ -6470,16 +6457,7 @@ static bool getTargetConstantBitsFromNode(SDValue Op, unsigned EltSizeInBits,
       return false;
 
     SDValue Ptr = MemIntr->getBasePtr();
-    if (Ptr->getOpcode() == X86ISD::Wrapper ||
-        Ptr->getOpcode() == X86ISD::WrapperRIP)
-      Ptr = Ptr->getOperand(0);
-
-    auto *CNode = dyn_cast<ConstantPoolSDNode>(Ptr);
-    if (!CNode || CNode->isMachineConstantPoolEntry() ||
-        CNode->getOffset() != 0)
-      return false;
-
-    if (const Constant *C = CNode->getConstVal()) {
+    if (const Constant *C = getTargetConstantFromBasePtr(Ptr)) {
       unsigned SrcEltSizeInBits = C->getType()->getScalarSizeInBits();
       unsigned NumSrcElts = SizeInBits / SrcEltSizeInBits;
 
@@ -10216,6 +10194,15 @@ X86TargetLowering::LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const {
     if (Idx == 0) {
       if (NumZero == 0)
         return DAG.getNode(ISD::SCALAR_TO_VECTOR, dl, VT, Item);
+
+      // Just load a vector integer constant. Loading is better for code size,
+      // avoids move GPR immediate --> XMM, and reduces register pressure.
+      if (IsAllConstants && VT.isInteger()) {
+        // TODO: Remove -1 restriction with demanded elements improvement?
+        // TODO: Insert 128-bit load into wider undef vector?
+        if (VT.is128BitVector() && !isAllOnesConstant(Item))
+          return SDValue();
+      }
 
       if (EltVT == MVT::i32 || EltVT == MVT::f32 || EltVT == MVT::f64 ||
           (EltVT == MVT::i64 && Subtarget.is64Bit())) {
@@ -44080,60 +44067,16 @@ static SDValue combineFneg(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
-TargetLowering::NegatibleCost
-X86TargetLowering::getNegatibleCost(SDValue Op, SelectionDAG &DAG,
-                                    bool LegalOperations, bool ForCodeSize,
-                                    unsigned Depth) const {
+SDValue X86TargetLowering::getNegatedExpression(SDValue Op, SelectionDAG &DAG,
+                                                bool LegalOperations,
+                                                bool ForCodeSize,
+                                                NegatibleCost &Cost,
+                                                unsigned Depth) const {
   // fneg patterns are removable even if they have multiple uses.
-  if (isFNEG(DAG, Op.getNode(), Depth))
-    return NegatibleCost::Cheaper;
-
-  // Don't recurse exponentially.
-  if (Depth > SelectionDAG::MaxRecursionDepth)
-    return NegatibleCost::Expensive;
-
-  EVT VT = Op.getValueType();
-  EVT SVT = VT.getScalarType();
-  switch (Op.getOpcode()) {
-  case ISD::FMA:
-  case X86ISD::FMSUB:
-  case X86ISD::FNMADD:
-  case X86ISD::FNMSUB:
-  case X86ISD::FMADD_RND:
-  case X86ISD::FMSUB_RND:
-  case X86ISD::FNMADD_RND:
-  case X86ISD::FNMSUB_RND: {
-    if (!Op.hasOneUse() || !Subtarget.hasAnyFMA() || !isTypeLegal(VT) ||
-        !(SVT == MVT::f32 || SVT == MVT::f64) ||
-        !isOperationLegal(ISD::FMA, VT))
-      break;
-
-    // This is always negatible for free but we might be able to remove some
-    // extra operand negations as well.
-    for (int i = 0; i != 3; ++i) {
-      NegatibleCost V = getNegatibleCost(Op.getOperand(i), DAG, LegalOperations,
-                                         ForCodeSize, Depth + 1);
-      if (V == NegatibleCost::Cheaper)
-        return V;
-    }
-    return NegatibleCost::Neutral;
-  }
-  case X86ISD::FRCP:
-    return getNegatibleCost(Op.getOperand(0), DAG, LegalOperations, ForCodeSize,
-                            Depth + 1);
-  }
-
-  return TargetLowering::getNegatibleCost(Op, DAG, LegalOperations, ForCodeSize,
-                                          Depth);
-}
-
-SDValue X86TargetLowering::negateExpression(SDValue Op, SelectionDAG &DAG,
-                                            bool LegalOperations,
-                                            bool ForCodeSize,
-                                            unsigned Depth) const {
-  // fneg patterns are removable even if they have multiple uses.
-  if (SDValue Arg = isFNEG(DAG, Op.getNode(), Depth))
+  if (SDValue Arg = isFNEG(DAG, Op.getNode(), Depth)) {
+    Cost = NegatibleCost::Cheaper;
     return DAG.getBitcast(Op.getValueType(), Arg);
+  }
 
   EVT VT = Op.getValueType();
   EVT SVT = VT.getScalarType();
@@ -44164,6 +44107,9 @@ SDValue X86TargetLowering::negateExpression(SDValue Op, SelectionDAG &DAG,
     bool NegC = !!NewOps[2];
     unsigned NewOpc = negateFMAOpcode(Opc, NegA != NegB, NegC, true);
 
+    Cost = (NegA || NegB || NegC) ? NegatibleCost::Cheaper
+                                  : NegatibleCost::Neutral;
+
     // Fill in the non-negated ops with the original values.
     for (int i = 0, e = Op.getNumOperands(); i != e; ++i)
       if (!NewOps[i])
@@ -44171,14 +44117,15 @@ SDValue X86TargetLowering::negateExpression(SDValue Op, SelectionDAG &DAG,
     return DAG.getNode(NewOpc, SDLoc(Op), VT, NewOps);
   }
   case X86ISD::FRCP:
-    return DAG.getNode(Opc, SDLoc(Op), VT,
-                       negateExpression(Op.getOperand(0), DAG, LegalOperations,
-                                        ForCodeSize, Depth + 1));
+    if (SDValue NegOp0 =
+            getNegatedExpression(Op.getOperand(0), DAG, LegalOperations,
+                                 ForCodeSize, Cost, Depth + 1))
+      return DAG.getNode(Opc, SDLoc(Op), VT, NegOp0);
     break;
   }
 
-  return TargetLowering::negateExpression(Op, DAG, LegalOperations, ForCodeSize,
-                                          Depth);
+  return TargetLowering::getNegatedExpression(Op, DAG, LegalOperations,
+                                              ForCodeSize, Cost, Depth);
 }
 
 static SDValue lowerX86FPLogicOp(SDNode *N, SelectionDAG &DAG,

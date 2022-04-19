@@ -132,13 +132,20 @@ static void applyPatterns(FuncOp funcOp) {
   // Linalg subview operands promotion.
   //===--------------------------------------------------------------------===//
   patterns.insert<LinalgPromotionPattern<MatmulOp>>(
-      ctx, LinalgPromotionOptions(),
+      ctx, LinalgPromotionOptions().useFullTileBuffersByDefault(),
       LinalgMarker({"_promote_views_"}, "_views_promoted_"));
   patterns.insert<LinalgPromotionPattern<MatmulOp>>(
-      ctx, LinalgPromotionOptions().setOperandsToPromote({0}),
+      ctx,
+      LinalgPromotionOptions()
+          .setOperandsToPromote({0})
+          .useFullTileBuffersByDefault(),
       LinalgMarker({"_promote_first_view_"}, "_first_view_promoted_"));
   patterns.insert<LinalgPromotionPattern<FillOp>>(
-      ctx, LinalgPromotionOptions().setOperandsToPromote({0}).setAlignment(32),
+      ctx,
+      LinalgPromotionOptions()
+          .setOperandsToPromote({0})
+          .setUseFullTileBuffers({true})
+          .setAlignment(32),
       LinalgMarker({"_promote_views_aligned_"}, "_views_aligned_promoted_"));
 
   applyPatternsAndFoldGreedily(funcOp, patterns);
@@ -149,7 +156,7 @@ static void applyPatterns(FuncOp funcOp) {
   });
 }
 
-OwningRewritePatternList
+static OwningRewritePatternList
 getMatmulToVectorCanonicalizationPatterns(MLIRContext *context) {
   OwningRewritePatternList patterns;
   AffineApplyOp::getCanonicalizationPatterns(patterns, context);
@@ -162,7 +169,7 @@ getMatmulToVectorCanonicalizationPatterns(MLIRContext *context) {
   return patterns;
 }
 
-void fillL1TilingAndMatmulToVectorPatterns(
+static void fillL1TilingAndMatmulToVectorPatterns(
     MLIRContext *context, StringRef startMarker,
     SmallVectorImpl<OwningRewritePatternList> &patternsVector) {
   patternsVector.emplace_back(LinalgTilingPattern<MatmulOp>(
@@ -171,7 +178,8 @@ void fillL1TilingAndMatmulToVectorPatterns(
       LinalgMarker({startMarker}, "L1")));
 
   patternsVector.emplace_back(LinalgPromotionPattern<MatmulOp>(
-      context, LinalgPromotionOptions(), LinalgMarker({"L1"}, "VEC")));
+      context, LinalgPromotionOptions().useFullTileBuffersByDefault(),
+      LinalgMarker({"L1"}, "VEC")));
 
   patternsVector.emplace_back(
       LinalgVectorizationPattern<MatmulOp>(context, LinalgMarker({"VEC"})));
