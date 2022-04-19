@@ -141,10 +141,10 @@ if.end: ; preds = %f.exit
 ; CHECK:         NoAlias:      [3 x i16]* %int_arr.10, i16** %argv.6.par
 ; CHECK:         NoAlias:      i16* %_tmp1, i16** %argv.6.par
 ; CHECK:         PartialAlias: [3 x i16]* %int_arr.10, i16* %_tmp1
-; CHECK:         MayAlias:     i16* %ls1.9.0, i16** %argv.6.par
+; CHECK:         NoAlias:      i16* %ls1.9.0, i16** %argv.6.par
 ; CHECK:         MayAlias:     [3 x i16]* %int_arr.10, i16* %ls1.9.0
 ; CHECK:         MayAlias:     i16* %_tmp1, i16* %ls1.9.0
-; CHECK:         MayAlias:     i16* %_tmp7, i16** %argv.6.par
+; CHECK:         NoAlias:      i16* %_tmp7, i16** %argv.6.par
 ; CHECK:         MayAlias:     [3 x i16]* %int_arr.10, i16* %_tmp7
 ; CHECK:         MayAlias:     i16* %_tmp1, i16* %_tmp7
 ; CHECK:         NoAlias:      i16* %_tmp7, i16* %ls1.9.0
@@ -186,6 +186,28 @@ bb4:                                              ; preds = %bb3
 
 bb5:                                              ; preds = %bb3, %bb4
   ret i16 0
+}
+
+; CHECK-LABEL: Function: dynamic_offset
+; CHECK: NoAlias:  i8* %a, i8* %p.base
+; CHECK: MayAlias: i8* %p, i8* %p.base
+; CHECK: NoAlias:  i8* %a, i8* %p
+; CHECK: MayAlias: i8* %p.base, i8* %p.next
+; CHECK: NoAlias:  i8* %a, i8* %p.next
+; CHECK: MayAlias: i8* %p, i8* %p.next
+define void @dynamic_offset(i1 %c, i8* noalias %p.base) {
+entry:
+  %a = alloca i8
+  br label %loop
+
+loop:
+  %p = phi i8* [ %p.base, %entry ], [ %p.next, %loop ]
+  %offset = call i16 @call(i32 0)
+  %p.next = getelementptr inbounds i8, i8* %p, i16 %offset
+  br i1 %c, label %loop, label %exit
+
+exit:
+  ret void
 }
 
 ; TODO: Currently yields an asymmetric result.

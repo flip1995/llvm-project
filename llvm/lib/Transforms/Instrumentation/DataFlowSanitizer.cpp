@@ -109,7 +109,7 @@ using namespace llvm;
 // External symbol to be used when generating the shadow address for
 // architectures with multiple VMAs. Instead of using a constant integer
 // the runtime will set the external mask based on the VMA range.
-static const char *const kDFSanExternShadowPtrMask = "__dfsan_shadow_ptr_mask";
+const char kDFSanExternShadowPtrMask[] = "__dfsan_shadow_ptr_mask";
 
 // The -dfsan-preserve-alignment flag controls whether this pass assumes that
 // alignment requirements provided by the input IR are correct.  For example,
@@ -428,12 +428,12 @@ struct DFSanFunction {
   std::vector<Value *> NonZeroChecks;
   bool AvoidNewBlocks;
 
-  struct CachedCombinedShadow {
-    BasicBlock *Block;
+  struct CachedShadow {
+    BasicBlock *Block; // The block where Shadow is defined.
     Value *Shadow;
   };
-  DenseMap<std::pair<Value *, Value *>, CachedCombinedShadow>
-      CachedCombinedShadows;
+  /// Maps a value to its latest shadow value in terms of domination tree.
+  DenseMap<std::pair<Value *, Value *>, CachedShadow> CachedShadows;
   DenseMap<Value *, std::set<Value *>> ShadowElements;
 
   DFSanFunction(DataFlowSanitizer &DFS, Function *F, bool IsNativeABI)
@@ -1145,7 +1145,7 @@ Value *DFSanFunction::combineShadows(Value *V1, Value *V2, Instruction *Pos) {
   auto Key = std::make_pair(V1, V2);
   if (V1 > V2)
     std::swap(Key.first, Key.second);
-  CachedCombinedShadow &CCS = CachedCombinedShadows[Key];
+  CachedShadow &CCS = CachedShadows[Key];
   if (CCS.Block && DT.dominates(CCS.Block, Pos->getParent()))
     return CCS.Shadow;
 

@@ -354,6 +354,24 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, ArrayRef<SourceLocation> Locs,
 
   diagnoseUseOfInternalDeclInInlineFunction(*this, D, Loc);
 
+  // CUDA/HIP: Diagnose invalid references of host global variables in device
+  // functions. Reference of device global variables in host functions is
+  // allowed through shadow variables therefore it is not diagnosed.
+  if (LangOpts.CUDAIsDevice) {
+    auto *FD = dyn_cast_or_null<FunctionDecl>(CurContext);
+    auto Target = IdentifyCUDATarget(FD);
+    if (FD && Target != CFT_Host) {
+      const auto *VD = dyn_cast<VarDecl>(D);
+      if (VD && VD->hasGlobalStorage() && !VD->hasAttr<CUDADeviceAttr>() &&
+          !VD->hasAttr<CUDAConstantAttr>() && !VD->hasAttr<CUDASharedAttr>() &&
+          !VD->getType()->isCUDADeviceBuiltinSurfaceType() &&
+          !VD->getType()->isCUDADeviceBuiltinTextureType() &&
+          !VD->isConstexpr() && !VD->getType().isConstQualified())
+        targetDiag(*Locs.begin(), diag::err_ref_bad_target)
+            << /*host*/ 2 << /*variable*/ 1 << VD << Target;
+    }
+  }
+
   if (LangOpts.SYCLIsDevice || (LangOpts.OpenMP && LangOpts.OpenMPIsDevice)) {
     if (const auto *VD = dyn_cast<ValueDecl>(D))
       checkDeviceDecl(VD, Loc);
@@ -1939,6 +1957,35 @@ Sema::BuildDeclRefExpr(ValueDecl *D, QualType Ty, ExprValueKind VK,
                           TemplateArgs);
 }
 
+// CUDA/HIP: Check whether a captured reference variable is referencing a
+// host variable in a device or host device lambda.
+static bool isCapturingReferenceToHostVarInCUDADeviceLambda(const Sema &S,
+                                                            VarDecl *VD) {
+  if (!S.getLangOpts().CUDA || !VD->hasInit())
+    return false;
+  assert(VD->getType()->isReferenceType());
+
+  // Check whether the reference variable is referencing a host variable.
+  auto *DRE = dyn_cast<DeclRefExpr>(VD->getInit());
+  if (!DRE)
+    return false;
+  auto *Referee = dyn_cast<VarDecl>(DRE->getDecl());
+  if (!Referee || !Referee->hasGlobalStorage() ||
+      Referee->hasAttr<CUDADeviceAttr>())
+    return false;
+
+  // Check whether the current function is a device or host device lambda.
+  // Check whether the reference variable is a capture by getDeclContext()
+  // since refersToEnclosingVariableOrCapture() is not ready at this point.
+  auto *MD = dyn_cast_or_null<CXXMethodDecl>(S.CurContext);
+  if (MD && MD->getParent()->isLambda() &&
+      MD->getOverloadedOperator() == OO_Call && MD->hasAttr<CUDADeviceAttr>() &&
+      VD->getDeclContext() != MD)
+    return true;
+
+  return false;
+}
+
 NonOdrUseReason Sema::getNonOdrUseReasonInCurrentContext(ValueDecl *D) {
   // A declaration named in an unevaluated operand never constitutes an odr-use.
   if (isUnevaluatedContext())
@@ -1948,9 +1995,16 @@ NonOdrUseReason Sema::getNonOdrUseReasonInCurrentContext(ValueDecl *D) {
   //   A variable x whose name appears as a potentially-evaluated expression e
   //   is odr-used by e unless [...] x is a reference that is usable in
   //   constant expressions.
+  // CUDA/HIP:
+  //   If a reference variable referencing a host variable is captured in a
+  //   device or host device lambda, the value of the referee must be copied
+  //   to the capture and the reference variable must be treated as odr-use
+  //   since the value of the referee is not known at compile time and must
+  //   be loaded from the captured.
   if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
     if (VD->getType()->isReferenceType() &&
         !(getLangOpts().OpenMP && isOpenMPCapturedDecl(D)) &&
+        !isCapturingReferenceToHostVarInCUDADeviceLambda(*this, VD) &&
         VD->isUsableInConstantExpressions(Context))
       return NOUR_Constant;
   }
@@ -2823,21 +2877,24 @@ Sema::LookupInObjCMethod(LookupResult &Lookup, Scope *S,
 
 /// Cast a base object to a member's actual type.
 ///
-/// Logically this happens in three phases:
+/// There are two relevant checks:
 ///
-/// * First we cast from the base type to the naming class.
-///   The naming class is the class into which we were looking
-///   when we found the member;  it's the qualifier type if a
-///   qualifier was provided, and otherwise it's the base type.
+/// C++ [class.access.base]p7:
 ///
-/// * Next we cast from the naming class to the declaring class.
-///   If the member we found was brought into a class's scope by
-///   a using declaration, this is that class;  otherwise it's
-///   the class declaring the member.
+///   If a class member access operator [...] is used to access a non-static
+///   data member or non-static member function, the reference is ill-formed if
+///   the left operand [...] cannot be implicitly converted to a pointer to the
+///   naming class of the right operand.
 ///
-/// * Finally we cast from the declaring class to the "true"
-///   declaring class of the member.  This conversion does not
-///   obey access control.
+/// C++ [expr.ref]p7:
+///
+///   If E2 is a non-static data member or a non-static member function, the
+///   program is ill-formed if the class of which E2 is directly a member is an
+///   ambiguous base (11.8) of the naming class (11.9.3) of E2.
+///
+/// Note that the latter check does not consider access; the access of the
+/// "real" base class is checked as appropriate when checking the access of the
+/// member name.
 ExprResult
 Sema::PerformObjectMemberConversion(Expr *From,
                                     NestedNameSpecifier *Qualifier,
@@ -2964,47 +3021,10 @@ Sema::PerformObjectMemberConversion(Expr *From,
     }
   }
 
-  bool IgnoreAccess = false;
-
-  // If we actually found the member through a using declaration, cast
-  // down to the using declaration's type.
-  //
-  // Pointer equality is fine here because only one declaration of a
-  // class ever has member declarations.
-  if (FoundDecl->getDeclContext() != Member->getDeclContext()) {
-    assert(isa<UsingShadowDecl>(FoundDecl));
-    QualType URecordType = Context.getTypeDeclType(
-                           cast<CXXRecordDecl>(FoundDecl->getDeclContext()));
-
-    // We only need to do this if the naming-class to declaring-class
-    // conversion is non-trivial.
-    if (!Context.hasSameUnqualifiedType(FromRecordType, URecordType)) {
-      assert(IsDerivedFrom(FromLoc, FromRecordType, URecordType));
-      CXXCastPath BasePath;
-      if (CheckDerivedToBaseConversion(FromRecordType, URecordType,
-                                       FromLoc, FromRange, &BasePath))
-        return ExprError();
-
-      QualType UType = URecordType;
-      if (PointerConversions)
-        UType = Context.getPointerType(UType,
-                                       FromType->isCHERICapabilityType(Context)
-                                           ? PIK_Capability : PIK_Integer);
-      From = ImpCastExprToType(From, UType, CK_UncheckedDerivedToBase,
-                               VK, &BasePath).get();
-      FromType = UType;
-      FromRecordType = URecordType;
-    }
-
-    // We don't do access control for the conversion from the
-    // declaring class to the true declaring class.
-    IgnoreAccess = true;
-  }
-
   CXXCastPath BasePath;
   if (CheckDerivedToBaseConversion(FromRecordType, DestRecordType,
                                    FromLoc, FromRange, &BasePath,
-                                   IgnoreAccess))
+                                   /*IgnoreAccess=*/true))
     return ExprError();
 
   return ImpCastExprToType(From, DestType, CK_UncheckedDerivedToBase,
@@ -3788,8 +3808,7 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
 
     if (Ty == Context.DoubleTy) {
       if (getLangOpts().SinglePrecisionConstants) {
-        const BuiltinType *BTy = Ty->getAs<BuiltinType>();
-        if (BTy->getKind() != BuiltinType::Float) {
+        if (Ty->castAs<BuiltinType>()->getKind() != BuiltinType::Float) {
           Res = ImpCastExprToType(Res, Context.FloatTy, CK_FloatingCast).get();
         }
       } else if (getLangOpts().OpenCL &&
@@ -4767,6 +4786,9 @@ void Sema::CheckAddressOfNoDeref(const Expr *E) {
 }
 
 void Sema::CheckSubscriptAccessOfNoDeref(const ArraySubscriptExpr *E) {
+  if (isUnevaluatedContext())
+    return;
+
   QualType ResultTy = E->getType();
   ExpressionEvaluationContextRecord &LastRecord = ExprEvalContexts.back();
 
@@ -14907,7 +14929,8 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
                             OpLoc, CanOverflow, CurFPFeatureOverrides());
 
   if (Opc == UO_Deref && UO->getType()->hasAttr(attr::NoDeref) &&
-      !isa<ArrayType>(UO->getType().getDesugaredType(Context)))
+      !isa<ArrayType>(UO->getType().getDesugaredType(Context)) &&
+      !isUnevaluatedContext())
     ExprEvalContexts.back().PossibleDerefs.insert(UO);
 
   // Convert the result back to a half vector.
@@ -15403,10 +15426,10 @@ void Sema::ActOnBlockArguments(SourceLocation CaretLoc, Declarator &ParamInfo,
   CurBlock->TheDecl->setSignatureAsWritten(Sig);
   CurBlock->FunctionType = T;
 
-  const FunctionType *Fn = T->getAs<FunctionType>();
+  const auto *Fn = T->castAs<FunctionType>();
   QualType RetTy = Fn->getReturnType();
   bool isVariadic =
-    (isa<FunctionProtoType>(Fn) && cast<FunctionProtoType>(Fn)->isVariadic());
+      (isa<FunctionProtoType>(Fn) && cast<FunctionProtoType>(Fn)->isVariadic());
 
   CurBlock->TheDecl->setIsVariadic(isVariadic);
 
@@ -17816,7 +17839,11 @@ bool Sema::tryCaptureVariable(
           if (IsTargetCap || IsOpenMPPrivateDecl == OMPC_private ||
               (IsGlobal && !IsGlobalCap)) {
             Nested = !IsTargetCap;
+            bool HasConst = DeclRefType.isConstQualified();
             DeclRefType = DeclRefType.getUnqualifiedType();
+            // Don't lose diagnostics about assignments to const.
+            if (HasConst)
+              DeclRefType.addConst();
             CaptureType = Context.getLValueReferenceType(DeclRefType);
             break;
           }

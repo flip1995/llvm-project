@@ -1289,6 +1289,13 @@ def int_donothing : DefaultAttrsIntrinsic<[], [], [IntrNoMem, IntrWillReturn]>;
 // which specify that infinite loops must be preserved.
 def int_sideeffect : DefaultAttrsIntrinsic<[], [], [IntrInaccessibleMemOnly, IntrWillReturn]>;
 
+// The pseudoprobe intrinsic works as a place holder to the block it probes.
+// Like the sideeffect intrinsic defined above, this intrinsic is treated by the 
+// optimizer as having opaque side effects so that it won't be get rid of or moved 
+// out of the block it probes.
+def int_pseudoprobe : Intrinsic<[], [llvm_i64_ty, llvm_i64_ty, llvm_i32_ty],
+                                    [IntrInaccessibleMemOnly, IntrWillReturn]>;
+
 // Intrinsics to support half precision floating point format
 let IntrProperties = [IntrNoMem, IntrWillReturn] in {
 def int_convert_to_fp16   : DefaultAttrsIntrinsic<[llvm_i16_ty], [llvm_anyfloat_ty]>;
@@ -1523,34 +1530,6 @@ let IntrProperties = [IntrNoMem] in {
                                          [llvm_anyvector_ty]>;
   def int_vector_reduce_fmin : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
                                          [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_v2_fadd : DefaultAttrsIntrinsic<[llvm_anyfloat_ty],
-                                                         [LLVMMatchType<0>,
-                                                          llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_v2_fmul : DefaultAttrsIntrinsic<[llvm_anyfloat_ty],
-                                                         [LLVMMatchType<0>,
-                                                          llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_add : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                     [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_mul : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                     [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_and : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                     [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_or : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                    [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_xor : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                     [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_smax : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                      [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_smin : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                      [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_umax : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                      [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_umin : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                      [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_fmax : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                      [llvm_anyvector_ty]>;
-  def int_experimental_vector_reduce_fmin : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
-                                                      [llvm_anyvector_ty]>;
 }
 
 //===----- Matrix intrinsics ---------------------------------------------===//

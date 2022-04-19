@@ -8330,7 +8330,7 @@ def err_global_call_not_config : Error<
   "call to global function %0 not configured">;
 def err_ref_bad_target : Error<
   "reference to %select{__device__|__global__|__host__|__host__ __device__}0 "
-  "function %1 in %select{__device__|__global__|__host__|__host__ __device__}2 function">;
+  "%select{function|variable}1 %2 in %select{__device__|__global__|__host__|__host__ __device__}3 function">;
 def err_ref_bad_target_global_initializer : Error<
   "reference to %select{__device__|__global__|__host__|__host__ __device__}0 "
   "function %1 in global initializer">;
@@ -8827,6 +8827,8 @@ def err_ambiguous_member_multiple_subobjects : Error<
 def err_ambiguous_member_multiple_subobject_types : Error<
   "member %0 found in multiple base classes of different types">;
 def note_ambiguous_member_found : Note<"member found by ambiguous name lookup">;
+def note_ambiguous_member_type_found : Note<
+  "member type %0 found by ambiguous name lookup">;
 def err_ambiguous_reference : Error<"reference to %0 is ambiguous">;
 def note_ambiguous_candidate : Note<"candidate found by name lookup is %q0">;
 def err_ambiguous_tag_hiding : Error<"a type named %0 is hidden by a "

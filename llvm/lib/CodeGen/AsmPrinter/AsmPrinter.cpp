@@ -137,17 +137,16 @@ static cl::opt<bool>
     DisableDebugInfoPrinting("disable-debug-info-print", cl::Hidden,
                              cl::desc("Disable debug info printing"));
 
-static const char *const DWARFGroupName = "dwarf";
-static const char *const DWARFGroupDescription = "DWARF Emission";
-static const char *const DbgTimerName = "emit";
-static const char *const DbgTimerDescription = "Debug Info Emission";
-static const char *const EHTimerName = "write_exception";
-static const char *const EHTimerDescription = "DWARF Exception Writer";
-static const char *const CFGuardName = "Control Flow Guard";
-static const char *const CFGuardDescription = "Control Flow Guard";
-static const char *const CodeViewLineTablesGroupName = "linetables";
-static const char *const CodeViewLineTablesGroupDescription =
-  "CodeView Line Tables";
+const char DWARFGroupName[] = "dwarf";
+const char DWARFGroupDescription[] = "DWARF Emission";
+const char DbgTimerName[] = "emit";
+const char DbgTimerDescription[] = "Debug Info Emission";
+const char EHTimerName[] = "write_exception";
+const char EHTimerDescription[] = "DWARF Exception Writer";
+const char CFGuardName[] = "Control Flow Guard";
+const char CFGuardDescription[] = "Control Flow Guard";
+const char CodeViewLineTablesGroupName[] = "linetables";
+const char CodeViewLineTablesGroupDescription[] = "CodeView Line Tables";
 
 STATISTIC(EmittedInsts, "Number of machine instrs printed");
 
@@ -308,6 +307,7 @@ bool AsmPrinter::doInitialization(Module &M) {
     std::unique_ptr<MCSubtargetInfo> STI(TM.getTarget().createMCSubtargetInfo(
         TM.getTargetTriple().str(), TM.getTargetCPU(),
         TM.getTargetFeatureString()));
+    assert(STI && "Unable to create subtarget info");
     OutStreamer->AddComment("Start of file scope inline assembly");
     OutStreamer->AddBlankLine();
     emitInlineAsm(M.getModuleInlineAsm() + "\n",
@@ -380,6 +380,9 @@ bool AsmPrinter::doInitialization(Module &M) {
     break;
   case ExceptionHandling::Wasm:
     ES = new WasmException(this);
+    break;
+  case ExceptionHandling::AIX:
+    ES = new AIXException(this);
     break;
   }
   if (ES)

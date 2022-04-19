@@ -1774,17 +1774,6 @@ void Verifier::verifyParameterAttrs(AttributeSet Attrs, Type *Ty,
          "'noinline and alwaysinline' are incompatible!",
          V);
 
-  if (Attrs.hasAttribute(Attribute::ByVal) && Attrs.getByValType()) {
-    Assert(Attrs.getByValType() == cast<PointerType>(Ty)->getElementType(),
-           "Attribute 'byval' type does not match parameter!", V);
-  }
-
-  if (Attrs.hasAttribute(Attribute::Preallocated)) {
-    Assert(Attrs.getPreallocatedType() ==
-               cast<PointerType>(Ty)->getElementType(),
-           "Attribute 'preallocated' type does not match parameter!", V);
-  }
-
   AttrBuilder IncompatibleAttrs = AttributeFuncs::typeIncompatible(Ty);
   Assert(!AttrBuilder(Attrs).overlaps(IncompatibleAttrs),
          "Wrong types for attribute: " +
@@ -1811,6 +1800,16 @@ void Verifier::verifyParameterAttrs(AttributeSet Attrs, Type *Ty,
     if (Attrs.hasAttribute(Attribute::ByRef)) {
       Assert(Attrs.getByRefType() == PTy->getElementType(),
              "Attribute 'byref' type does not match parameter!", V);
+    }
+
+    if (Attrs.hasAttribute(Attribute::ByVal) && Attrs.getByValType()) {
+      Assert(Attrs.getByValType() == PTy->getElementType(),
+             "Attribute 'byval' type does not match parameter!", V);
+    }
+
+    if (Attrs.hasAttribute(Attribute::Preallocated)) {
+      Assert(Attrs.getPreallocatedType() == PTy->getElementType(),
+             "Attribute 'preallocated' type does not match parameter!", V);
     }
   } else {
     Assert(!Attrs.hasAttribute(Attribute::ByVal),
@@ -2586,11 +2585,6 @@ void Verifier::visitBasicBlock(BasicBlock &BB) {
     SmallVector<std::pair<BasicBlock*, Value*>, 8> Values;
     llvm::sort(Preds);
     for (const PHINode &PN : BB.phis()) {
-      // Ensure that PHI nodes have at least one entry!
-      Assert(PN.getNumIncomingValues() != 0,
-             "PHI nodes must have at least one entry.  If the block is dead, "
-             "the PHI should be removed!",
-             &PN);
       Assert(PN.getNumIncomingValues() == Preds.size(),
              "PHINode should have one entry for each predecessor of its "
              "parent basic block!",

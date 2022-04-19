@@ -47,6 +47,7 @@
 #include "llvm/Analysis/LoopCacheAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LoopNestAnalysis.h"
+#include "llvm/Analysis/MemDerefPrinter.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/ModuleDebugInfoPrinter.h"
@@ -109,6 +110,7 @@
 #include "llvm/Transforms/IPO/PartialInlining.h"
 #include "llvm/Transforms/IPO/SCCP.h"
 #include "llvm/Transforms/IPO/SampleProfile.h"
+#include "llvm/Transforms/IPO/SampleProfileProbe.h"
 #include "llvm/Transforms/IPO/StripDeadPrototypes.h"
 #include "llvm/Transforms/IPO/StripSymbols.h"
 #include "llvm/Transforms/IPO/SyntheticCountsPropagation.h"
@@ -232,26 +234,7 @@
 
 using namespace llvm;
 
-static cl::opt<unsigned> MaxDevirtIterations("pm-max-devirt-iterations",
-                                             cl::ReallyHidden, cl::init(4));
-static cl::opt<bool>
-    RunPartialInlining("enable-npm-partial-inlining", cl::init(false),
-                       cl::Hidden, cl::ZeroOrMore,
-                       cl::desc("Run Partial inlinining pass"));
-
-static cl::opt<int> PreInlineThreshold(
-    "npm-preinline-threshold", cl::Hidden, cl::init(75), cl::ZeroOrMore,
-    cl::desc("Control the amount of inlining in pre-instrumentation inliner "
-             "(default = 75)"));
-
-static cl::opt<bool>
-    RunNewGVN("enable-npm-newgvn", cl::init(false),
-              cl::Hidden, cl::ZeroOrMore,
-              cl::desc("Run NewGVN instead of GVN"));
-
-static cl::opt<bool> EnableGVNHoist(
-    "enable-npm-gvn-hoist", cl::init(false), cl::Hidden,
-    cl::desc("Enable the GVN hoisting pass for the new PM (default = off)"));
+extern cl::opt<unsigned> MaxDevirtIterations;
 
 static cl::opt<InliningAdvisorMode> UseInlineAdvisor(
     "enable-ml-inliner", cl::init(InliningAdvisorMode::Default), cl::Hidden,
@@ -263,18 +246,6 @@ static cl::opt<InliningAdvisorMode> UseInlineAdvisor(
                clEnumValN(InliningAdvisorMode::Release, "release",
                           "Use release mode (AOT-compiled model).")));
 
-static cl::opt<bool> EnableGVNSink(
-    "enable-npm-gvn-sink", cl::init(false), cl::Hidden,
-    cl::desc("Enable the GVN hoisting pass for the new PM (default = off)"));
-
-static cl::opt<bool> EnableUnrollAndJam(
-    "enable-npm-unroll-and-jam", cl::init(false), cl::Hidden,
-    cl::desc("Enable the Unroll and Jam pass for the new PM (default = off)"));
-
-static cl::opt<bool> EnableLoopFlatten(
-    "enable-npm-loop-flatten", cl::init(false), cl::Hidden,
-    cl::desc("Enable the Loop flattening pass for the new PM (default = off)"));
-
 static cl::opt<bool> EnableSyntheticCounts(
     "enable-npm-synthetic-counts", cl::init(false), cl::Hidden, cl::ZeroOrMore,
     cl::desc("Run synthetic function entry count generation "
@@ -282,12 +253,6 @@ static cl::opt<bool> EnableSyntheticCounts(
 
 static const Regex DefaultAliasRegex(
     "^(default|thinlto-pre-link|thinlto|lto-pre-link|lto)<(O[0123sz])>$");
-
-// This option is used in simplifying testing SampleFDO optimizations for
-// profile loading.
-static cl::opt<bool>
-    EnableCHR("enable-chr-npm", cl::init(true), cl::Hidden,
-              cl::desc("Enable control height reduction optimization (CHR)"));
 
 /// Flag to enable inline deferral during PGO.
 static cl::opt<bool>
@@ -298,6 +263,11 @@ static cl::opt<bool>
 static cl::opt<bool> EnableMemProfiler("enable-mem-prof", cl::init(false),
                                        cl::Hidden, cl::ZeroOrMore,
                                        cl::desc("Enable memory profiler"));
+
+static cl::opt<bool> PerformMandatoryInliningsFirst(
+    "mandatory-inlining-first", cl::init(true), cl::Hidden, cl::ZeroOrMore,
+    cl::desc("Perform mandatory inlinings module-wide, before performing "
+             "inlining."));
 
 PipelineTuningOptions::PipelineTuningOptions() {
   LoopInterleaving = true;
@@ -312,8 +282,15 @@ PipelineTuningOptions::PipelineTuningOptions() {
 }
 
 extern cl::opt<bool> EnableConstraintElimination;
+extern cl::opt<bool> EnableGVNHoist;
+extern cl::opt<bool> EnableGVNSink;
 extern cl::opt<bool> EnableHotColdSplit;
 extern cl::opt<bool> EnableOrderFileInstrumentation;
+extern cl::opt<bool> EnableCHR;
+extern cl::opt<bool> EnableUnrollAndJam;
+extern cl::opt<bool> EnableLoopFlatten;
+extern cl::opt<bool> RunNewGVN;
+extern cl::opt<bool> RunPartialInlining;
 
 extern cl::opt<bool> FlattenedProfileUsed;
 
@@ -323,6 +300,7 @@ extern cl::opt<bool> EnableKnowledgeRetention;
 extern cl::opt<bool> EnableMatrix;
 
 extern cl::opt<bool> DisablePreInliner;
+extern cl::opt<int> PreInlineThreshold;
 
 const PassBuilder::OptimizationLevel PassBuilder::OptimizationLevel::O0 = {
     /*SpeedLevel*/ 0,
@@ -549,8 +527,8 @@ PassBuilder::buildO1FunctionSimplificationPipeline(OptimizationLevel Level,
 
   if (EnableLoopFlatten)
     FPM.addPass(LoopFlattenPass());
-  LPM2.addPass(IndVarSimplifyPass());
   LPM2.addPass(LoopIdiomRecognizePass());
+  LPM2.addPass(IndVarSimplifyPass());
 
   for (auto &C : LateLoopOptimizationsEPCallbacks)
     C(LPM2, Level);
@@ -710,8 +688,8 @@ PassBuilder::buildFunctionSimplificationPipeline(OptimizationLevel Level,
   // TODO: Investigate promotion cap for O1.
   LPM1.addPass(LICMPass(PTO.LicmMssaOptCap, PTO.LicmMssaNoAccForPromotionCap));
   LPM1.addPass(SimpleLoopUnswitchPass());
-  LPM2.addPass(IndVarSimplifyPass());
   LPM2.addPass(LoopIdiomRecognizePass());
+  LPM2.addPass(IndVarSimplifyPass());
 
   for (auto &C : LateLoopOptimizationsEPCallbacks)
     C(LPM2, Level);
@@ -740,7 +718,7 @@ PassBuilder::buildFunctionSimplificationPipeline(OptimizationLevel Level,
       DebugLogging));
   FPM.addPass(SimplifyCFGPass());
   FPM.addPass(InstCombinePass());
-  // The loop passes in LPM2 (IndVarSimplifyPass, LoopIdiomRecognizePass,
+  // The loop passes in LPM2 (LoopIdiomRecognizePass, IndVarSimplifyPass,
   // LoopDeletionPass and LoopFullUnrollPass) do not preserve MemorySSA.
   // *All* loop passes must preserve it, in order to be able to use it.
   FPM.addPass(createFunctionToLoopPassAdaptor(
@@ -913,7 +891,8 @@ getInlineParamsFromOptLevel(PassBuilder::OptimizationLevel Level) {
 }
 
 ModuleInlinerWrapperPass
-PassBuilder::buildInlinerPipeline(OptimizationLevel Level, ThinLTOPhase Phase) {
+PassBuilder::buildInlinerPipeline(OptimizationLevel Level, ThinLTOPhase Phase,
+                                  bool MandatoryOnly) {
   InlineParams IP = getInlineParamsFromOptLevel(Level);
   if (Phase == PassBuilder::ThinLTOPhase::PreLink && PGOOpt &&
       PGOOpt->Action == PGOOptions::SampleUse)
@@ -922,8 +901,13 @@ PassBuilder::buildInlinerPipeline(OptimizationLevel Level, ThinLTOPhase Phase) {
   if (PGOOpt)
     IP.EnableDeferral = EnablePGOInlineDeferral;
 
-  ModuleInlinerWrapperPass MIWP(IP, DebugLogging, UseInlineAdvisor,
-                                MaxDevirtIterations);
+  ModuleInlinerWrapperPass MIWP(
+      IP, DebugLogging,
+      (MandatoryOnly ? InliningAdvisorMode::MandatoryOnly : UseInlineAdvisor),
+      MaxDevirtIterations);
+
+  if (MandatoryOnly)
+    return MIWP;
 
   // Require the GlobalsAA analysis for the module so we can query it within
   // the CGSCC pipeline.
@@ -978,6 +962,12 @@ ModulePassManager
 PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
                                                ThinLTOPhase Phase) {
   ModulePassManager MPM(DebugLogging);
+
+  // Place pseudo probe instrumentation as the first pass of the pipeline to
+  // minimize the impact of optimization changes.
+  if (PGOOpt && PGOOpt->PseudoProbeForProfiling &&
+      Phase != ThinLTOPhase::PostLink)
+    MPM.addPass(SampleProfileProbePass(TM));
 
   bool HasSampleProfile = PGOOpt && (PGOOpt->Action == PGOOptions::SampleUse);
 
@@ -1060,6 +1050,9 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   if (Phase == ThinLTOPhase::PostLink)
     MPM.addPass(LowerTypeTestsPass(nullptr, nullptr, true));
 
+  for (auto &C : PipelineEarlySimplificationEPCallbacks)
+    C(MPM, Level);
+
   // Interprocedural constant propagation now that basic cleanup has occurred
   // and prior to optimizing globals.
   // FIXME: This position in the pipeline hasn't been carefully considered in
@@ -1111,7 +1104,9 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
   if (EnableSyntheticCounts && !PGOOpt)
     MPM.addPass(SyntheticCountsPropagation());
 
-  MPM.addPass(buildInlinerPipeline(Level, Phase));
+  if (PerformMandatoryInliningsFirst)
+    MPM.addPass(buildInlinerPipeline(Level, Phase, /*MandatoryOnly=*/true));
+  MPM.addPass(buildInlinerPipeline(Level, Phase, /*MandatoryOnly=*/false));
 
   if (EnableMemProfiler && Phase != ThinLTOPhase::PreLink) {
     MPM.addPass(createModuleToFunctionPassAdaptor(MemProfilerPass()));
@@ -1344,7 +1339,7 @@ PassBuilder::buildPerModuleDefaultPipeline(OptimizationLevel Level,
   for (auto &C : PipelineStartEPCallbacks)
     C(MPM, Level);
 
-  if (PGOOpt && PGOOpt->SamplePGOSupport)
+  if (PGOOpt && PGOOpt->DebugInfoForProfiling)
     MPM.addPass(createModuleToFunctionPassAdaptor(AddDiscriminatorsPass()));
 
   // Add the core simplification pipeline.
@@ -1375,7 +1370,7 @@ PassBuilder::buildThinLTOPreLinkDefaultPipeline(OptimizationLevel Level) {
   // Force any function attributes we want the rest of the pipeline to observe.
   MPM.addPass(ForceFunctionAttrsPass());
 
-  if (PGOOpt && PGOOpt->SamplePGOSupport)
+  if (PGOOpt && PGOOpt->DebugInfoForProfiling)
     MPM.addPass(createModuleToFunctionPassAdaptor(AddDiscriminatorsPass()));
 
   // Apply module pipeline start EP callback.
@@ -1590,6 +1585,9 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
 
   MPM.addPass(createModuleToFunctionPassAdaptor(std::move(PeepholeFPM)));
 
+  MPM.addPass(ModuleInlinerWrapperPass(getInlineParamsFromOptLevel(Level),
+                                       DebugLogging,
+                                       InliningAdvisorMode::MandatoryOnly));
   // Note: historically, the PruneEH pass was run first to deduce nounwind and
   // generally clean up exception handling overhead. It isn't clear this is
   // valuable as the inliner doesn't currently care whether it is inlining an
@@ -1731,6 +1729,8 @@ ModulePassManager PassBuilder::buildO0DefaultPipeline(OptimizationLevel Level,
 
   for (auto &C : PipelineStartEPCallbacks)
     C(MPM, Level);
+  for (auto &C : PipelineEarlySimplificationEPCallbacks)
+    C(MPM, Level);
 
   // Build a minimal pipeline based on the semantics required by LLVM,
   // which is just that always inlining occurs. Further, disable generating
@@ -1843,7 +1843,7 @@ static Optional<int> parseDevirtPassName(StringRef Name) {
   if (!Name.consume_front("devirt<") || !Name.consume_back(">"))
     return None;
   int Count;
-  if (Name.getAsInteger(0, Count) || Count <= 0)
+  if (Name.getAsInteger(0, Count) || Count < 0)
     return None;
   return Count;
 }

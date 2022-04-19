@@ -895,6 +895,14 @@ void MCObjectFileInfo::initXCOFFMCObjectFileInfo(const Triple &T) {
   // The TOC-base always has 0 size, but 4 byte alignment.
   TOCBaseSection->setAlignment(Align(4));
 
+  LSDASection = Ctx->getXCOFFSection(".gcc_except_table",
+                                     XCOFF::StorageMappingClass::XMC_RO,
+                                     XCOFF::XTY_SD, SectionKind::getReadOnly());
+
+  CompactUnwindSection =
+      Ctx->getXCOFFSection(".eh_info_table", XCOFF::StorageMappingClass::XMC_RW,
+                           XCOFF::XTY_SD, SectionKind::getData());
+
   // DWARF sections for XCOFF are not csects. They are special STYP_DWARF
   // sections, and the individual DWARF sections are distinguished by their
   // section subtype.
@@ -1009,7 +1017,7 @@ MCObjectFileInfo::getStackSizesSection(const MCSection &TextSec) const {
   }
 
   return Ctx->getELFSection(".stack_sizes", ELF::SHT_PROGBITS, Flags, 0,
-                            GroupName, MCSection::NonUniqueID,
+                            GroupName, ElfSec.getUniqueID(),
                             cast<MCSymbolELF>(TextSec.getBeginSymbol()));
 }
 
@@ -1026,7 +1034,9 @@ MCObjectFileInfo::getBBAddrMapSection(const MCSection &TextSec) const {
     Flags |= ELF::SHF_GROUP;
   }
 
+  // Use the text section's begin symbol and unique ID to create a separate
+  // .llvm_bb_addr_map section associated with every unique text section.
   return Ctx->getELFSection(".llvm_bb_addr_map", ELF::SHT_LLVM_BB_ADDR_MAP,
-                            Flags, 0, GroupName, MCSection::NonUniqueID,
+                            Flags, 0, GroupName, ElfSec.getUniqueID(),
                             cast<MCSymbolELF>(TextSec.getBeginSymbol()));
 }
