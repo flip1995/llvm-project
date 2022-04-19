@@ -328,9 +328,12 @@ private:
 };
 
 /// Sema - This implements semantic analysis and AST building for C.
-class Sema {
+class Sema final {
   Sema(const Sema &) = delete;
   void operator=(const Sema &) = delete;
+
+  /// A key method to reduce duplicate debug info from Sema.
+  virtual void anchor();
 
   ///Source of additional semantic information.
   ExternalSemaSource *ExternalSource;
@@ -9349,8 +9352,7 @@ public:
   /// Struct to store the context selectors info for declare variant directive.
   using OMPCtxStringType = SmallString<8>;
   using OMPCtxSelectorData =
-      OpenMPCtxSelectorData<OMPCtxStringType, SmallVector<OMPCtxStringType, 4>,
-                            ExprResult>;
+      OpenMPCtxSelectorData<SmallVector<OMPCtxStringType, 4>, ExprResult>;
 
   /// Checks if the variant/multiversion functions are compatible.
   bool areMultiversionVariantFunctionsCompatible(

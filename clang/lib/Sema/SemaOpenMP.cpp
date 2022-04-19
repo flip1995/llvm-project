@@ -908,7 +908,7 @@ static const Expr *getExprAsWritten(const Expr *E) {
     E = FE->getSubExpr();
 
   if (const auto *MTE = dyn_cast<MaterializeTemporaryExpr>(E))
-    E = MTE->GetTemporaryExpr();
+    E = MTE->getSubExpr();
 
   while (const auto *Binder = dyn_cast<CXXBindTemporaryExpr>(E))
     E = Binder->getSubExpr();
@@ -4488,6 +4488,8 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
   case OMPD_simd:
     Res = ActOnOpenMPSimdDirective(ClausesWithImplicit, AStmt, StartLoc, EndLoc,
                                    VarsWithInheritedDSA);
+    if (LangOpts.OpenMP >= 50)
+      AllowedNameModifiers.push_back(OMPD_simd);
     break;
   case OMPD_for:
     Res = ActOnOpenMPForDirective(ClausesWithImplicit, AStmt, StartLoc, EndLoc,
@@ -4496,6 +4498,8 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
   case OMPD_for_simd:
     Res = ActOnOpenMPForSimdDirective(ClausesWithImplicit, AStmt, StartLoc,
                                       EndLoc, VarsWithInheritedDSA);
+    if (LangOpts.OpenMP >= 50)
+      AllowedNameModifiers.push_back(OMPD_simd);
     break;
   case OMPD_sections:
     Res = ActOnOpenMPSectionsDirective(ClausesWithImplicit, AStmt, StartLoc,
@@ -4762,12 +4766,16 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
       case OMPC_num_threads:
       case OMPC_dist_schedule:
         // Do not analyse if no parent teams directive.
-        if (isOpenMPTeamsDirective(DSAStack->getCurrentDirective()))
+        if (isOpenMPTeamsDirective(Kind))
           break;
         continue;
       case OMPC_if:
-        if (isOpenMPTeamsDirective(DSAStack->getCurrentDirective()) &&
+        if (isOpenMPTeamsDirective(Kind) &&
             cast<OMPIfClause>(C)->getNameModifier() != OMPD_target)
+          break;
+        if (isOpenMPParallelDirective(Kind) &&
+            isOpenMPTaskLoopDirective(Kind) &&
+            cast<OMPIfClause>(C)->getNameModifier() != OMPD_parallel)
           break;
         continue;
       case OMPC_schedule:
@@ -4777,7 +4785,7 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
       case OMPC_final:
       case OMPC_priority:
         // Do not analyze if no parent parallel directive.
-        if (isOpenMPParallelDirective(DSAStack->getCurrentDirective()))
+        if (isOpenMPParallelDirective(Kind))
           break;
         continue;
       case OMPC_ordered:
@@ -5356,7 +5364,7 @@ void Sema::ActOnOpenMPDeclareVariantDirective(
   SmallVector<Expr *, 4> CtxScores;
   SmallVector<unsigned, 4> CtxSets;
   SmallVector<unsigned, 4> Ctxs;
-  SmallVector<StringRef, 4> ImplVendors;
+  SmallVector<StringRef, 4> ImplVendors, DeviceKinds;
   bool IsError = false;
   for (const OMPCtxSelectorData &D : Data) {
     OpenMPContextSelectorSetKind CtxSet = D.CtxSet;
@@ -5376,7 +5384,19 @@ void Sema::ActOnOpenMPDeclareVariantDirective(
           Score = VerifyIntegerConstantExpression(Score).get();
       }
     } else {
-      Score = ActOnIntegerConstant(SourceLocation(), 0).get();
+      // OpenMP 5.0, 2.3.3 Matching and Scoring Context Selectors.
+      // The kind, arch, and isa selectors are given the values 2^l, 2^(l+1) and
+      // 2^(l+2), respectively, where l is the number of traits in the construct
+      // set.
+      // TODO: implement correct logic for isa and arch traits.
+      // TODO: take the construct context set into account when it is
+      // implemented.
+      int L = 0; // Currently set the number of traits in construct set to 0,
+                 // since the construct trait set in not supported yet.
+      if (CtxSet == OMP_CTX_SET_device && Ctx == OMP_CTX_kind)
+        Score = ActOnIntegerConstant(SourceLocation(), std::pow(2, L)).get();
+      else
+        Score = ActOnIntegerConstant(SourceLocation(), 0).get();
     }
     switch (CtxSet) {
     case OMP_CTX_SET_implementation:
@@ -5384,6 +5404,17 @@ void Sema::ActOnOpenMPDeclareVariantDirective(
       case OMP_CTX_vendor:
         ImplVendors.append(D.Names.begin(), D.Names.end());
         break;
+      case OMP_CTX_kind:
+      case OMP_CTX_unknown:
+        llvm_unreachable("Unexpected context selector kind.");
+      }
+      break;
+    case OMP_CTX_SET_device:
+      switch (Ctx) {
+      case OMP_CTX_kind:
+        DeviceKinds.append(D.Names.begin(), D.Names.end());
+        break;
+      case OMP_CTX_vendor:
       case OMP_CTX_unknown:
         llvm_unreachable("Unexpected context selector kind.");
       }
@@ -5400,7 +5431,8 @@ void Sema::ActOnOpenMPDeclareVariantDirective(
     auto *NewAttr = OMPDeclareVariantAttr::CreateImplicit(
         Context, VariantRef, CtxScores.begin(), CtxScores.size(),
         CtxSets.begin(), CtxSets.size(), Ctxs.begin(), Ctxs.size(),
-        ImplVendors.begin(), ImplVendors.size(), SR);
+        ImplVendors.begin(), ImplVendors.size(), DeviceKinds.begin(),
+        DeviceKinds.size(), SR);
     FD->addAttr(NewAttr);
   }
 }
@@ -10667,6 +10699,8 @@ static OpenMPDirectiveKind getOpenMPCaptureRegionForClause(
     case OMPD_master_taskloop:
     case OMPD_master_taskloop_simd:
     case OMPD_target_data:
+    case OMPD_simd:
+    case OMPD_for_simd:
       // Do not capture if-clause expressions.
       break;
     case OMPD_threadprivate:
@@ -10683,9 +10717,7 @@ static OpenMPDirectiveKind getOpenMPCaptureRegionForClause(
     case OMPD_declare_target:
     case OMPD_end_declare_target:
     case OMPD_teams:
-    case OMPD_simd:
     case OMPD_for:
-    case OMPD_for_simd:
     case OMPD_sections:
     case OMPD_section:
     case OMPD_single:
