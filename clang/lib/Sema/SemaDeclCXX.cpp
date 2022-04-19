@@ -694,6 +694,17 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
     Invalid = true;
   }
 
+  // C++11 [temp.friend]p4 (DR329):
+  //   When a function is defined in a friend function declaration in a class
+  //   template, the function is instantiated when the function is odr-used.
+  //   The same restrictions on multiple declarations and definitions that
+  //   apply to non-template function declarations and definitions also apply
+  //   to these implicit definitions.
+  const FunctionDecl *OldDefinition = nullptr;
+  if (New->isThisDeclarationInstantiatedFromAFriendDefinition() &&
+      Old->isDefined(OldDefinition, true))
+    CheckForFunctionRedefinition(New, OldDefinition);
+
   return Invalid;
 }
 
@@ -14811,9 +14822,13 @@ void Sema::DefineImplicitLambdaToFunctionPointerConversion(
   SynthesizedFunctionScope Scope(*this, Conv);
   assert(!Conv->getReturnType()->isUndeducedType());
 
+  QualType ConvRT = Conv->getType()->getAs<FunctionType>()->getReturnType();
+  CallingConv CC =
+      ConvRT->getPointeeType()->getAs<FunctionType>()->getCallConv();
+
   CXXRecordDecl *Lambda = Conv->getParent();
   FunctionDecl *CallOp = Lambda->getLambdaCallOperator();
-  FunctionDecl *Invoker = Lambda->getLambdaStaticInvoker();
+  FunctionDecl *Invoker = Lambda->getLambdaStaticInvoker(CC);
 
   if (auto *TemplateArgs = Conv->getTemplateSpecializationArgs()) {
     CallOp = InstantiateFunctionDeclaration(
@@ -15522,6 +15537,18 @@ checkLiteralOperatorTemplateParameterList(Sema &SemaRef,
         SemaRef.Context.hasSameType(PmDecl->getType(), SemaRef.Context.CharTy))
       return false;
 
+    // C++20 [over.literal]p5:
+    //   A string literal operator template is a literal operator template
+    //   whose template-parameter-list comprises a single non-type
+    //   template-parameter of class type.
+    //
+    // As a DR resolution, we also allow placeholders for deduced class
+    // template specializations.
+    if (SemaRef.getLangOpts().CPlusPlus20 &&
+        !PmDecl->isTemplateParameterPack() &&
+        (PmDecl->getType()->isRecordType() ||
+         PmDecl->getType()->getAs<DeducedTemplateSpecializationType>()))
+      return false;
   } else if (TemplateParams->size() == 2) {
     TemplateTypeParmDecl *PmType =
         dyn_cast<TemplateTypeParmDecl>(TemplateParams->getParam(0));
@@ -15578,6 +15605,8 @@ bool Sema::CheckLiteralOperatorDeclaration(FunctionDecl *FnDecl) {
   // template <char...> type operator "" name() and
   // template <class T, T...> type operator "" name() are the only valid
   // template signatures, and the only valid signatures with no parameters.
+  //
+  // C++20 also allows template <SomeClass T> type operator "" name().
   if (TpDecl) {
     if (FnDecl->param_size() != 0) {
       Diag(FnDecl->getLocation(),
