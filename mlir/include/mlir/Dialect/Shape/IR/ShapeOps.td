@@ -130,7 +130,8 @@ def Shape_AddOp : Shape_Op<"add", [SameOperandsAndResultType]> {
   let results = (outs Shape_SizeType:$result);
 }
 
-def Shape_BroadcastOp : Shape_Op<"broadcast", []> {
+def Shape_BroadcastOp : Shape_Op<"broadcast",
+    [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let summary = "Returns the broadcasted output shape of two inputs";
   let description = [{
     Computes the broadcasted output shape following:
@@ -152,6 +153,8 @@ def Shape_BroadcastOp : Shape_Op<"broadcast", []> {
   let arguments = (ins Shape_ShapeType:$lhs, Shape_ShapeType:$rhs,
                    OptionalAttr<StrAttr>:$error);
   let results = (outs Shape_ShapeType:$result);
+
+  let hasFolder = 1;
 }
 
 def Shape_ConstShapeOp : Shape_Op<"const_shape",
@@ -225,6 +228,8 @@ def Shape_ToExtentTensorOp : Shape_Op<"to_extent_tensor", []> {
 
   let arguments = (ins Shape_ShapeType:$input);
   let results = (outs IndexTensor:$result);
+
+  let hasFolder = 1;
 }
 
 def Shape_JoinOp : Shape_Op<"join", []> {
@@ -313,7 +318,8 @@ def Shape_ReduceOp : Shape_Op<"reduce", []> {
   let regions = (region SizedRegion<1>:$body);
 }
 
-def Shape_ShapeOfOp : Shape_Op<"shape_of", []> {
+def Shape_ShapeOfOp : Shape_Op<"shape_of",
+    [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let summary = "Returns shape of a value or shaped type operand";
 
   let arguments = (ins AnyTypeOf<[AnyShaped, Shape_ValueShapeType]>:$arg);
@@ -328,7 +334,7 @@ def Shape_YieldOp : Shape_Op<"yield", [NoSideEffect, Terminator]> {
   let arguments = (ins Variadic<AnyType>:$operands);
 
   let builders = [OpBuilder<
-    "Builder *b, OperationState &result", [{ build(b, result, llvm::None); }]
+    "OpBuilder &b, OperationState &result", [{ build(b, result, llvm::None); }]
   >];
 
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
@@ -376,6 +382,7 @@ def Shape_SplitAtOp : Shape_Op<"split_at",
 
   let arguments = (ins Shape_ShapeType:$operand, I32:$index);
   let results = (outs Shape_ShapeType:$head, Shape_ShapeType:$tail);
+  let hasFolder = 1;
 }
 
 def Shape_ConcatOp : Shape_Op<"concat",
@@ -393,6 +400,8 @@ def Shape_ConcatOp : Shape_Op<"concat",
 
   let arguments = (ins Shape_ShapeType:$lhs, Shape_ShapeType:$rhs);
   let results = (outs Shape_ShapeType:$result);
+
+  let hasFolder = 1;
 }
 
 #endif // SHAPE_OPS
