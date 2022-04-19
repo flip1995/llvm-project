@@ -1116,10 +1116,10 @@ static ParseResult parseInsertValueOp(OpAsmParser &parser,
 }
 
 //===----------------------------------------------------------------------===//
-// Printing/parsing for LLVM::ReturnOp.
+// Printing, parsing and verification for LLVM::ReturnOp.
 //===----------------------------------------------------------------------===//
 
-static void printReturnOp(OpAsmPrinter &p, ReturnOp &op) {
+static void printReturnOp(OpAsmPrinter &p, ReturnOp op) {
   p << op.getOperationName();
   p.printOptionalAttrDict(op.getAttrs());
   assert(op.getNumOperands() <= 1);
@@ -1145,6 +1145,35 @@ static ParseResult parseReturnOp(OpAsmParser &parser, OperationState &result) {
   if (parser.parseColonType(type) ||
       parser.resolveOperand(operands[0], type, result.operands))
     return failure();
+  return success();
+}
+
+static LogicalResult verify(ReturnOp op) {
+  if (op->getNumOperands() > 1)
+    return op->emitOpError("expected at most 1 operand");
+
+  if (auto parent = op->getParentOfType<LLVMFuncOp>()) {
+    Type expectedType = parent.getType().getReturnType();
+    if (expectedType.isa<LLVMVoidType>()) {
+      if (op->getNumOperands() == 0)
+        return success();
+      InFlightDiagnostic diag = op->emitOpError("expected no operands");
+      diag.attachNote(parent->getLoc()) << "when returning from function";
+      return diag;
+    }
+    if (op->getNumOperands() == 0) {
+      if (expectedType.isa<LLVMVoidType>())
+        return success();
+      InFlightDiagnostic diag = op->emitOpError("expected 1 operand");
+      diag.attachNote(parent->getLoc()) << "when returning from function";
+      return diag;
+    }
+    if (expectedType != op->getOperand(0).getType()) {
+      InFlightDiagnostic diag = op->emitOpError("mismatching result types");
+      diag.attachNote(parent->getLoc()) << "when returning from function";
+      return diag;
+    }
+  }
   return success();
 }
 
@@ -1274,10 +1303,40 @@ static LogicalResult verifyCast(DialectCastOp op, Type llvmType, Type type,
     return op.emitOpError("invalid cast between index and non-integer type");
   }
 
+  if (type.isa<IntegerType>()) {
+    auto llvmIntegerType = llvmType.dyn_cast<IntegerType>();
+    if (!llvmIntegerType)
+      return op->emitOpError("invalid cast between integer and non-integer");
+    if (llvmIntegerType.getWidth() != type.getIntOrFloatBitWidth())
+      return op.emitOpError("invalid cast changing integer width");
+    return success();
+  }
+
   // Vectors are compatible if they are 1D non-scalable, and their element types
-  // are compatible.
-  if (auto vectorType = type.dyn_cast<VectorType>())
-    return op.emitOpError("vector types should not be casted");
+  // are compatible. nD vectors are compatible with (n-1)D arrays containing 1D
+  // vector.
+  if (auto vectorType = type.dyn_cast<VectorType>()) {
+    if (vectorType == llvmType && !isElement)
+      return op.emitOpError("vector types should not be casted");
+
+    if (vectorType.getRank() == 1) {
+      auto llvmVectorType = llvmType.dyn_cast<VectorType>();
+      if (!llvmVectorType || llvmVectorType.getRank() != 1)
+        return op.emitOpError("invalid cast for vector types");
+
+      return verifyCast(op, llvmVectorType.getElementType(),
+                        vectorType.getElementType(), /*isElement=*/true);
+    }
+
+    auto arrayType = llvmType.dyn_cast<LLVM::LLVMArrayType>();
+    if (!arrayType ||
+        arrayType.getNumElements() != vectorType.getShape().front())
+      return op.emitOpError("invalid cast for vector, expected array");
+    return verifyCast(op, arrayType.getElementType(),
+                      VectorType::get(vectorType.getShape().drop_front(),
+                                      vectorType.getElementType()),
+                      /*isElement=*/true);
+  }
 
   if (auto memrefType = type.dyn_cast<MemRefType>()) {
     // Bare pointer convention: statically-shaped memref is compatible with an
@@ -1372,6 +1431,17 @@ static LogicalResult verifyCast(DialectCastOp op, Type llvmType, Type type,
       return op->emitOpError("expected second element of a memref descriptor "
                              "to be an !llvm.ptr<i8>");
 
+    return success();
+  }
+
+  // Complex types are compatible with the two-element structs.
+  if (auto complexType = type.dyn_cast<ComplexType>()) {
+    auto structType = llvmType.dyn_cast<LLVMStructType>();
+    if (!structType || structType.getBody().size() != 2 ||
+        structType.getBody()[0] != structType.getBody()[1] ||
+        structType.getBody()[0] != complexType.getElementType())
+      return op->emitOpError("expected 'complex' to map to two-element struct "
+                             "with identical element types");
     return success();
   }
 
@@ -1487,6 +1557,20 @@ static ParseResult parseGlobalOp(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
+static bool isZeroAttribute(Attribute value) {
+  if (auto intValue = value.dyn_cast<IntegerAttr>())
+    return intValue.getValue().isNullValue();
+  if (auto fpValue = value.dyn_cast<FloatAttr>())
+    return fpValue.getValue().isZero();
+  if (auto splatValue = value.dyn_cast<SplatElementsAttr>())
+    return isZeroAttribute(splatValue.getSplatValue());
+  if (auto elementsValue = value.dyn_cast<ElementsAttr>())
+    return llvm::all_of(elementsValue.getValues<Attribute>(), isZeroAttribute);
+  if (auto arrayValue = value.dyn_cast<ArrayAttr>())
+    return llvm::all_of(arrayValue.getValue(), isZeroAttribute);
+  return false;
+}
+
 static LogicalResult verify(GlobalOp op) {
   if (!LLVMPointerType::isValidElementType(op.getType()))
     return op.emitOpError(
@@ -1517,6 +1601,25 @@ static LogicalResult verify(GlobalOp op) {
     if (op.getValueOrNull())
       return op.emitOpError("cannot have both initializer value and region");
   }
+
+  if (op.linkage() == Linkage::Common) {
+    if (Attribute value = op.getValueOrNull()) {
+      if (!isZeroAttribute(value)) {
+        return op.emitOpError()
+               << "expected zero value for '"
+               << stringifyLinkage(Linkage::Common) << "' linkage";
+      }
+    }
+  }
+
+  if (op.linkage() == Linkage::Appending) {
+    if (!op.getType().isa<LLVMArrayType>()) {
+      return op.emitOpError()
+             << "expected array type for '"
+             << stringifyLinkage(Linkage::Appending) << "' linkage";
+    }
+  }
+
   return success();
 }
 
@@ -1799,8 +1902,17 @@ static LogicalResult verify(LLVMFuncOp op) {
 //===----------------------------------------------------------------------===//
 
 static LogicalResult verify(LLVM::ConstantOp op) {
-  if (!(op.value().isa<IntegerAttr>() || op.value().isa<FloatAttr>() ||
-        op.value().isa<ElementsAttr>() || op.value().isa<StringAttr>()))
+  if (StringAttr sAttr = op.value().dyn_cast<StringAttr>()) {
+    auto arrayType = op.getType().dyn_cast<LLVMArrayType>();
+    if (!arrayType || arrayType.getNumElements() != sAttr.getValue().size() ||
+        !arrayType.getElementType().isInteger(8)) {
+      return op->emitOpError()
+             << "expected array type of " << sAttr.getValue().size()
+             << " i8 elements for the string constant";
+    }
+    return success();
+  }
+  if (!op.value().isa<IntegerAttr, FloatAttr, ElementsAttr>())
     return op.emitOpError()
            << "only supports integer, float, string or elements attributes";
   return success();
@@ -1923,6 +2035,14 @@ static LogicalResult verify(AtomicRMWOp op) {
         intBitWidth != 64)
       return op.emitOpError("expected LLVM IR integer type");
   }
+
+  if (static_cast<unsigned>(op.ordering()) <
+      static_cast<unsigned>(AtomicOrdering::monotonic))
+    return op.emitOpError()
+           << "expected at least '"
+           << stringifyAtomicOrdering(AtomicOrdering::monotonic)
+           << "' ordering";
+
   return success();
 }
 

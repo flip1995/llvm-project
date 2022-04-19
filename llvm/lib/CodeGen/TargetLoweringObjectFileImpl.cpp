@@ -315,7 +315,7 @@ void TargetLoweringObjectFileELF::emitModuleMetadata(MCStreamer &Streamer,
 
   if (NamedMDNode *DependentLibraries = M.getNamedMetadata("llvm.dependent-libraries")) {
     auto *S = C.getELFSection(".deplibs", ELF::SHT_LLVM_DEPENDENT_LIBRARIES,
-                              ELF::SHF_MERGE | ELF::SHF_STRINGS, 1, "");
+                              ELF::SHF_MERGE | ELF::SHF_STRINGS, 1);
 
     Streamer.SwitchSection(S);
 
@@ -527,9 +527,11 @@ static const Comdat *getELFComdat(const GlobalValue *GV) {
   if (!C)
     return nullptr;
 
-  if (C->getSelectionKind() != Comdat::Any)
-    report_fatal_error("ELF COMDATs only support SelectionKind::Any, '" +
-                       C->getName() + "' cannot be lowered.");
+  if (C->getSelectionKind() != Comdat::Any &&
+      C->getSelectionKind() != Comdat::NoDuplicates)
+    report_fatal_error("ELF COMDATs only support SelectionKind::Any and "
+                       "SelectionKind::NoDuplicates, '" + C->getName() +
+                       "' cannot be lowered.");
 
   return C;
 }
@@ -674,9 +676,11 @@ MCSection *TargetLoweringObjectFileELF::getExplicitSectionGlobal(
   Kind = getELFKindForNamedSection(SectionName, Kind);
 
   StringRef Group = "";
+  bool IsComdat = false;
   unsigned Flags = getELFSectionFlags(Kind);
   if (const Comdat *C = getELFComdat(GO)) {
     Group = C->getName();
+    IsComdat = C->getSelectionKind() == Comdat::Any;
     Flags |= ELF::SHF_GROUP;
   }
 
@@ -735,8 +739,8 @@ MCSection *TargetLoweringObjectFileELF::getExplicitSectionGlobal(
   }
 
   MCSectionELF *Section = getContext().getELFSection(
-      SectionName, getELFSectionType(SectionName, Kind), Flags,
-      EntrySize, Group, UniqueID, LinkedToSym);
+      SectionName, getELFSectionType(SectionName, Kind), Flags, EntrySize,
+      Group, IsComdat, UniqueID, LinkedToSym);
   // Make sure that we did not get some other section with incompatible sh_link.
   // This should not be possible due to UniqueID code above.
   assert(Section->getLinkedToSymbol() == LinkedToSym &&
@@ -768,9 +772,11 @@ static MCSectionELF *selectELFSectionForGlobal(
     unsigned *NextUniqueID, const MCSymbolELF *AssociatedSymbol) {
 
   StringRef Group = "";
+  bool IsComdat = false;
   if (const Comdat *C = getELFComdat(GO)) {
     Flags |= ELF::SHF_GROUP;
     Group = C->getName();
+    IsComdat = C->getSelectionKind() == Comdat::Any;
   }
 
   // Get the section entry size based on the kind.
@@ -793,7 +799,8 @@ static MCSectionELF *selectELFSectionForGlobal(
   if (Kind.isExecuteOnly())
     UniqueID = 0;
   return Ctx.getELFSection(Name, getELFSectionType(Name, Kind), Flags,
-                           EntrySize, Group, UniqueID, AssociatedSymbol);
+                           EntrySize, Group, IsComdat, UniqueID,
+                           AssociatedSymbol);
 }
 
 MCSection *TargetLoweringObjectFileELF::SelectSectionForGlobal(
@@ -839,9 +846,8 @@ MCSection *TargetLoweringObjectFileELF::getSectionForJumpTable(
                                    /* AssociatedSymbol */ nullptr);
 }
 
-MCSection *
-TargetLoweringObjectFileELF::getSectionForLSDA(const Function &F,
-                                               const TargetMachine &TM) const {
+MCSection *TargetLoweringObjectFileELF::getSectionForLSDA(
+    const Function &F, const MCSymbol &FnSym, const TargetMachine &TM) const {
   // If neither COMDAT nor function sections, use the monolithic LSDA section.
   // Re-use this path if LSDASection is null as in the Arm EHABI.
   if (!LSDASection || (!F.hasComdat() && !TM.getFunctionSections()))
@@ -849,31 +855,30 @@ TargetLoweringObjectFileELF::getSectionForLSDA(const Function &F,
 
   const auto *LSDA = cast<MCSectionELF>(LSDASection);
   unsigned Flags = LSDA->getFlags();
+  const MCSymbolELF *LinkedToSym = nullptr;
   StringRef Group;
-  if (F.hasComdat()) {
-    Group = F.getComdat()->getName();
+  bool IsComdat = false;
+  if (const Comdat *C = getELFComdat(&F)) {
     Flags |= ELF::SHF_GROUP;
+    Group = C->getName();
+    IsComdat = C->getSelectionKind() == Comdat::Any;
+  }
+  // Use SHF_LINK_ORDER to facilitate --gc-sections if we can use GNU ld>=2.36
+  // or LLD, which support mixed SHF_LINK_ORDER & non-SHF_LINK_ORDER.
+  if (TM.getFunctionSections() &&
+      (getContext().getAsmInfo()->useIntegratedAssembler() &&
+       getContext().getAsmInfo()->binutilsIsAtLeast(2, 36))) {
+    Flags |= ELF::SHF_LINK_ORDER;
+    LinkedToSym = cast<MCSymbolELF>(&FnSym);
   }
 
   // Append the function name as the suffix like GCC, assuming
   // -funique-section-names applies to .gcc_except_table sections.
-  if (TM.getUniqueSectionNames())
-    return getContext().getELFSection(LSDA->getName() + "." + F.getName(),
-                                      LSDA->getType(), Flags, 0, Group,
-                                      MCSection::NonUniqueID, nullptr);
-
-  // Allocate a unique ID if function sections && (integrated assembler or GNU
-  // as>=2.35). Note we could use SHF_LINK_ORDER to facilitate --gc-sections but
-  // that would require that we know the linker is a modern LLD (12.0 or later).
-  // GNU ld as of 2.35 does not support mixed SHF_LINK_ORDER &
-  // non-SHF_LINK_ORDER components in an output section
-  // https://sourceware.org/bugzilla/show_bug.cgi?id=26256
-  unsigned ID = TM.getFunctionSections() &&
-                        getContext().getAsmInfo()->useIntegratedAssembler()
-                    ? NextUniqueID++
-                    : MCSection::NonUniqueID;
-  return getContext().getELFSection(LSDA->getName(), LSDA->getType(), Flags, 0,
-                                    Group, ID, nullptr);
+  return getContext().getELFSection(
+      (TM.getUniqueSectionNames() ? LSDA->getName() + "." + F.getName()
+                                  : LSDA->getName()),
+      LSDA->getType(), Flags, 0, Group, F.hasComdat(), MCSection::NonUniqueID,
+      LinkedToSym);
 }
 
 bool TargetLoweringObjectFileELF::shouldPutJumpTableInFunctionSection(
@@ -939,8 +944,8 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
     GroupName = F.getComdat()->getName().str();
   }
   return getContext().getELFSection(Name, ELF::SHT_PROGBITS, Flags,
-                                    0 /* Entry Size */, GroupName, UniqueID,
-                                    nullptr);
+                                    0 /* Entry Size */, GroupName,
+                                    F.hasComdat(), UniqueID, nullptr);
 }
 
 static MCSectionELF *getStaticStructorSection(MCContext &Ctx, bool UseInitArray,
@@ -949,7 +954,7 @@ static MCSectionELF *getStaticStructorSection(MCContext &Ctx, bool UseInitArray,
   std::string Name;
   unsigned Type;
   unsigned Flags = ELF::SHF_ALLOC | ELF::SHF_WRITE;
-  StringRef COMDAT = KeySym ? KeySym->getName() : "";
+  StringRef Comdat = KeySym ? KeySym->getName() : "";
 
   if (KeySym)
     Flags |= ELF::SHF_GROUP;
@@ -978,7 +983,7 @@ static MCSectionELF *getStaticStructorSection(MCContext &Ctx, bool UseInitArray,
     Type = ELF::SHT_PROGBITS;
   }
 
-  return Ctx.getELFSection(Name, Type, Flags, 0, COMDAT);
+  return Ctx.getELFSection(Name, Type, Flags, 0, Comdat, /*IsComdat=*/true);
 }
 
 MCSection *TargetLoweringObjectFileELF::getStaticCtorSection(
@@ -1032,7 +1037,7 @@ MCSection *TargetLoweringObjectFileELF::getSectionForCommandLines() const {
   // -frecord-gcc-switches which in turn attempts to mimic GCC's switch of the
   // same name.
   return getContext().getELFSection(".GCC.command.line", ELF::SHT_PROGBITS,
-                                    ELF::SHF_MERGE | ELF::SHF_STRINGS, 1, "");
+                                    ELF::SHF_MERGE | ELF::SHF_STRINGS, 1);
 }
 
 void

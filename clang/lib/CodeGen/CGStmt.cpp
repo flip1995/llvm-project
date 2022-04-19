@@ -200,6 +200,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs) {
   case Stmt::OMPSimdDirectiveClass:
     EmitOMPSimdDirective(cast<OMPSimdDirective>(*S));
     break;
+  case Stmt::OMPTileDirectiveClass:
+    EmitOMPTileDirective(cast<OMPTileDirective>(*S));
+    break;
   case Stmt::OMPForDirectiveClass:
     EmitOMPForDirective(cast<OMPForDirective>(*S));
     break;
@@ -2531,6 +2534,23 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
       }
     }
 
+    if (isa<MSAsmStmt>(&S)) {
+      if (Clobber == "eax" || Clobber == "edx") {
+        if (Constraints.find("=&A") != std::string::npos)
+          continue;
+        std::string::size_type position1 =
+            Constraints.find("={" + Clobber.str() + "}");
+        if (position1 != std::string::npos) {
+          Constraints.insert(position1 + 1, "&");
+          continue;
+        }
+        std::string::size_type position2 = Constraints.find("=A");
+        if (position2 != std::string::npos) {
+          Constraints.insert(position2 + 1, "&");
+          continue;
+        }
+      }
+    }
     if (!Constraints.empty())
       Constraints += ',';
 

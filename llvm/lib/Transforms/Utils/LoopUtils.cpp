@@ -54,11 +54,6 @@
 using namespace llvm;
 using namespace llvm::PatternMatch;
 
-static cl::opt<bool> ForceReductionIntrinsic(
-    "force-reduction-intrinsics", cl::Hidden,
-    cl::desc("Force creating reduction intrinsics for testing."),
-    cl::init(false));
-
 #define DEBUG_TYPE "loop-utils"
 
 static const char *LLVMLoopDisableNonforced = "llvm.loop.disable_nonforced";
@@ -944,12 +939,6 @@ Value *llvm::createMinMaxOp(IRBuilderBase &Builder, RecurKind RK, Value *Left,
     break;
   }
 
-  // We only match FP sequences that are 'fast', so we can unconditionally
-  // set it on any generated instructions.
-  IRBuilderBase::FastMathFlagGuard FMFG(Builder);
-  FastMathFlags FMF;
-  FMF.setFast();
-  Builder.setFastMathFlags(FMF);
   Value *Cmp = Builder.CreateCmp(Pred, Left, Right, "rdx.minmax.cmp");
   Value *Select = Builder.CreateSelect(Cmp, Left, Right, "rdx.minmax.select");
   return Select;
@@ -1031,14 +1020,10 @@ Value *llvm::createSimpleTargetReduction(IRBuilderBase &Builder,
                                          const TargetTransformInfo *TTI,
                                          Value *Src, RecurKind RdxKind,
                                          ArrayRef<Value *> RedOps) {
-  unsigned Opcode = RecurrenceDescriptor::getOpcode(RdxKind);
   TargetTransformInfo::ReductionFlags RdxFlags;
   RdxFlags.IsMaxOp = RdxKind == RecurKind::SMax || RdxKind == RecurKind::UMax ||
                      RdxKind == RecurKind::FMax;
   RdxFlags.IsSigned = RdxKind == RecurKind::SMax || RdxKind == RecurKind::SMin;
-  if (!ForceReductionIntrinsic &&
-      !TTI->useReductionIntrinsic(Opcode, Src->getType(), RdxFlags))
-    return getShuffleReduction(Builder, Src, Opcode, RdxKind, RedOps);
 
   auto *SrcVecEltTy = cast<VectorType>(Src->getType())->getElementType();
   switch (RdxKind) {
@@ -1587,7 +1572,8 @@ struct PointerBounds {
 /// in \p TheLoop.  \return the values for the bounds.
 static PointerBounds expandBounds(const RuntimeCheckingPtrGroup *CG,
                                   Loop *TheLoop, Instruction *Loc,
-                                  SCEVExpander &Exp, ScalarEvolution *SE) {
+                                  SCEVExpander &Exp) {
+  ScalarEvolution *SE = Exp.getSE();
   // TODO: Add helper to retrieve pointers to CG.
   Value *Ptr = CG->RtCheck.Pointers[CG->Members[0]].PointerValue;
   const SCEV *Sc = SE->getSCEV(Ptr);
@@ -1626,16 +1612,15 @@ static PointerBounds expandBounds(const RuntimeCheckingPtrGroup *CG,
 /// lower bounds for both pointers in the check.
 static SmallVector<std::pair<PointerBounds, PointerBounds>, 4>
 expandBounds(const SmallVectorImpl<RuntimePointerCheck> &PointerChecks, Loop *L,
-             Instruction *Loc, ScalarEvolution *SE, SCEVExpander &Exp) {
+             Instruction *Loc, SCEVExpander &Exp) {
   SmallVector<std::pair<PointerBounds, PointerBounds>, 4> ChecksWithBounds;
 
   // Here we're relying on the SCEV Expander's cache to only emit code for the
   // same bounds once.
   transform(PointerChecks, std::back_inserter(ChecksWithBounds),
             [&](const RuntimePointerCheck &Check) {
-              PointerBounds First = expandBounds(Check.first, L, Loc, Exp, SE),
-                            Second =
-                                expandBounds(Check.second, L, Loc, Exp, SE);
+              PointerBounds First = expandBounds(Check.first, L, Loc, Exp),
+                            Second = expandBounds(Check.second, L, Loc, Exp);
               return std::make_pair(First, Second);
             });
 
@@ -1645,12 +1630,10 @@ expandBounds(const SmallVectorImpl<RuntimePointerCheck> &PointerChecks, Loop *L,
 std::pair<Instruction *, Instruction *> llvm::addRuntimeChecks(
     Instruction *Loc, Loop *TheLoop,
     const SmallVectorImpl<RuntimePointerCheck> &PointerChecks,
-    ScalarEvolution *SE) {
+    SCEVExpander &Exp) {
   // TODO: Move noalias annotation code from LoopVersioning here and share with LV if possible.
   // TODO: Pass  RtPtrChecking instead of PointerChecks and SE separately, if possible
-  const DataLayout &DL = TheLoop->getHeader()->getModule()->getDataLayout();
-  SCEVExpander Exp(*SE, DL, "induction");
-  auto ExpandedChecks = expandBounds(PointerChecks, TheLoop, Loc, SE, Exp);
+  auto ExpandedChecks = expandBounds(PointerChecks, TheLoop, Loc, Exp);
 
   LLVMContext &Ctx = Loc->getContext();
   Instruction *FirstInst = nullptr;

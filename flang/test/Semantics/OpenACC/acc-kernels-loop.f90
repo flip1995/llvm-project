@@ -1,4 +1,4 @@
-! RUN: %S/../test_errors.sh %s %t %f18 -fopenacc
+! RUN: %S/../test_errors.sh %s %t %flang -fopenacc
 
 ! Check OpenACC clause validity for the following construct and directive:
 !   2.11 Kernels Loop
@@ -118,6 +118,11 @@ program openacc_kernels_loop_validity
   end do
 
   !$acc kernels loop wait(wait1, wait2)
+  do i = 1, N
+    a(i) = 3.14
+  end do
+
+  !$acc kernels loop wait(wait1) wait(wait2)
   do i = 1, N
     a(i) = 3.14
   end do

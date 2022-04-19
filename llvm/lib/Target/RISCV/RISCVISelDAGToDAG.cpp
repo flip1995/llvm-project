@@ -17,6 +17,7 @@
 #include "llvm/IR/IntrinsicsRISCV.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -49,7 +50,7 @@ static SDNode *selectImm(SelectionDAG *CurDAG, const SDLoc &DL, int64_t Imm,
   return Result;
 }
 
-static RISCVVLMUL getLMUL(EVT VT) {
+static RISCVVLMUL getLMUL(MVT VT) {
   switch (VT.getSizeInBits().getKnownMinValue() / 8) {
   default:
     llvm_unreachable("Invalid LMUL.");
@@ -70,7 +71,25 @@ static RISCVVLMUL getLMUL(EVT VT) {
   }
 }
 
-static unsigned getSubregIndexByEVT(EVT VT, unsigned Index) {
+static unsigned getRegClassIDForLMUL(RISCVVLMUL LMul) {
+  switch (LMul) {
+  default:
+    llvm_unreachable("Invalid LMUL.");
+  case RISCVVLMUL::LMUL_F8:
+  case RISCVVLMUL::LMUL_F4:
+  case RISCVVLMUL::LMUL_F2:
+  case RISCVVLMUL::LMUL_1:
+    return RISCV::VRRegClassID;
+  case RISCVVLMUL::LMUL_2:
+    return RISCV::VRM2RegClassID;
+  case RISCVVLMUL::LMUL_4:
+    return RISCV::VRM4RegClassID;
+  case RISCVVLMUL::LMUL_8:
+    return RISCV::VRM8RegClassID;
+  }
+}
+
+static unsigned getSubregIndexByMVT(MVT VT, unsigned Index) {
   RISCVVLMUL LMUL = getLMUL(VT);
   if (LMUL == RISCVVLMUL::LMUL_F8 || LMUL == RISCVVLMUL::LMUL_F4 ||
       LMUL == RISCVVLMUL::LMUL_F2 || LMUL == RISCVVLMUL::LMUL_1) {
@@ -153,7 +172,7 @@ void RISCVDAGToDAGISel::selectVLSEG(SDNode *Node, unsigned IntNo,
                                     bool IsStrided) {
   SDLoc DL(Node);
   unsigned NF = Node->getNumValues() - 1;
-  EVT VT = Node->getValueType(0);
+  MVT VT = Node->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -176,7 +195,7 @@ void RISCVDAGToDAGISel::selectVLSEG(SDNode *Node, unsigned IntNo,
   SDValue SuperReg = SDValue(Load, 0);
   for (unsigned I = 0; I < NF; ++I)
     ReplaceUses(SDValue(Node, I),
-                CurDAG->getTargetExtractSubreg(getSubregIndexByEVT(VT, I), DL,
+                CurDAG->getTargetExtractSubreg(getSubregIndexByMVT(VT, I), DL,
                                                VT, SuperReg));
 
   ReplaceUses(SDValue(Node, NF), SDValue(Load, 1));
@@ -187,7 +206,7 @@ void RISCVDAGToDAGISel::selectVLSEGMask(SDNode *Node, unsigned IntNo,
                                         bool IsStrided) {
   SDLoc DL(Node);
   unsigned NF = Node->getNumValues() - 1;
-  EVT VT = Node->getValueType(0);
+  MVT VT = Node->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -215,7 +234,7 @@ void RISCVDAGToDAGISel::selectVLSEGMask(SDNode *Node, unsigned IntNo,
   SDValue SuperReg = SDValue(Load, 0);
   for (unsigned I = 0; I < NF; ++I)
     ReplaceUses(SDValue(Node, I),
-                CurDAG->getTargetExtractSubreg(getSubregIndexByEVT(VT, I), DL,
+                CurDAG->getTargetExtractSubreg(getSubregIndexByMVT(VT, I), DL,
                                                VT, SuperReg));
 
   ReplaceUses(SDValue(Node, NF), SDValue(Load, 1));
@@ -225,8 +244,8 @@ void RISCVDAGToDAGISel::selectVLSEGMask(SDNode *Node, unsigned IntNo,
 void RISCVDAGToDAGISel::selectVLSEGFF(SDNode *Node) {
   SDLoc DL(Node);
   unsigned IntNo = cast<ConstantSDNode>(Node->getOperand(1))->getZExtValue();
-  unsigned NF = Node->getNumValues() - 2; // Do not count Chain and Glue.
-  EVT VT = Node->getValueType(0);
+  unsigned NF = Node->getNumValues() - 2; // Do not count VL and Chain.
+  MVT VT = Node->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -241,22 +260,25 @@ void RISCVDAGToDAGISel::selectVLSEGFF(SDNode *Node) {
       static_cast<unsigned>(RISCVVLMUL::LMUL_1));
   SDNode *Load = CurDAG->getMachineNode(P->Pseudo, DL, MVT::Untyped, MVT::Other,
                                         MVT::Glue, Operands);
+  SDNode *ReadVL = CurDAG->getMachineNode(RISCV::PseudoReadVL, DL, XLenVT,
+                                          /*Glue*/ SDValue(Load, 2));
+
   SDValue SuperReg = SDValue(Load, 0);
   for (unsigned I = 0; I < NF; ++I)
     ReplaceUses(SDValue(Node, I),
-                CurDAG->getTargetExtractSubreg(getSubregIndexByEVT(VT, I), DL,
+                CurDAG->getTargetExtractSubreg(getSubregIndexByMVT(VT, I), DL,
                                                VT, SuperReg));
 
-  ReplaceUses(SDValue(Node, NF), SDValue(Load, 1));     // Chain.
-  ReplaceUses(SDValue(Node, NF + 1), SDValue(Load, 2)); // Glue.
+  ReplaceUses(SDValue(Node, NF), SDValue(ReadVL, 0));   // VL
+  ReplaceUses(SDValue(Node, NF + 1), SDValue(Load, 1)); // Chain
   CurDAG->RemoveDeadNode(Node);
 }
 
 void RISCVDAGToDAGISel::selectVLSEGFFMask(SDNode *Node) {
   SDLoc DL(Node);
   unsigned IntNo = cast<ConstantSDNode>(Node->getOperand(1))->getZExtValue();
-  unsigned NF = Node->getNumValues() - 2; // Do not count Chain and Glue.
-  EVT VT = Node->getValueType(0);
+  unsigned NF = Node->getNumValues() - 2; // Do not count VL and Chain.
+  MVT VT = Node->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -275,21 +297,24 @@ void RISCVDAGToDAGISel::selectVLSEGFFMask(SDNode *Node) {
       static_cast<unsigned>(RISCVVLMUL::LMUL_1));
   SDNode *Load = CurDAG->getMachineNode(P->Pseudo, DL, MVT::Untyped, MVT::Other,
                                         MVT::Glue, Operands);
+  SDNode *ReadVL = CurDAG->getMachineNode(RISCV::PseudoReadVL, DL, XLenVT,
+                                          /*Glue*/ SDValue(Load, 2));
+
   SDValue SuperReg = SDValue(Load, 0);
   for (unsigned I = 0; I < NF; ++I)
     ReplaceUses(SDValue(Node, I),
-                CurDAG->getTargetExtractSubreg(getSubregIndexByEVT(VT, I), DL,
+                CurDAG->getTargetExtractSubreg(getSubregIndexByMVT(VT, I), DL,
                                                VT, SuperReg));
 
-  ReplaceUses(SDValue(Node, NF), SDValue(Load, 1));     // Chain.
-  ReplaceUses(SDValue(Node, NF + 1), SDValue(Load, 2)); // Glue.
+  ReplaceUses(SDValue(Node, NF), SDValue(ReadVL, 0));   // VL
+  ReplaceUses(SDValue(Node, NF + 1), SDValue(Load, 1)); // Chain
   CurDAG->RemoveDeadNode(Node);
 }
 
 void RISCVDAGToDAGISel::selectVLXSEG(SDNode *Node, unsigned IntNo) {
   SDLoc DL(Node);
   unsigned NF = Node->getNumValues() - 1;
-  EVT VT = Node->getValueType(0);
+  MVT VT = Node->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -301,7 +326,7 @@ void RISCVDAGToDAGISel::selectVLXSEG(SDNode *Node, unsigned IntNo) {
       SEW, Node->getOperand(0) // Chain.
   };
 
-  EVT IndexVT = Node->getOperand(3)->getValueType(0);
+  MVT IndexVT = Node->getOperand(3)->getSimpleValueType(0);
   RISCVVLMUL IndexLMUL = getLMUL(IndexVT);
   unsigned IndexScalarSize = IndexVT.getScalarSizeInBits();
   const RISCVZvlssegTable::RISCVZvlsseg *P = RISCVZvlssegTable::getPseudo(
@@ -312,7 +337,7 @@ void RISCVDAGToDAGISel::selectVLXSEG(SDNode *Node, unsigned IntNo) {
   SDValue SuperReg = SDValue(Load, 0);
   for (unsigned I = 0; I < NF; ++I)
     ReplaceUses(SDValue(Node, I),
-                CurDAG->getTargetExtractSubreg(getSubregIndexByEVT(VT, I), DL,
+                CurDAG->getTargetExtractSubreg(getSubregIndexByMVT(VT, I), DL,
                                                VT, SuperReg));
 
   ReplaceUses(SDValue(Node, NF), SDValue(Load, 1));
@@ -322,7 +347,7 @@ void RISCVDAGToDAGISel::selectVLXSEG(SDNode *Node, unsigned IntNo) {
 void RISCVDAGToDAGISel::selectVLXSEGMask(SDNode *Node, unsigned IntNo) {
   SDLoc DL(Node);
   unsigned NF = Node->getNumValues() - 1;
-  EVT VT = Node->getValueType(0);
+  MVT VT = Node->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -339,7 +364,7 @@ void RISCVDAGToDAGISel::selectVLXSEGMask(SDNode *Node, unsigned IntNo) {
       Node->getOperand(0) // Chain.
   };
 
-  EVT IndexVT = Node->getOperand(NF + 3)->getValueType(0);
+  MVT IndexVT = Node->getOperand(NF + 3)->getSimpleValueType(0);
   RISCVVLMUL IndexLMUL = getLMUL(IndexVT);
   unsigned IndexScalarSize = IndexVT.getScalarSizeInBits();
   const RISCVZvlssegTable::RISCVZvlsseg *P = RISCVZvlssegTable::getPseudo(
@@ -350,7 +375,7 @@ void RISCVDAGToDAGISel::selectVLXSEGMask(SDNode *Node, unsigned IntNo) {
   SDValue SuperReg = SDValue(Load, 0);
   for (unsigned I = 0; I < NF; ++I)
     ReplaceUses(SDValue(Node, I),
-                CurDAG->getTargetExtractSubreg(getSubregIndexByEVT(VT, I), DL,
+                CurDAG->getTargetExtractSubreg(getSubregIndexByMVT(VT, I), DL,
                                                VT, SuperReg));
 
   ReplaceUses(SDValue(Node, NF), SDValue(Load, 1));
@@ -363,7 +388,7 @@ void RISCVDAGToDAGISel::selectVSSEG(SDNode *Node, unsigned IntNo,
   unsigned NF = Node->getNumOperands() - 4;
   if (IsStrided)
     NF--;
-  EVT VT = Node->getOperand(2)->getValueType(0);
+  MVT VT = Node->getOperand(2)->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -395,7 +420,7 @@ void RISCVDAGToDAGISel::selectVSSEGMask(SDNode *Node, unsigned IntNo,
   unsigned NF = Node->getNumOperands() - 5;
   if (IsStrided)
     NF--;
-  EVT VT = Node->getOperand(2)->getValueType(0);
+  MVT VT = Node->getOperand(2)->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -426,7 +451,7 @@ void RISCVDAGToDAGISel::selectVSSEGMask(SDNode *Node, unsigned IntNo,
 void RISCVDAGToDAGISel::selectVSXSEG(SDNode *Node, unsigned IntNo) {
   SDLoc DL(Node);
   unsigned NF = Node->getNumOperands() - 5;
-  EVT VT = Node->getOperand(2)->getValueType(0);
+  MVT VT = Node->getOperand(2)->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -442,7 +467,7 @@ void RISCVDAGToDAGISel::selectVSXSEG(SDNode *Node, unsigned IntNo) {
       Node->getOperand(0) // Chain.
   };
 
-  EVT IndexVT = Node->getOperand(3 + NF)->getValueType(0);
+  MVT IndexVT = Node->getOperand(3 + NF)->getSimpleValueType(0);
   RISCVVLMUL IndexLMUL = getLMUL(IndexVT);
   unsigned IndexScalarSize = IndexVT.getScalarSizeInBits();
   const RISCVZvlssegTable::RISCVZvlsseg *P = RISCVZvlssegTable::getPseudo(
@@ -456,7 +481,7 @@ void RISCVDAGToDAGISel::selectVSXSEG(SDNode *Node, unsigned IntNo) {
 void RISCVDAGToDAGISel::selectVSXSEGMask(SDNode *Node, unsigned IntNo) {
   SDLoc DL(Node);
   unsigned NF = Node->getNumOperands() - 6;
-  EVT VT = Node->getOperand(2)->getValueType(0);
+  MVT VT = Node->getOperand(2)->getSimpleValueType(0);
   unsigned ScalarSize = VT.getScalarSizeInBits();
   MVT XLenVT = Subtarget->getXLenVT();
   RISCVVLMUL LMUL = getLMUL(VT);
@@ -473,7 +498,7 @@ void RISCVDAGToDAGISel::selectVSXSEGMask(SDNode *Node, unsigned IntNo) {
       Node->getOperand(0) // Chain.
   };
 
-  EVT IndexVT = Node->getOperand(3 + NF)->getValueType(0);
+  MVT IndexVT = Node->getOperand(3 + NF)->getSimpleValueType(0);
   RISCVVLMUL IndexLMUL = getLMUL(IndexVT);
   unsigned IndexScalarSize = IndexVT.getScalarSizeInBits();
   const RISCVZvlssegTable::RISCVZvlsseg *P = RISCVZvlssegTable::getPseudo(
@@ -497,7 +522,7 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
   unsigned Opcode = Node->getOpcode();
   MVT XLenVT = Subtarget->getXLenVT();
   SDLoc DL(Node);
-  EVT VT = Node->getValueType(0);
+  MVT VT = Node->getSimpleValueType(0);
 
   switch (Opcode) {
   case ISD::ADD: {
@@ -511,7 +536,6 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
       if (!(-4096 <= Imm && Imm <= -2049) && !(2048 <= Imm && Imm <= 4094))
         break;
       // Break the imm to imm0+imm1.
-      EVT VT = Node->getValueType(0);
       const SDValue ImmOp0 = CurDAG->getTargetConstant(Imm - Imm / 2, DL, VT);
       const SDValue ImmOp1 = CurDAG->getTargetConstant(Imm / 2, DL, VT);
       auto *NodeAddi0 = CurDAG->getMachineNode(RISCV::ADDI, DL, VT,
@@ -546,6 +570,38 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
     ReplaceNode(Node, CurDAG->getMachineNode(Opc, DL, VT, TFI, Imm));
     return;
   }
+  case ISD::SRL: {
+    // Optimize (srl (and X, 0xffff), C) -> (srli (slli X, 16), 16 + C).
+    // Taking into account that the 0xffff may have had lower bits unset by
+    // SimplifyDemandedBits. This avoids materializing the 0xffff immediate.
+    // This pattern occurs when type legalizing i16 right shifts.
+    // FIXME: This could be extended to other AND masks.
+    auto *N1C = dyn_cast<ConstantSDNode>(Node->getOperand(1));
+    if (N1C) {
+      uint64_t ShAmt = N1C->getZExtValue();
+      SDValue N0 = Node->getOperand(0);
+      if (ShAmt < 16 && N0.getOpcode() == ISD::AND && N0.hasOneUse() &&
+          isa<ConstantSDNode>(N0.getOperand(1))) {
+        uint64_t Mask = N0.getConstantOperandVal(1);
+        Mask |= maskTrailingOnes<uint64_t>(ShAmt);
+        if (Mask == 0xffff) {
+          SDLoc DL(Node);
+          unsigned SLLOpc = Subtarget->is64Bit() ? RISCV::SLLIW : RISCV::SLLI;
+          unsigned SRLOpc = Subtarget->is64Bit() ? RISCV::SRLIW : RISCV::SRLI;
+          SDNode *SLLI =
+              CurDAG->getMachineNode(SLLOpc, DL, VT, N0->getOperand(0),
+                                     CurDAG->getTargetConstant(16, DL, VT));
+          SDNode *SRLI = CurDAG->getMachineNode(
+              SRLOpc, DL, VT, SDValue(SLLI, 0),
+              CurDAG->getTargetConstant(16 + ShAmt, DL, VT));
+          ReplaceNode(Node, SRLI);
+          return;
+        }
+      }
+    }
+
+    break;
+  }
   case ISD::INTRINSIC_W_CHAIN: {
     unsigned IntNo = cast<ConstantSDNode>(Node->getOperand(1))->getZExtValue();
     switch (IntNo) {
@@ -570,12 +626,14 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
 
       SDValue VLOperand = Node->getOperand(2);
       if (auto *C = dyn_cast<ConstantSDNode>(VLOperand)) {
-        if (C->isNullValue()) {
-          VLOperand = SDValue(
-              CurDAG->getMachineNode(RISCV::ADDI, DL, XLenVT,
-                                     CurDAG->getRegister(RISCV::X0, XLenVT),
-                                     CurDAG->getTargetConstant(0, DL, XLenVT)),
-              0);
+        uint64_t AVL = C->getZExtValue();
+        if (isUInt<5>(AVL)) {
+          SDValue VLImm = CurDAG->getTargetConstant(AVL, DL, XLenVT);
+          ReplaceNode(Node,
+                      CurDAG->getMachineNode(RISCV::PseudoVSETIVLI, DL, XLenVT,
+                                             MVT::Other, VLImm, VTypeIOp,
+                                             /* Chain */ Node->getOperand(0)));
+          return;
         }
       }
 
@@ -681,6 +739,26 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
       selectVLXSEGMask(Node, IntNo);
       return;
     }
+    case Intrinsic::riscv_vlseg8ff:
+    case Intrinsic::riscv_vlseg7ff:
+    case Intrinsic::riscv_vlseg6ff:
+    case Intrinsic::riscv_vlseg5ff:
+    case Intrinsic::riscv_vlseg4ff:
+    case Intrinsic::riscv_vlseg3ff:
+    case Intrinsic::riscv_vlseg2ff: {
+      selectVLSEGFF(Node);
+      return;
+    }
+    case Intrinsic::riscv_vlseg8ff_mask:
+    case Intrinsic::riscv_vlseg7ff_mask:
+    case Intrinsic::riscv_vlseg6ff_mask:
+    case Intrinsic::riscv_vlseg5ff_mask:
+    case Intrinsic::riscv_vlseg4ff_mask:
+    case Intrinsic::riscv_vlseg3ff_mask:
+    case Intrinsic::riscv_vlseg2ff_mask: {
+      selectVLSEGFFMask(Node);
+      return;
+    }
     }
     break;
   }
@@ -764,12 +842,56 @@ void RISCVDAGToDAGISel::Select(SDNode *Node) {
     }
     break;
   }
-  case RISCVISD::VLSEGFF: {
-    selectVLSEGFF(Node);
+  case ISD::INSERT_SUBVECTOR: {
+    // Bail when not a "cast" like insert_subvector.
+    if (Node->getConstantOperandVal(2) != 0)
+      break;
+    if (!Node->getOperand(0).isUndef())
+      break;
+
+    // Bail when normal isel should do the job.
+    MVT InVT = Node->getOperand(1).getSimpleValueType();
+    if (VT.isFixedLengthVector() || InVT.isScalableVector())
+      break;
+
+    unsigned RegClassID;
+    if (VT.getVectorElementType() == MVT::i1)
+      RegClassID = RISCV::VRRegClassID;
+    else
+      RegClassID = getRegClassIDForLMUL(getLMUL(VT));
+
+    SDValue V = Node->getOperand(1);
+    SDLoc DL(V);
+    SDValue RC =
+        CurDAG->getTargetConstant(RegClassID, DL, Subtarget->getXLenVT());
+    SDNode *NewNode =
+        CurDAG->getMachineNode(TargetOpcode::COPY_TO_REGCLASS, DL, VT, V, RC);
+    ReplaceNode(Node, NewNode);
     return;
   }
-  case RISCVISD::VLSEGFF_MASK: {
-    selectVLSEGFFMask(Node);
+  case ISD::EXTRACT_SUBVECTOR: {
+    // Bail when not a "cast" like extract_subvector.
+    if (Node->getConstantOperandVal(1) != 0)
+      break;
+
+    // Bail when normal isel can do the job.
+    MVT InVT = Node->getOperand(0).getSimpleValueType();
+    if (VT.isScalableVector() || InVT.isFixedLengthVector())
+      break;
+
+    unsigned RegClassID;
+    if (InVT.getVectorElementType() == MVT::i1)
+      RegClassID = RISCV::VRRegClassID;
+    else
+      RegClassID = getRegClassIDForLMUL(getLMUL(InVT));
+
+    SDValue V = Node->getOperand(0);
+    SDLoc DL(V);
+    SDValue RC =
+        CurDAG->getTargetConstant(RegClassID, DL, Subtarget->getXLenVT());
+    SDNode *NewNode =
+        CurDAG->getMachineNode(TargetOpcode::COPY_TO_REGCLASS, DL, VT, V, RC);
+    ReplaceNode(Node, NewNode);
     return;
   }
   }
@@ -797,7 +919,7 @@ bool RISCVDAGToDAGISel::SelectInlineAsmMemoryOperand(
 }
 
 bool RISCVDAGToDAGISel::SelectAddrFI(SDValue Addr, SDValue &Base) {
-  if (auto FIN = dyn_cast<FrameIndexSDNode>(Addr)) {
+  if (auto *FIN = dyn_cast<FrameIndexSDNode>(Addr)) {
     if (Addr.getValueType().isScalarInteger()) {
       Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), Subtarget->getXLenVT());
       return true;
@@ -815,6 +937,47 @@ bool RISCVDAGToDAGISel::SelectCapFI(SDValue Cap, SDValue &Base) {
     }
   }
   return false;
+}
+
+bool RISCVDAGToDAGISel::SelectBaseAddr(SDValue Addr, SDValue &Base) {
+  // If this is FrameIndex, select it directly. Otherwise just let it get
+  // selected to a register independently.
+  if (auto *FIN = dyn_cast<FrameIndexSDNode>(Addr))
+    Base = CurDAG->getTargetFrameIndex(FIN->getIndex(), Subtarget->getXLenVT());
+  else
+    Base = Addr;
+  return true;
+}
+
+bool RISCVDAGToDAGISel::selectShiftMask(SDValue N, unsigned ShiftWidth,
+                                        SDValue &ShAmt) {
+  // Shift instructions on RISCV only read the lower 5 or 6 bits of the shift
+  // amount. If there is an AND on the shift amount, we can bypass it if it
+  // doesn't affect any of those bits.
+  if (N.getOpcode() == ISD::AND && isa<ConstantSDNode>(N.getOperand(1))) {
+    const APInt &AndMask = N->getConstantOperandAPInt(1);
+
+    // Since the max shift amount is a power of 2 we can subtract 1 to make a
+    // mask that covers the bits needed to represent all shift amounts.
+    assert(isPowerOf2_32(ShiftWidth) && "Unexpected max shift amount!");
+    APInt ShMask(AndMask.getBitWidth(), ShiftWidth - 1);
+
+    if (ShMask.isSubsetOf(AndMask)) {
+      ShAmt = N.getOperand(0);
+      return true;
+    }
+
+    // SimplifyDemandedBits may have optimized the mask so try restoring any
+    // bits that are known zero.
+    KnownBits Known = CurDAG->computeKnownBits(N->getOperand(0));
+    if (ShMask.isSubsetOf(AndMask | Known.Zero)) {
+      ShAmt = N.getOperand(0);
+      return true;
+    }
+  }
+
+  ShAmt = N;
+  return true;
 }
 
 // Match (srl (and val, mask), imm) where the result would be a
@@ -836,93 +999,6 @@ bool RISCVDAGToDAGISel::MatchSRLIW(SDNode *N) const {
   uint64_t ShAmt = N->getConstantOperandVal(1);
   uint64_t Mask = And.getConstantOperandVal(1);
   return (Mask | maskTrailingOnes<uint64_t>(ShAmt)) == 0xffffffff;
-}
-
-// Check that it is a SLOI (Shift Left Ones Immediate). A PatFrag has already
-// determined it has the right structure:
-//
-//  (OR (SHL RS1, VC2), VC1)
-//
-// Check that VC1, the mask used to fill with ones, is compatible
-// with VC2, the shamt:
-//
-//  VC1 == maskTrailingOnes(VC2)
-//
-bool RISCVDAGToDAGISel::MatchSLOI(SDNode *N) const {
-  assert(N->getOpcode() == ISD::OR);
-  assert(N->getOperand(0).getOpcode() == ISD::SHL);
-  assert(isa<ConstantSDNode>(N->getOperand(1)));
-  assert(isa<ConstantSDNode>(N->getOperand(0).getOperand(1)));
-
-  SDValue Shl = N->getOperand(0);
-  if (Subtarget->is64Bit()) {
-    uint64_t VC1 = N->getConstantOperandVal(1);
-    uint64_t VC2 = Shl.getConstantOperandVal(1);
-    return VC1 == maskTrailingOnes<uint64_t>(VC2);
-  }
-
-  uint32_t VC1 = N->getConstantOperandVal(1);
-  uint32_t VC2 = Shl.getConstantOperandVal(1);
-  return VC1 == maskTrailingOnes<uint32_t>(VC2);
-}
-
-// Check that it is a SROI (Shift Right Ones Immediate). A PatFrag has already
-// determined it has the right structure:
-//
-//  (OR (SRL RS1, VC2), VC1)
-//
-// Check that VC1, the mask used to fill with ones, is compatible
-// with VC2, the shamt:
-//
-//  VC1 == maskLeadingOnes(VC2)
-//
-bool RISCVDAGToDAGISel::MatchSROI(SDNode *N) const {
-  assert(N->getOpcode() == ISD::OR);
-  assert(N->getOperand(0).getOpcode() == ISD::SRL);
-  assert(isa<ConstantSDNode>(N->getOperand(1)));
-  assert(isa<ConstantSDNode>(N->getOperand(0).getOperand(1)));
-
-  SDValue Srl = N->getOperand(0);
-  if (Subtarget->is64Bit()) {
-    uint64_t VC1 = N->getConstantOperandVal(1);
-    uint64_t VC2 = Srl.getConstantOperandVal(1);
-    return VC1 == maskLeadingOnes<uint64_t>(VC2);
-  }
-
-  uint32_t VC1 = N->getConstantOperandVal(1);
-  uint32_t VC2 = Srl.getConstantOperandVal(1);
-  return VC1 == maskLeadingOnes<uint32_t>(VC2);
-}
-
-// Check that it is a SROIW (Shift Right Ones Immediate i32 on RV64). A PatFrag
-// has already determined it has the right structure:
-//
-//  (OR (SRL RS1, VC2), VC1)
-//
-// and then we check that VC1, the mask used to fill with ones, is compatible
-// with VC2, the shamt:
-//
-//  VC2 < 32
-//  VC1 == maskTrailingZeros<uint64_t>(32 - VC2)
-//
-bool RISCVDAGToDAGISel::MatchSROIW(SDNode *N) const {
-  assert(N->getOpcode() == ISD::OR);
-  assert(N->getOperand(0).getOpcode() == ISD::SRL);
-  assert(isa<ConstantSDNode>(N->getOperand(1)));
-  assert(isa<ConstantSDNode>(N->getOperand(0).getOperand(1)));
-
-  // The IsRV64 predicate is checked after PatFrag predicates so we can get
-  // here even on RV32.
-  if (!Subtarget->is64Bit())
-    return false;
-
-  SDValue Srl = N->getOperand(0);
-  uint64_t VC1 = N->getConstantOperandVal(1);
-  uint64_t VC2 = Srl.getConstantOperandVal(1);
-
-  // Immediate range should be enforced by uimm5 predicate.
-  assert(VC2 < 32 && "Unexpected immediate");
-  return VC1 == maskTrailingZeros<uint64_t>(32 - VC2);
 }
 
 // Check that it is a SLLIUW (Shift Logical Left Immediate Unsigned i32
@@ -960,9 +1036,27 @@ bool RISCVDAGToDAGISel::MatchSLLIUW(SDNode *N) const {
   return (VC1 >> VC2) == UINT64_C(0xFFFFFFFF);
 }
 
+// X0 has special meaning for vsetvl/vsetvli.
+//  rd | rs1 |   AVL value | Effect on vl
+//--------------------------------------------------------------
+// !X0 |  X0 |       VLMAX | Set vl to VLMAX
+//  X0 |  X0 | Value in vl | Keep current vl, just change vtype.
+bool RISCVDAGToDAGISel::selectVLOp(SDValue N, SDValue &VL) {
+  // If the VL value is a constant 0, manually select it to an ADDI with 0
+  // immediate to prevent the default selection path from matching it to X0.
+  auto *C = dyn_cast<ConstantSDNode>(N);
+  if (C && C->isNullValue())
+    VL = SDValue(selectImm(CurDAG, SDLoc(N), 0, Subtarget->getXLenVT()), 0);
+  else
+    VL = N;
+
+  return true;
+}
+
 bool RISCVDAGToDAGISel::selectVSplat(SDValue N, SDValue &SplatVal) {
   if (N.getOpcode() != ISD::SPLAT_VECTOR &&
-      N.getOpcode() != RISCVISD::SPLAT_VECTOR_I64)
+      N.getOpcode() != RISCVISD::SPLAT_VECTOR_I64 &&
+      N.getOpcode() != RISCVISD::VMV_V_X_VL)
     return false;
   SplatVal = N.getOperand(0);
   return true;
@@ -970,7 +1064,8 @@ bool RISCVDAGToDAGISel::selectVSplat(SDValue N, SDValue &SplatVal) {
 
 bool RISCVDAGToDAGISel::selectVSplatSimm5(SDValue N, SDValue &SplatVal) {
   if ((N.getOpcode() != ISD::SPLAT_VECTOR &&
-       N.getOpcode() != RISCVISD::SPLAT_VECTOR_I64) ||
+       N.getOpcode() != RISCVISD::SPLAT_VECTOR_I64 &&
+       N.getOpcode() != RISCVISD::VMV_V_X_VL) ||
       !isa<ConstantSDNode>(N.getOperand(0)))
     return false;
 
@@ -983,10 +1078,10 @@ bool RISCVDAGToDAGISel::selectVSplatSimm5(SDValue N, SDValue &SplatVal) {
   // any zero-extended immediate.
   // For example, we wish to match (i8 -1) -> (XLenVT 255) as a simm5 by first
   // sign-extending to (XLenVT -1).
-  auto XLenVT = Subtarget->getXLenVT();
+  MVT XLenVT = Subtarget->getXLenVT();
   assert(XLenVT == N.getOperand(0).getSimpleValueType() &&
          "Unexpected splat operand type");
-  auto EltVT = N.getValueType().getVectorElementType();
+  MVT EltVT = N.getSimpleValueType().getVectorElementType();
   if (EltVT.bitsLT(XLenVT)) {
     SplatImm = SignExtend64(SplatImm, EltVT.getSizeInBits());
   }
@@ -1000,7 +1095,8 @@ bool RISCVDAGToDAGISel::selectVSplatSimm5(SDValue N, SDValue &SplatVal) {
 
 bool RISCVDAGToDAGISel::selectVSplatUimm5(SDValue N, SDValue &SplatVal) {
   if ((N.getOpcode() != ISD::SPLAT_VECTOR &&
-       N.getOpcode() != RISCVISD::SPLAT_VECTOR_I64) ||
+       N.getOpcode() != RISCVISD::SPLAT_VECTOR_I64 &&
+       N.getOpcode() != RISCVISD::VMV_V_X_VL) ||
       !isa<ConstantSDNode>(N.getOperand(0)))
     return false;
 
@@ -1013,6 +1109,36 @@ bool RISCVDAGToDAGISel::selectVSplatUimm5(SDValue N, SDValue &SplatVal) {
       CurDAG->getTargetConstant(SplatImm, SDLoc(N), Subtarget->getXLenVT());
 
   return true;
+}
+
+bool RISCVDAGToDAGISel::selectRVVSimm5(SDValue N, unsigned Width,
+                                       SDValue &Imm) {
+  if (auto *C = dyn_cast<ConstantSDNode>(N)) {
+    int64_t ImmVal = SignExtend64(C->getSExtValue(), Width);
+
+    if (!isInt<5>(ImmVal))
+      return false;
+
+    Imm = CurDAG->getTargetConstant(ImmVal, SDLoc(N), Subtarget->getXLenVT());
+    return true;
+  }
+
+  return false;
+}
+
+bool RISCVDAGToDAGISel::selectRVVUimm5(SDValue N, unsigned Width,
+                                       SDValue &Imm) {
+  if (auto *C = dyn_cast<ConstantSDNode>(N)) {
+    int64_t ImmVal = C->getSExtValue();
+
+    if (!isUInt<5>(ImmVal))
+      return false;
+
+    Imm = CurDAG->getTargetConstant(ImmVal, SDLoc(N), Subtarget->getXLenVT());
+    return true;
+  }
+
+  return false;
 }
 
 // Merge an ADDI or CIncOffsetImm into the offset of a load/store instruction

@@ -221,6 +221,34 @@ CompileFlags:
                   DiagMessage("Use of undeclared identifier 'BAR'"))));
 }
 
+TEST_F(LSPTest, ModulesTest) {
+  class MathModule final : public Module {
+    void initializeLSP(LSPBinder &Bind, const llvm::json::Object &ClientCaps,
+                       llvm::json::Object &ServerCaps) override {
+      Bind.notification("add", this, &MathModule::add);
+      Bind.method("get", this, &MathModule::get);
+    }
+
+    int Value = 0;
+
+  public:
+    void add(const int &X) { Value += X; }
+    void get(const std::nullptr_t &, Callback<int> Reply) {
+      scheduler().runQuick(
+          "get", "",
+          [Reply(std::move(Reply)), Value(Value)]() mutable { Reply(Value); });
+    }
+  };
+  ModuleSet Mods;
+  Mods.add(std::make_unique<MathModule>());
+  Opts.Modules = &Mods;
+
+  auto &Client = start();
+  Client.notify("add", 2);
+  Mods.get<MathModule>()->add(8);
+  EXPECT_EQ(10, Client.call("get", nullptr).takeValue());
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

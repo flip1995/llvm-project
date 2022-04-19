@@ -60,6 +60,7 @@ LLVM_YAML_STRONG_TYPEDEF(uint64_t, ELF_SHF)
 LLVM_YAML_STRONG_TYPEDEF(uint16_t, ELF_SHN)
 LLVM_YAML_STRONG_TYPEDEF(uint8_t, ELF_STB)
 LLVM_YAML_STRONG_TYPEDEF(uint8_t, ELF_STT)
+LLVM_YAML_STRONG_TYPEDEF(uint32_t, ELF_NT)
 
 LLVM_YAML_STRONG_TYPEDEF(uint8_t, MIPS_AFL_REG)
 LLVM_YAML_STRONG_TYPEDEF(uint8_t, MIPS_ABI_FP)
@@ -155,9 +156,9 @@ struct DynamicEntry {
 
 struct BBAddrMapEntry {
   struct BBEntry {
-    llvm::yaml::Hex32 AddressOffset;
-    llvm::yaml::Hex32 Size;
-    llvm::yaml::Hex32 Metadata;
+    llvm::yaml::Hex64 AddressOffset;
+    llvm::yaml::Hex64 Size;
+    llvm::yaml::Hex64 Metadata;
   };
   llvm::yaml::Hex64 Address;
   Optional<std::vector<BBEntry>> BBEntries;
@@ -171,7 +172,7 @@ struct StackSizeEntry {
 struct NoteEntry {
   StringRef Name;
   yaml::BinaryRef Desc;
-  llvm::yaml::Hex32 Type;
+  ELF_NT Type;
 };
 
 struct Chunk {
@@ -296,12 +297,14 @@ struct SectionHeaderTable : Chunk {
   Optional<bool> NoHeaders;
 
   size_t getNumHeaders(size_t SectionsNum) const {
-    if (IsImplicit)
+    if (IsImplicit || isDefault())
       return SectionsNum;
     if (NoHeaders)
       return (*NoHeaders) ? 0 : SectionsNum;
     return (Sections ? Sections->size() : 0) + /*Null section*/ 1;
   }
+
+  bool isDefault() const { return !Sections && !Excluded && !NoHeaders; }
 
   static constexpr StringRef TypeStr = "SectionHeaderTable";
 };
@@ -764,6 +767,10 @@ struct ScalarEnumerationTraits<ELFYAML::ELF_ET> {
 
 template <> struct ScalarEnumerationTraits<ELFYAML::ELF_PT> {
   static void enumeration(IO &IO, ELFYAML::ELF_PT &Value);
+};
+
+template <> struct ScalarEnumerationTraits<ELFYAML::ELF_NT> {
+  static void enumeration(IO &IO, ELFYAML::ELF_NT &Value);
 };
 
 template <>
