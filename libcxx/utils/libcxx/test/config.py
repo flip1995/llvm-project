@@ -82,7 +82,6 @@ class Configuration(object):
         # increase timeouts when running on a slow test host (such as QEMU full
         # sytem emulation for a different architecture)
         self.slow_test_host = self.get_lit_bool('slow_test_host', default=False)
-        self.use_system_cxx_lib = self.get_lit_bool('use_system_cxx_lib', False)
         self.use_clang_verify = False
         self.default_cxx_abi_library = None
 
@@ -145,7 +144,6 @@ class Configuration(object):
         self.configure_link_flags()
         self.configure_env()
         self.configure_debug_mode()
-        self.configure_warnings()
         self.configure_sanitizer()
         self.configure_coverage()
         self.configure_modules()
@@ -259,18 +257,6 @@ class Configuration(object):
             for f in additional_features.split(','):
                 self.config.available_features.add(f.strip())
 
-        # Write an "available feature" that combines the triple when
-        # use_system_cxx_lib is enabled. This is so that we can easily write
-        # XFAIL markers for tests that are known to fail with versions of
-        # libc++ as were shipped with a particular triple.
-        if self.use_system_cxx_lib:
-            (arch, vendor, platform) = self.config.target_triple.split('-', 2)
-            (sysname, version) = re.match(r'([^0-9]+)([0-9\.]*)', platform).groups()
-
-            self.config.available_features.add('with_system_cxx_lib={}-{}-{}{}'.format(arch, vendor, sysname, version))
-            self.config.available_features.add('with_system_cxx_lib={}{}'.format(sysname, version))
-            self.config.available_features.add('with_system_cxx_lib={}'.format(sysname))
-
         if self.target_info.is_windows():
             if self.cxx_stdlib_under_test == 'libc++':
                 # LIBCXX-WINDOWS-FIXME is the feature name used to XFAIL the
@@ -350,10 +336,11 @@ class Configuration(object):
         support_path = os.path.join(self.libcxx_src_root, 'test/support')
         self.cxx.compile_flags += ['-I' + support_path]
 
-        # If we're testing the upstream LLVM libc++, disable availability markup,
-        # which is not relevant for non-shipped flavors of libc++.
-        if not self.use_system_cxx_lib:
-            self.cxx.compile_flags += ['-D_LIBCPP_DISABLE_AVAILABILITY']
+        # On GCC, the libc++ headers cause errors due to throw() decorators
+        # on operator new clashing with those from the test suite, so we
+        # don't enable warnings in system headers on GCC.
+        if self.cxx.type != 'gcc':
+            self.cxx.compile_flags += ['-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER']
 
         # Add includes for the PSTL headers
         pstl_src_root = self.get_lit_conf('pstl_src_root')
@@ -556,41 +543,6 @@ class Configuration(object):
                                   % debug_level)
         self.cxx.compile_flags += ['-D_LIBCPP_DEBUG=%s' % debug_level]
 
-    def configure_warnings(self):
-        # Turn on warnings by default for Clang based compilers
-        default_enable_warnings = self.cxx.type in ['clang', 'apple-clang']
-        enable_warnings = self.get_lit_bool('enable_warnings',
-                                            default_enable_warnings)
-        self.cxx.useWarnings(enable_warnings)
-        self.cxx.warning_flags += ['-Werror', '-Wall', '-Wextra']
-        # On GCC, the libc++ headers cause errors due to throw() decorators
-        # on operator new clashing with those from the test suite, so we
-        # don't enable warnings in system headers on GCC.
-        if self.cxx.type != 'gcc':
-            self.cxx.warning_flags += ['-D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER']
-        self.cxx.addWarningFlagIfSupported('-Wshadow')
-        self.cxx.addWarningFlagIfSupported('-Wno-unused-command-line-argument')
-        self.cxx.addWarningFlagIfSupported('-Wno-attributes')
-        self.cxx.addWarningFlagIfSupported('-Wno-pessimizing-move')
-        self.cxx.addWarningFlagIfSupported('-Wno-c++11-extensions')
-        self.cxx.addWarningFlagIfSupported('-Wno-user-defined-literals')
-        self.cxx.addWarningFlagIfSupported('-Wno-noexcept-type')
-        self.cxx.addWarningFlagIfSupported('-Wno-aligned-allocation-unavailable')
-        self.cxx.addWarningFlagIfSupported('-Wno-atomic-alignment')
-
-        # GCC warns about places where we might want to add sized allocation/deallocation
-        # functions, but we know better what we're doing/testing in the test suite.
-        self.cxx.addWarningFlagIfSupported('-Wno-sized-deallocation')
-
-        # These warnings should be enabled in order to support the MSVC
-        # team using the test suite; They enable the warnings below and
-        # expect the test suite to be clean.
-        self.cxx.addWarningFlagIfSupported('-Wsign-compare')
-        self.cxx.addWarningFlagIfSupported('-Wunused-variable')
-        self.cxx.addWarningFlagIfSupported('-Wunused-parameter')
-        self.cxx.addWarningFlagIfSupported('-Wunreachable-code')
-        self.cxx.addWarningFlagIfSupported('-Wno-unused-local-typedef')
-
     def configure_sanitizer(self):
         san = self.get_lit_conf('use_sanitizer', '').strip()
         if san:
@@ -697,6 +649,7 @@ class Configuration(object):
         sub.append(('%{link_flags}',    ' '.join(map(pipes.quote, self.cxx.link_flags))))
         self.lit_config.warning('self.cxx.link_libcxxabi_flag=%s' % self.cxx.link_libcxxabi_flag)
         sub.append(('%{link_libcxxabi}', pipes.quote(self.cxx.link_libcxxabi_flag)))
+
         codesign_ident = self.get_lit_conf('llvm_codesign_identity', '')
         env_vars = ' '.join('%s=%s' % (k, pipes.quote(v)) for (k, v) in self.exec_env.items())
         exec_args = [
