@@ -311,6 +311,16 @@ void MCWinCOFFStreamer::emitLocalCommonSymbol(MCSymbol *S, uint64_t Size,
   PopSection();
 }
 
+void MCWinCOFFStreamer::emitWeakReference(MCSymbol *AliasS,
+                                          const MCSymbol *Symbol) {
+  auto *Alias = cast<MCSymbolCOFF>(AliasS);
+  emitSymbolAttribute(Alias, MCSA_Weak);
+
+  getAssembler().registerSymbol(*Symbol);
+  Alias->setVariableValue(MCSymbolRefExpr::create(
+      Symbol, MCSymbolRefExpr::VK_WEAKREF, getContext()));
+}
+
 void MCWinCOFFStreamer::emitZerofill(MCSection *Section, MCSymbol *Symbol,
                                      uint64_t Size, unsigned ByteAlignment,
                                      TailPaddingAmount TailPadding, SMLoc Loc) {
@@ -344,10 +354,8 @@ void MCWinCOFFStreamer::finalizeCGProfileEntry(const MCSymbolRefExpr *&SRE) {
   const MCSymbol *S = &SRE->getSymbol();
   bool Created;
   getAssembler().registerSymbol(*S, &Created);
-  if (Created) {
-    cast<MCSymbolCOFF>(S)->setIsWeakExternal();
+  if (Created)
     cast<MCSymbolCOFF>(S)->setExternal(true);
-  }
 }
 
 void MCWinCOFFStreamer::finalizeCGProfile() {

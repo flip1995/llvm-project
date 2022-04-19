@@ -1084,23 +1084,6 @@ ELFDumper<ELFT>::getRelocationTarget(const Relocation<ELFT> &R,
   if (!Sym)
     return RelSymbol<ELFT>(nullptr, "");
 
-  // The st_name field of a STT_SECTION is usually 0 (empty string).
-  // This code block returns the section name.
-  if (Sym->getType() == ELF::STT_SECTION) {
-    Expected<const Elf_Shdr *> SecOrErr =
-        Obj.getSection(*Sym, SymTab, ShndxTable);
-    if (!SecOrErr)
-      return SecOrErr.takeError();
-    // A section symbol describes the section at index 0.
-    if (*SecOrErr == nullptr)
-      return RelSymbol<ELFT>(Sym, "");
-
-    Expected<StringRef> NameOrErr = Obj.getSectionName(**SecOrErr);
-    if (!NameOrErr)
-      return NameOrErr.takeError();
-    return RelSymbol<ELFT>(Sym, NameOrErr->str());
-  }
-
   Expected<StringRef> StrTableOrErr = Obj.getStringTableForSymtab(*SymTab);
   if (!StrTableOrErr)
     return StrTableOrErr.takeError();
@@ -1108,7 +1091,7 @@ ELFDumper<ELFT>::getRelocationTarget(const Relocation<ELFT> &R,
   const Elf_Sym *FirstSym =
       cantFail(Obj.template getEntry<Elf_Sym>(*SymTab, 0));
   std::string SymbolName = getFullSymbolName(
-      *Sym, FirstSym - Sym, *StrTableOrErr, SymTab->sh_type == SHT_DYNSYM);
+      *Sym, Sym - FirstSym, *StrTableOrErr, SymTab->sh_type == SHT_DYNSYM);
   return RelSymbol<ELFT>(Sym, SymbolName);
 }
 
@@ -2959,7 +2942,6 @@ public:
   uint64_t getGotAddress(const Entry * E) const;
   int64_t getGotOffset(const Entry * E) const;
   const Elf_Sym *getGotSym(const Entry *E) const;
-  Elf_Sym_Range getGotDynSyms() const { return GotDynSyms; }
 
   uint64_t getPltAddress(const Entry * E) const;
   const Elf_Sym *getPltSym(const Entry *E) const;
@@ -5698,7 +5680,7 @@ template <class ELFT> void GNUStyle<ELFT>::printNotes() {
       PrintHeader(expectedToOptional(this->Obj.getSectionName(S)), S.sh_offset,
                   S.sh_size);
       Error Err = Error::success();
-      for (const Elf_Note &Note : this->Obj.notes(S, Err))
+      for (const Elf_Note Note : this->Obj.notes(S, Err))
         ProcessNote(Note);
       if (Err)
         reportError(std::move(Err), this->FileName);
@@ -5717,7 +5699,7 @@ template <class ELFT> void GNUStyle<ELFT>::printNotes() {
         continue;
       PrintHeader(/*SecName=*/None, P.p_offset, P.p_filesz);
       Error Err = Error::success();
-      for (const Elf_Note &Note : this->Obj.notes(P, Err))
+      for (const Elf_Note Note : this->Obj.notes(P, Err))
         ProcessNote(Note);
       if (Err)
         reportError(std::move(Err), this->FileName);
@@ -6205,7 +6187,7 @@ void GNUStyle<ELFT>::printMipsGOT(const MipsGOTParser<ELFT> &Parser) {
       const Elf_Sym &Sym = *Parser.getGotSym(&E);
       const Elf_Sym &FirstSym = this->dumper().dynamic_symbols()[0];
       std::string SymName = this->dumper().getFullSymbolName(
-          Sym, &FirstSym - &Sym, this->dumper().getDynamicStringTable(), false);
+          Sym, &Sym - &FirstSym, this->dumper().getDynamicStringTable(), false);
 
       OS.PadToColumn(2);
       OS << to_string(format_hex_no_prefix(Parser.getGotAddress(&E), 8 + Bias));
@@ -6260,7 +6242,7 @@ void GNUStyle<ELFT>::printMipsPLT(const MipsGOTParser<ELFT> &Parser) {
           *cantFail(this->Obj.template getEntry<const Elf_Sym>(
               *Parser.getPltSymTable(), 0));
       std::string SymName = this->dumper().getFullSymbolName(
-          Sym, &FirstSym - &Sym, this->dumper().getDynamicStringTable(), false);
+          Sym, &Sym - &FirstSym, this->dumper().getDynamicStringTable(), false);
 
       OS.PadToColumn(2);
       OS << to_string(format_hex_no_prefix(Parser.getPltAddress(&E), 8 + Bias));
@@ -7128,11 +7110,12 @@ void LLVMStyle<ELFT>::printMipsGOT(const MipsGOTParser<ELFT> &Parser) {
       const Elf_Sym &Sym = *Parser.getGotSym(&E);
       W.printHex("Value", Sym.st_value);
       W.printEnum("Type", Sym.getType(), makeArrayRef(ElfSymbolTypes));
-      printSymbolSection(Sym, &Sym - this->dumper().dynamic_symbols().begin());
+
+      const unsigned SymIndex = &Sym - this->dumper().dynamic_symbols().begin();
+      printSymbolSection(Sym, SymIndex);
 
       std::string SymName = this->dumper().getFullSymbolName(
-          Sym, &Sym - &Parser.getGotDynSyms()[0],
-          this->dumper().getDynamicStringTable(), true);
+          Sym, SymIndex, this->dumper().getDynamicStringTable(), true);
       W.printNumber("Name", SymName, Sym.st_name);
     }
   }
