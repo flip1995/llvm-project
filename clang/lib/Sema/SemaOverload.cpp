@@ -1856,6 +1856,10 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
              (From->EvaluateKnownConstInt(S.getASTContext()) == 0)) {
     SCS.Second = ICK_Zero_Queue_Conversion;
     FromType = ToType;
+  } else if (ToType->isSamplerT() &&
+             From->isIntegerConstantExpr(S.getASTContext())) {
+    SCS.Second = ICK_Compatible_Conversion;
+    FromType = ToType;
   } else {
     // No second conversion required.
     SCS.Second = ICK_Identity;
@@ -1966,7 +1970,7 @@ IsTransparentUnionStandardConversion(Sema &S, Expr* From,
   // It's compatible if the expression matches any of the fields.
   for (const auto *it : UD->fields()) {
     if (IsStandardConversion(S, From, it->getType(), InOverloadResolution, SCS,
-                             CStyle, /*ObjCWritebackConversion=*/false)) {
+                             CStyle, /*AllowObjCWritebackConversion=*/false)) {
       ToType = it->getType();
       return true;
     }
@@ -4934,13 +4938,11 @@ TryListConversion(Sema &S, InitListExpr *From, QualType ToType,
     // Type is an aggregate, argument is an init list. At this point it comes
     // down to checking whether the initialization works.
     // FIXME: Find out whether this parameter is consumed or not.
-    // FIXME: Expose SemaInit's aggregate initialization code so that we don't
-    // need to call into the initialization code here; overload resolution
-    // should not be doing that.
     InitializedEntity Entity =
         InitializedEntity::InitializeParameter(S.Context, ToType,
                                                /*Consumed=*/false);
-    if (S.CanPerformCopyInitialization(Entity, From)) {
+    if (S.CanPerformAggregateInitializationForOverloadResolution(Entity,
+                                                                 From)) {
       Result.setUserDefined();
       Result.UserDefined.Before.setAsIdentityConversion();
       // Initializer lists don't have a type.
@@ -5104,12 +5106,10 @@ TryObjectArgumentInitialization(Sema &S, SourceLocation Loc, QualType FromType,
   QualType ClassType = S.Context.getTypeDeclType(ActingContext);
   // [class.dtor]p2: A destructor can be invoked for a const, volatile or
   //                 const volatile object.
-  Qualifiers Quals;
+  Qualifiers Quals = Method->getMethodQualifiers();
   if (isa<CXXDestructorDecl>(Method)) {
     Quals.addConst();
     Quals.addVolatile();
-  } else {
-    Quals = Method->getMethodQualifiers();
   }
 
   QualType ImplicitParamType = S.Context.getQualifiedType(ClassType, Quals);
@@ -5439,7 +5439,7 @@ static ExprResult CheckConvertedConstantExpression(Sema &S, Expr *From,
           : TryCopyInitialization(S, From, T,
                                   /*SuppressUserConversions=*/false,
                                   /*InOverloadResolution=*/false,
-                                  /*AllowObjcWritebackConversion=*/false,
+                                  /*AllowObjCWritebackConversion=*/false,
                                   /*AllowExplicit=*/false);
   StandardConversionSequence *SCS = nullptr;
   switch (ICS.getKind()) {
@@ -5530,7 +5530,7 @@ static ExprResult CheckConvertedConstantExpression(Sema &S, Expr *From,
 
     if (Notes.empty()) {
       // It's a constant expression.
-      return ConstantExpr::Create(S.Context, Result.get());
+      return ConstantExpr::Create(S.Context, Result.get(), Value);
     }
   }
 
@@ -6116,6 +6116,15 @@ void Sema::AddOverloadCandidate(
         Candidate.FailureKind = ovl_fail_inhctor_slice;
         return;
       }
+    }
+
+    // Check that the constructor is capable of constructing an object in the
+    // destination address space.
+    if (!Qualifiers::isAddressSpaceSupersetOf(
+            Constructor->getMethodQualifiers().getAddressSpace(),
+            CandidateSet.getDestAS())) {
+      Candidate.Viable = false;
+      Candidate.FailureKind = ovl_fail_object_addrspace_mismatch;
     }
   }
 
@@ -7057,10 +7066,9 @@ void Sema::AddConversionCandidate(
   // allocator).
   QualType CallResultType = ConversionType.getNonLValueExprType(Context);
 
-  llvm::AlignedCharArray<alignof(CallExpr), sizeof(CallExpr) + sizeof(Stmt *)>
-      Buffer;
+  alignas(CallExpr) char Buffer[sizeof(CallExpr) + sizeof(Stmt *)];
   CallExpr *TheTemporaryCall = CallExpr::CreateTemporary(
-      Buffer.buffer, &ConversionFn, CallResultType, VK, From->getBeginLoc());
+      Buffer, &ConversionFn, CallResultType, VK, From->getBeginLoc());
 
   ImplicitConversionSequence ICS =
       TryCopyInitialization(*this, TheTemporaryCall, ToType,
@@ -7326,7 +7334,7 @@ void Sema::AddMemberOperatorCandidates(OverloadedOperatorKind Op,
          ++Oper)
       AddMethodCandidate(Oper.getPair(), Args[0]->getType(),
                          Args[0]->Classify(Context), Args.slice(1),
-                         CandidateSet, /*SuppressUserConversions=*/false);
+                         CandidateSet, /*SuppressUserConversion=*/false);
   }
 }
 
@@ -7781,7 +7789,7 @@ class BuiltinOperatorOverloadBuilder {
   static constexpr int ArithmeticTypesCap = 24;
   SmallVector<CanQualType, ArithmeticTypesCap> ArithmeticTypes;
 
-  // Define some indices used to iterate over the arithemetic types in
+  // Define some indices used to iterate over the arithmetic types in
   // ArithmeticTypes.  The "promoted arithmetic types" are the arithmetic
   // types are that preserved by promotion (C++ [over.built]p2).
   unsigned FirstIntegralType,
@@ -8441,7 +8449,7 @@ public:
         isEqualOp ? *Ptr : S.Context.getPointerDiffType(),
       };
       S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                            /*IsAssigmentOperator=*/ isEqualOp);
+                            /*IsAssignmentOperator=*/ isEqualOp);
 
       bool NeedVolatile = !(*Ptr).isVolatileQualified() &&
                           VisibleTypeConversionsQuals.hasVolatile();
@@ -8450,7 +8458,7 @@ public:
         ParamTypes[0] =
           S.Context.getLValueReferenceType(S.Context.getVolatileType(*Ptr));
         S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                              /*IsAssigmentOperator=*/isEqualOp);
+                              /*IsAssignmentOperator=*/isEqualOp);
       }
 
       if (!(*Ptr).isRestrictQualified() &&
@@ -8459,7 +8467,7 @@ public:
         ParamTypes[0]
           = S.Context.getLValueReferenceType(S.Context.getRestrictType(*Ptr));
         S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                              /*IsAssigmentOperator=*/isEqualOp);
+                              /*IsAssignmentOperator=*/isEqualOp);
 
         if (NeedVolatile) {
           // volatile restrict version
@@ -8469,7 +8477,7 @@ public:
                                               (Qualifiers::Volatile |
                                                Qualifiers::Restrict)));
           S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                                /*IsAssigmentOperator=*/isEqualOp);
+                                /*IsAssignmentOperator=*/isEqualOp);
         }
       }
     }
@@ -8490,7 +8498,7 @@ public:
 
         // non-volatile version
         S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                              /*IsAssigmentOperator=*/true);
+                              /*IsAssignmentOperator=*/true);
 
         bool NeedVolatile = !(*Ptr).isVolatileQualified() &&
                            VisibleTypeConversionsQuals.hasVolatile();
@@ -8499,7 +8507,7 @@ public:
           ParamTypes[0] =
             S.Context.getLValueReferenceType(S.Context.getVolatileType(*Ptr));
           S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                                /*IsAssigmentOperator=*/true);
+                                /*IsAssignmentOperator=*/true);
         }
 
         if (!(*Ptr).isRestrictQualified() &&
@@ -8508,7 +8516,7 @@ public:
           ParamTypes[0]
             = S.Context.getLValueReferenceType(S.Context.getRestrictType(*Ptr));
           S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                                /*IsAssigmentOperator=*/true);
+                                /*IsAssignmentOperator=*/true);
 
           if (NeedVolatile) {
             // volatile restrict version
@@ -8518,7 +8526,7 @@ public:
                                                 (Qualifiers::Volatile |
                                                  Qualifiers::Restrict)));
             S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                                  /*IsAssigmentOperator=*/true);
+                                  /*IsAssignmentOperator=*/true);
           }
         }
       }
@@ -8551,14 +8559,14 @@ public:
         // Add this built-in operator as a candidate (VQ is empty).
         ParamTypes[0] = S.Context.getLValueReferenceType(LeftBaseTy);
         S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                              /*IsAssigmentOperator=*/isEqualOp);
+                              /*IsAssignmentOperator=*/isEqualOp);
 
         // Add this built-in operator as a candidate (VQ is 'volatile').
         if (VisibleTypeConversionsQuals.hasVolatile()) {
           ParamTypes[0] = S.Context.getVolatileType(LeftBaseTy);
           ParamTypes[0] = S.Context.getLValueReferenceType(ParamTypes[0]);
           S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                                /*IsAssigmentOperator=*/isEqualOp);
+                                /*IsAssignmentOperator=*/isEqualOp);
         }
       }
     }
@@ -8577,14 +8585,14 @@ public:
         // Add this built-in operator as a candidate (VQ is empty).
         ParamTypes[0] = S.Context.getLValueReferenceType(*Vec1);
         S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                              /*IsAssigmentOperator=*/isEqualOp);
+                              /*IsAssignmentOperator=*/isEqualOp);
 
         // Add this built-in operator as a candidate (VQ is 'volatile').
         if (VisibleTypeConversionsQuals.hasVolatile()) {
           ParamTypes[0] = S.Context.getVolatileType(*Vec1);
           ParamTypes[0] = S.Context.getLValueReferenceType(ParamTypes[0]);
           S.AddBuiltinCandidate(ParamTypes, Args, CandidateSet,
-                                /*IsAssigmentOperator=*/isEqualOp);
+                                /*IsAssignmentOperator=*/isEqualOp);
         }
       }
     }
@@ -9033,7 +9041,7 @@ Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
         continue;
 
       AddOverloadCandidate(FD, FoundDecl, Args, CandidateSet,
-                           /*SupressUserConversions=*/false, PartialOverloading,
+                           /*SuppressUserConversions=*/false, PartialOverloading,
                            /*AllowExplicit*/ true,
                            /*AllowExplicitConversions*/ false,
                            ADLCallKind::UsesADL);
@@ -10424,9 +10432,12 @@ static void DiagnoseOpenCLExtensionDisabled(Sema &S, OverloadCandidate *Cand) {
 /// It would be great to be able to express per-candidate problems
 /// more richly for those diagnostic clients that cared, but we'd
 /// still have to be just as careful with the default diagnostics.
+/// \param CtorDestAS Addr space of object being constructed (for ctor
+/// candidates only).
 static void NoteFunctionCandidate(Sema &S, OverloadCandidate *Cand,
                                   unsigned NumArgs,
-                                  bool TakingCandidateAddress) {
+                                  bool TakingCandidateAddress,
+                                  LangAS CtorDestAS = LangAS::Default) {
   FunctionDecl *Fn = Cand->Function;
 
   // Note deleted candidates, but only if they're viable.
@@ -10460,6 +10471,16 @@ static void NoteFunctionCandidate(Sema &S, OverloadCandidate *Cand,
   case ovl_fail_illegal_constructor: {
     S.Diag(Fn->getLocation(), diag::note_ovl_candidate_illegal_constructor)
       << (Fn->getPrimaryTemplate() ? 1 : 0);
+    MaybeEmitInheritedConstructorNote(S, Cand->FoundDecl);
+    return;
+  }
+
+  case ovl_fail_object_addrspace_mismatch: {
+    Qualifiers QualsForPrinting;
+    QualsForPrinting.setAddressSpace(CtorDestAS);
+    S.Diag(Fn->getLocation(),
+           diag::note_ovl_candidate_illegal_constructor_adrspace_mismatch)
+        << QualsForPrinting;
     MaybeEmitInheritedConstructorNote(S, Cand->FoundDecl);
     return;
   }
@@ -10558,12 +10579,12 @@ static void NoteBuiltinOperatorCandidate(Sema &S, StringRef Opc,
   TypeStr += Cand->BuiltinParamTypes[0].getAsString();
   if (Cand->Conversions.size() == 1) {
     TypeStr += ")";
-    S.Diag(OpLoc, diag::note_ovl_builtin_unary_candidate) << TypeStr;
+    S.Diag(OpLoc, diag::note_ovl_builtin_candidate) << TypeStr;
   } else {
     TypeStr += ", ";
     TypeStr += Cand->BuiltinParamTypes[1].getAsString();
     TypeStr += ")";
-    S.Diag(OpLoc, diag::note_ovl_builtin_binary_candidate) << TypeStr;
+    S.Diag(OpLoc, diag::note_ovl_builtin_candidate) << TypeStr;
   }
 }
 
@@ -10894,7 +10915,7 @@ void OverloadCandidateSet::NoteCandidates(Sema &S, ArrayRef<Expr *> Args,
 
     if (Cand->Function)
       NoteFunctionCandidate(S, Cand, Args.size(),
-                            /*TakingCandidateAddress=*/false);
+                            /*TakingCandidateAddress=*/false, DestAS);
     else if (Cand->IsSurrogate)
       NoteSurrogateCandidate(S, Cand);
     else {
@@ -11773,7 +11794,7 @@ static void AddOverloadedCallCandidate(Sema &S,
       return;
 
     S.AddOverloadCandidate(Func, FoundDecl, Args, CandidateSet,
-                           /*SuppressUsedConversions=*/false,
+                           /*SuppressUserConversions=*/false,
                            PartialOverloading);
     return;
   }
@@ -11782,7 +11803,7 @@ static void AddOverloadedCallCandidate(Sema &S,
       = dyn_cast<FunctionTemplateDecl>(Callee)) {
     S.AddTemplateOverloadCandidate(FuncTemplate, FoundDecl,
                                    ExplicitTemplateArgs, Args, CandidateSet,
-                                   /*SuppressUsedConversions=*/false,
+                                   /*SuppressUserConversions=*/false,
                                    PartialOverloading);
     return;
   }
@@ -13076,7 +13097,7 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
         AddMethodTemplateCandidate(
             cast<FunctionTemplateDecl>(Func), I.getPair(), ActingDC,
             TemplateArgs, ObjectType, ObjectClassification, Args, CandidateSet,
-            /*SuppressUsedConversions=*/false);
+            /*SuppressUserConversions=*/false);
       }
     }
 
@@ -13272,7 +13293,7 @@ Sema::BuildCallToObjectOfClassType(Scope *S, Expr *Obj,
        Oper != OperEnd; ++Oper) {
     AddMethodCandidate(Oper.getPair(), Object.get()->getType(),
                        Object.get()->Classify(Context), Args, CandidateSet,
-                       /*SuppressUserConversions=*/false);
+                       /*SuppressUserConversion=*/false);
   }
 
   // C++ [over.call.object]p2:
@@ -13547,7 +13568,7 @@ Sema::BuildOverloadedArrowExpr(Scope *S, Expr *Base, SourceLocation OpLoc,
   for (LookupResult::iterator Oper = R.begin(), OperEnd = R.end();
        Oper != OperEnd; ++Oper) {
     AddMethodCandidate(Oper.getPair(), Base->getType(), Base->Classify(Context),
-                       None, CandidateSet, /*SuppressUserConversions=*/false);
+                       None, CandidateSet, /*SuppressUserConversion=*/false);
   }
 
   bool HadMultipleCandidates = (CandidateSet.size() > 1);
@@ -13929,7 +13950,7 @@ Expr *Sema::FixOverloadedFunctionReference(Expr *E, DeclAccessPair Found,
         if (MemExpr->getQualifier())
           Loc = MemExpr->getQualifierLoc().getBeginLoc();
         Base =
-            BuildCXXThisExpr(Loc, MemExpr->getBaseType(), /*isImplicit=*/true);
+            BuildCXXThisExpr(Loc, MemExpr->getBaseType(), /*IsImplicit=*/true);
       }
     } else
       Base = MemExpr->getBase();

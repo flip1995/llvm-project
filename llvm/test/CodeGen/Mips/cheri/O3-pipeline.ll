@@ -74,7 +74,7 @@
 ; CHECK-NEXT:      MIPS DAG->DAG Pattern Instruction Selection
 ; CHECK-NEXT:      Branch Probability Analysis
 ; CHECK-NEXT:      MIPS DAG->DAG Pattern Instruction Selection
-; CHECK-NEXT:      Expand ISel Pseudo-instructions
+; CHECK-NEXT:      Finalize ISel and expand pseudo-instructions
 ; CHECK-NEXT:      Early Tail Duplication
 ; CHECK-NEXT:      Optimize machine instruction PHIs
 ; CHECK-NEXT:      Slot index numbering
@@ -84,9 +84,9 @@
 ; CHECK-NEXT:      MachineDominator Tree Construction
 ; CHECK-NEXT:      Machine Natural Loop Construction
 ; CHECK-NEXT:      Early Machine Loop Invariant Code Motion
+; CHECK-NEXT:      Machine Block Frequency Analysis
 ; CHECK-NEXT:      Machine Common Subexpression Elimination
 ; CHECK-NEXT:      MachinePostDominator Tree Construction
-; CHECK-NEXT:      Machine Block Frequency Analysis
 ; CHECK-NEXT:      Machine code sinking
 ; CHECK-NEXT:      Peephole Optimizations
 ; CHECK-NEXT:      Remove dead machine instructions

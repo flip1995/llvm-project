@@ -221,11 +221,12 @@ enum IIT_Info {
   IIT_STRUCT8 = 40,
   IIT_F128 = 41,
   IIT_VEC_ELEMENT = 42,
-  IIT_IFATPTR64 = 43,
-  IIT_IFATPTR128 = 44,
-  IIT_IFATPTR256 = 45,
-  IIT_IFATPTR512 = 46,
-  IIT_IFATPTRAny = 47,
+  IIT_SCALABLE_VEC = 43,
+  IIT_IFATPTR64 = 44,
+  IIT_IFATPTR128 = 45,
+  IIT_IFATPTR256 = 46,
+  IIT_IFATPTR512 = 47,
+  IIT_IFATPTRAny = 48,
 };
 
 static void EncodeFixedValueType(MVT::SimpleValueType VT,
@@ -366,6 +367,8 @@ static void EncodeFixedType(Record *R, std::vector<unsigned char> &ArgCodes,
 
   if (MVT(VT).isVector()) {
     MVT VVT = VT;
+    if (VVT.isScalableVector())
+      Sig.push_back(IIT_SCALABLE_VEC);
     switch (VVT.getVectorNumElements()) {
     default: PrintFatalError("unhandled vector type width in intrinsic!");
     case 1: Sig.push_back(IIT_V1); break;
@@ -399,6 +402,9 @@ static void UpdateArgCodes(Record *R, std::vector<unsigned char> &ArgCodes,
   unsigned Tmp = 0;
   switch (getValueType(R->getValueAsDef("VT"))) {
   default: break;
+  case MVT::iPTR:
+    UpdateArgCodes(R->getValueAsDef("ElTy"), ArgCodes, NumInserted, Mapping);
+    break;
   case MVT::iPTRAny:
     ++Tmp;
     LLVM_FALLTHROUGH;
@@ -569,6 +575,9 @@ struct AttributeComparator {
     if (L->isNoReturn != R->isNoReturn)
       return R->isNoReturn;
 
+    if (L->isWillReturn != R->isWillReturn)
+      return R->isWillReturn;
+
     if (L->isCold != R->isCold)
       return R->isCold;
 
@@ -668,6 +677,12 @@ void IntrinsicEmitter::EmitAttributes(const CodeGenIntrinsicTable &Ints,
             OS << "Attribute::NoCapture";
             addComma = true;
             break;
+          case CodeGenIntrinsic::NoAlias:
+            if (addComma)
+              OS << ",";
+            OS << "Attribute::NoAlias";
+            addComma = true;
+            break;
           case CodeGenIntrinsic::Returned:
             if (addComma)
               OS << ",";
@@ -709,10 +724,10 @@ void IntrinsicEmitter::EmitAttributes(const CodeGenIntrinsicTable &Ints,
     }
 
     if (!intrinsic.canThrow ||
-        intrinsic.ModRef != CodeGenIntrinsic::ReadWriteMem ||
-        intrinsic.isNoReturn || intrinsic.isCold || intrinsic.isNoDuplicate ||
-        intrinsic.isConvergent || intrinsic.isSpeculatable ||
-        intrinsic.hasSideEffects) {
+        (intrinsic.ModRef != CodeGenIntrinsic::ReadWriteMem && !intrinsic.hasSideEffects) ||
+        intrinsic.isNoReturn || intrinsic.isWillReturn || intrinsic.isCold ||
+        intrinsic.isNoDuplicate || intrinsic.isConvergent ||
+        intrinsic.isSpeculatable || intrinsic.hasSideEffects) {
       OS << "      const Attribute::AttrKind Atts[] = {";
       bool addComma = false;
       if (!intrinsic.canThrow) {
@@ -723,6 +738,12 @@ void IntrinsicEmitter::EmitAttributes(const CodeGenIntrinsicTable &Ints,
         if (addComma)
           OS << ",";
         OS << "Attribute::NoReturn";
+        addComma = true;
+      }
+      if (intrinsic.isWillReturn) {
+        if (addComma)
+          OS << ",";
+        OS << "Attribute::WillReturn";
         addComma = true;
       }
       if (intrinsic.isCold) {
@@ -758,6 +779,8 @@ void IntrinsicEmitter::EmitAttributes(const CodeGenIntrinsicTable &Ints,
 
       switch (intrinsic.ModRef) {
       case CodeGenIntrinsic::NoMem:
+        if (intrinsic.hasSideEffects)
+          break;
         if (addComma)
           OS << ",";
         OS << "Attribute::ReadNone";

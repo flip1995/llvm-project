@@ -142,7 +142,8 @@ def analyzer_checker_help_developer : Flag<["-"], "analyzer-checker-help-develop
            "and debug checkers">;
 
 def analyzer_config_help : Flag<["-"], "analyzer-config-help">,
-  HelpText<"Display the list of -analyzer-config options">;
+  HelpText<"Display the list of -analyzer-config options. These are meant for "
+           "development purposes only!">;
 
 def analyzer_list_enabled_checkers : Flag<["-"], "analyzer-list-enabled-checkers">,
   HelpText<"Display the list of enabled analyzer checkers">;
@@ -192,8 +193,6 @@ def default_function_attr : Separate<["-"], "default-function-attr">,
   HelpText<"Apply given attribute to all functions">;
 def dwarf_version_EQ : Joined<["-"], "dwarf-version=">;
 def debugger_tuning_EQ : Joined<["-"], "debugger-tuning=">;
-def fdebug_compilation_dir : Separate<["-"], "fdebug-compilation-dir">,
-  HelpText<"The compilation directory to embed in the debug info.">;
 def dwarf_debug_flags : Separate<["-"], "dwarf-debug-flags">,
   HelpText<"The string to embed in the Dwarf debug flags record.">;
 def record_command_line : Separate<["-"], "record-command-line">,
@@ -204,6 +203,8 @@ def compress_debug_sections_EQ : Joined<["-", "--"], "compress-debug-sections=">
     HelpText<"DWARF debug sections compression type">;
 def mno_exec_stack : Flag<["-"], "mnoexecstack">,
   HelpText<"Mark the file as not needing an executable stack">;
+def massembler_no_warn : Flag<["-"], "massembler-no-warn">,
+  HelpText<"Make assembler not emit warnings">;
 def massembler_fatal_warnings : Flag<["-"], "massembler-fatal-warnings">,
   HelpText<"Make assembler warnings fatal">;
 def mrelax_relocations : Flag<["--"], "mrelax-relocations">,
@@ -234,8 +235,6 @@ def disable_red_zone : Flag<["-"], "disable-red-zone">,
   HelpText<"Do not emit code that uses the red zone.">;
 def dwarf_column_info : Flag<["-"], "dwarf-column-info">,
   HelpText<"Turn on column location information.">;
-def split_dwarf : Flag<["-"], "split-dwarf">,
-  HelpText<"Split out the dwarf .dwo sections">;
 def dwarf_ext_refs : Flag<["-"], "dwarf-ext-refs">,
   HelpText<"Generate debug info with external references to clang modules"
            " or precompiled headers">;
@@ -291,8 +290,8 @@ def mcode_model : Separate<["-"], "mcode-model">,
   HelpText<"The code model to use">, Values<"tiny,small,kernel,medium,large">;
 def mdebug_pass : Separate<["-"], "mdebug-pass">,
   HelpText<"Enable additional debug output">;
-def mdisable_fp_elim : Flag<["-"], "mdisable-fp-elim">,
-  HelpText<"Disable frame pointer elimination optimization">;
+def mframe_pointer_EQ : Joined<["-"], "mframe-pointer=">,
+  HelpText<"Specify which frame pointers to retain (all, non-leaf, none).">, Values<"all,non-leaf,none">;
 def mdisable_tail_calls : Flag<["-"], "mdisable-tail-calls">,
   HelpText<"Disable tail call optimization, keeping the call stack accurate">;
 def menable_no_infinities : Flag<["-"], "menable-no-infs">,
@@ -304,6 +303,8 @@ def menable_unsafe_fp_math : Flag<["-"], "menable-unsafe-fp-math">,
            "precision">;
 def mreassociate : Flag<["-"], "mreassociate">,
   HelpText<"Allow reassociation transformations for floating-point instructions">;
+def mabi_EQ_ieeelongdouble : Flag<["-"], "mabi=ieeelongdouble">,
+  HelpText<"Use IEEE 754 quadruple-precision for long double">;
 def mfloat_abi : Separate<["-"], "mfloat-abi">,
   HelpText<"The float ABI to use">;
 def mtp : Separate<["-"], "mtp">,
@@ -390,6 +391,8 @@ def flto_unit: Flag<["-"], "flto-unit">,
 def fno_lto_unit: Flag<["-"], "fno-lto-unit">;
 def fthin_link_bitcode_EQ : Joined<["-"], "fthin-link-bitcode=">,
     HelpText<"Write minimized bitcode to <file> for the ThinLTO thin link only">;
+def femit_debug_entry_values : Flag<["-"], "femit-debug-entry-values">,
+    HelpText<"Enables debug info about call site parameter's entry values">;
 def fdebug_pass_manager : Flag<["-"], "fdebug-pass-manager">,
     HelpText<"Prints debug information for the new pass manager">;
 def fno_debug_pass_manager : Flag<["-"], "fno-debug-pass-manager">,
@@ -640,6 +643,8 @@ def opt_record_file : Separate<["-"], "opt-record-file">,
   HelpText<"File name to use for YAML optimization record output">;
 def opt_record_passes : Separate<["-"], "opt-record-passes">,
   HelpText<"Only record remark information for passes whose names match the given regular expression">;
+def opt_record_format : Separate<["-"], "opt-record-format">,
+  HelpText<"The format used for serializing remarks (default: YAML)">;
 
 def print_stats : Flag<["-"], "print-stats">,
   HelpText<"Print performance metrics and statistics">;
@@ -688,7 +693,7 @@ def version : Flag<["-"], "version">,
   HelpText<"Print the compiler version">;
 def main_file_name : Separate<["-"], "main-file-name">,
   HelpText<"Main file name to use for debug info">;
-def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
+def split_dwarf_output : Separate<["-"], "split-dwarf-output">,
   HelpText<"File name to use for split dwarf debug info output">;
 
 }
@@ -697,10 +702,8 @@ def fblocks_runtime_optional : Flag<["-"], "fblocks-runtime-optional">,
   HelpText<"Weakly link in the blocks runtime">;
 def fexternc_nounwind : Flag<["-"], "fexternc-nounwind">,
   HelpText<"Assume all functions with C linkage do not unwind">;
-def enable_split_dwarf : Flag<["-"], "enable-split-dwarf">,
-  HelpText<"Use DWARF fission in 'split' mode">;
-def enable_split_dwarf_EQ : Joined<["-"], "enable-split-dwarf=">,
-  HelpText<"Set DWARF fission mode to either 'split' or 'single'">, Values<"split,single">;
+def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
+  HelpText<"Name of the split dwarf debug info file to encode in the object file">;
 def fno_wchar : Flag<["-"], "fno-wchar">,
   HelpText<"Disable C++ builtin type wchar_t">;
 def fconstant_string_class : Separate<["-"], "fconstant-string-class">,

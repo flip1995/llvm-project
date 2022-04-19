@@ -196,6 +196,8 @@ protected:
 
   unsigned IsRenderScriptTarget : 1;
 
+  unsigned HasAArch64SVETypes : 1;
+
   // TargetInfo Constructor.  Default initializes all fields.
   TargetInfo(const llvm::Triple &T);
 
@@ -640,9 +642,11 @@ public:
     return *Float128Format;
   }
 
-  /// Return true if the 'long double' type should be mangled like
-  /// __float128.
-  virtual bool useFloat128ManglingForLongDouble() const { return false; }
+  /// Return the mangled code of long double.
+  virtual const char *getLongDoubleMangling() const { return "e"; }
+
+  /// Return the mangled code of __float128.
+  virtual const char *getFloat128Mangling() const { return "g"; }
 
   /// Return the value for the C99 FLT_EVAL_METHOD macro.
   virtual unsigned getFloatEvalMethod() const { return 0; }
@@ -827,6 +831,10 @@ public:
 
   /// Returns true for RenderScript.
   bool isRenderScriptTarget() const { return IsRenderScriptTarget; }
+
+  /// Returns whether or not the AArch64 SVE built-in types are
+  /// available on this target.
+  bool hasAArch64SVETypes() const { return HasAArch64SVETypes; }
 
   /// Returns whether the passed in string is a valid clobber in an
   /// inline asm statement.
@@ -1290,15 +1298,9 @@ public:
 
   bool areAllPointersCapabilities() const { return CapabilityABI; }
 
-  enum CallingConvMethodType {
-    CCMT_Unknown,
-    CCMT_Member,
-    CCMT_NonMember
-  };
-
   /// Gets the default calling convention for the given target and
   /// declaration context.
-  virtual CallingConv getDefaultCallingConv(CallingConvMethodType MT) const {
+  virtual CallingConv getDefaultCallingConv() const {
     // Not all targets will specify an explicit calling convention that we can
     // express.  This will always do the right thing, even though it's not
     // an explicit calling convention.
@@ -1309,6 +1311,7 @@ public:
     CCCR_OK,
     CCCR_Warning,
     CCCR_Ignore,
+    CCCR_Error,
   };
 
   /// Determines whether a given calling convention is valid for the

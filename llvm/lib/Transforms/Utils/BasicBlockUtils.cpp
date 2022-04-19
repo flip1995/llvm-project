@@ -365,11 +365,13 @@ llvm::SplitAllCriticalEdges(Function &F,
 
 BasicBlock *llvm::SplitBlock(BasicBlock *Old, Instruction *SplitPt,
                              DominatorTree *DT, LoopInfo *LI,
-                             MemorySSAUpdater *MSSAU) {
+                             MemorySSAUpdater *MSSAU, const Twine &BBName) {
   BasicBlock::iterator SplitIt = SplitPt->getIterator();
   while (isa<PHINode>(SplitIt) || SplitIt->isEHPad())
     ++SplitIt;
-  BasicBlock *New = Old->splitBasicBlock(SplitIt, Old->getName()+".split");
+  std::string Name = BBName.str();
+  BasicBlock *New = Old->splitBasicBlock(
+      SplitIt, Name.empty() ? Old->getName() + ".split" : Name);
 
   // The new block lives in whichever loop the old one did. This preserves
   // LCSSA as well, because we force the split point to be after any PHI nodes.
@@ -579,7 +581,13 @@ BasicBlock *llvm::SplitBlockPredecessors(BasicBlock *BB,
 
   // The new block unconditionally branches to the old block.
   BranchInst *BI = BranchInst::Create(BB, NewBB);
-  BI->setDebugLoc(BB->getFirstNonPHIOrDbg()->getDebugLoc());
+  // Splitting the predecessors of a loop header creates a preheader block.
+  if (LI && LI->isLoopHeader(BB))
+    // Using the loop start line number prevents debuggers stepping into the
+    // loop body for this instruction.
+    BI->setDebugLoc(LI->getLoopFor(BB)->getStartLoc());
+  else
+    BI->setDebugLoc(BB->getFirstNonPHIOrDbg()->getDebugLoc());
 
   // Move the edges from Preds to point to NewBB instead of BB.
   for (unsigned i = 0, e = Preds.size(); i != e; ++i) {

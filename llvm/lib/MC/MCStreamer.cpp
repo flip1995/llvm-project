@@ -22,6 +22,8 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstPrinter.h"
 #include "llvm/MC/MCObjectFileInfo.h"
+#include "llvm/MC/MCRegister.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
@@ -399,9 +401,55 @@ void MCStreamer::EmitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
                                                 const MCSymbol *FnStartSym,
                                                 const MCSymbol *FnEndSym) {}
 
+/// Only call this on endian-specific types like ulittle16_t and little32_t, or
+/// structs composed of them.
+template <typename T>
+static void copyBytesForDefRange(SmallString<20> &BytePrefix,
+                                 codeview::SymbolKind SymKind,
+                                 const T &DefRangeHeader) {
+  BytePrefix.resize(2 + sizeof(T));
+  codeview::ulittle16_t SymKindLE = codeview::ulittle16_t(SymKind);
+  memcpy(&BytePrefix[0], &SymKindLE, 2);
+  memcpy(&BytePrefix[2], &DefRangeHeader, sizeof(T));
+}
+
 void MCStreamer::EmitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
     StringRef FixedSizePortion) {}
+
+void MCStreamer::EmitCVDefRangeDirective(
+    ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
+    codeview::DefRangeRegisterRelSym::Header DRHdr) {
+  SmallString<20> BytePrefix;
+  copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_REGISTER_REL, DRHdr);
+  EmitCVDefRangeDirective(Ranges, BytePrefix);
+}
+
+void MCStreamer::EmitCVDefRangeDirective(
+    ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
+    codeview::DefRangeSubfieldRegisterSym::Header DRHdr) {
+  SmallString<20> BytePrefix;
+  copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_SUBFIELD_REGISTER,
+                       DRHdr);
+  EmitCVDefRangeDirective(Ranges, BytePrefix);
+}
+
+void MCStreamer::EmitCVDefRangeDirective(
+    ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
+    codeview::DefRangeRegisterSym::Header DRHdr) {
+  SmallString<20> BytePrefix;
+  copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_REGISTER, DRHdr);
+  EmitCVDefRangeDirective(Ranges, BytePrefix);
+}
+
+void MCStreamer::EmitCVDefRangeDirective(
+    ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
+    codeview::DefRangeFramePointerRelSym::Header DRHdr) {
+  SmallString<20> BytePrefix;
+  copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_FRAMEPOINTER_REL,
+                       DRHdr);
+  EmitCVDefRangeDirective(Ranges, BytePrefix);
+}
 
 void MCStreamer::EmitEHSymAttributes(const MCSymbol *Symbol,
                                      MCSymbol *EHSymbol) {
@@ -703,7 +751,7 @@ void MCStreamer::EmitWinCFIStartProc(const MCSymbol *Symbol, SMLoc Loc) {
   MCSymbol *StartProc = EmitCFILabel();
 
   WinFrameInfos.emplace_back(
-      llvm::make_unique<WinEH::FrameInfo>(Symbol, StartProc));
+      std::make_unique<WinEH::FrameInfo>(Symbol, StartProc));
   CurrentWinFrameInfo = WinFrameInfos.back().get();
   CurrentWinFrameInfo->TextSection = getCurrentSectionOnly();
 }
@@ -737,7 +785,7 @@ void MCStreamer::EmitWinCFIStartChained(SMLoc Loc) {
 
   MCSymbol *StartProc = EmitCFILabel();
 
-  WinFrameInfos.emplace_back(llvm::make_unique<WinEH::FrameInfo>(
+  WinFrameInfos.emplace_back(std::make_unique<WinEH::FrameInfo>(
       CurFrame->Function, StartProc, CurFrame));
   CurrentWinFrameInfo = WinFrameInfos.back().get();
   CurrentWinFrameInfo->TextSection = getCurrentSectionOnly();
@@ -835,18 +883,23 @@ MCSection *MCStreamer::getAssociatedXDataSection(const MCSection *TextSec) {
 
 void MCStreamer::EmitSyntaxDirective() {}
 
-void MCStreamer::EmitWinCFIPushReg(unsigned Register, SMLoc Loc) {
+static unsigned encodeSEHRegNum(MCContext &Ctx, MCRegister Reg) {
+  return Ctx.getRegisterInfo()->getSEHRegNum(Reg);
+}
+
+void MCStreamer::EmitWinCFIPushReg(MCRegister Register, SMLoc Loc) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
     return;
 
   MCSymbol *Label = EmitCFILabel();
 
-  WinEH::Instruction Inst = Win64EH::Instruction::PushNonVol(Label, Register);
+  WinEH::Instruction Inst = Win64EH::Instruction::PushNonVol(
+      Label, encodeSEHRegNum(Context, Register));
   CurFrame->Instructions.push_back(Inst);
 }
 
-void MCStreamer::EmitWinCFISetFrame(unsigned Register, unsigned Offset,
+void MCStreamer::EmitWinCFISetFrame(MCRegister Register, unsigned Offset,
                                     SMLoc Loc) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
@@ -862,8 +915,8 @@ void MCStreamer::EmitWinCFISetFrame(unsigned Register, unsigned Offset,
 
   MCSymbol *Label = EmitCFILabel();
 
-  WinEH::Instruction Inst =
-      Win64EH::Instruction::SetFPReg(Label, Register, Offset);
+  WinEH::Instruction Inst = Win64EH::Instruction::SetFPReg(
+      Label, encodeSEHRegNum(getContext(), Register), Offset);
   CurFrame->LastFrameInst = CurFrame->Instructions.size();
   CurFrame->Instructions.push_back(Inst);
 }
@@ -885,7 +938,7 @@ void MCStreamer::EmitWinCFIAllocStack(unsigned Size, SMLoc Loc) {
   CurFrame->Instructions.push_back(Inst);
 }
 
-void MCStreamer::EmitWinCFISaveReg(unsigned Register, unsigned Offset,
+void MCStreamer::EmitWinCFISaveReg(MCRegister Register, unsigned Offset,
                                    SMLoc Loc) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
@@ -897,12 +950,12 @@ void MCStreamer::EmitWinCFISaveReg(unsigned Register, unsigned Offset,
 
   MCSymbol *Label = EmitCFILabel();
 
-  WinEH::Instruction Inst =
-      Win64EH::Instruction::SaveNonVol(Label, Register, Offset);
+  WinEH::Instruction Inst = Win64EH::Instruction::SaveNonVol(
+      Label, encodeSEHRegNum(Context, Register), Offset);
   CurFrame->Instructions.push_back(Inst);
 }
 
-void MCStreamer::EmitWinCFISaveXMM(unsigned Register, unsigned Offset,
+void MCStreamer::EmitWinCFISaveXMM(MCRegister Register, unsigned Offset,
                                    SMLoc Loc) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
@@ -912,8 +965,8 @@ void MCStreamer::EmitWinCFISaveXMM(unsigned Register, unsigned Offset,
 
   MCSymbol *Label = EmitCFILabel();
 
-  WinEH::Instruction Inst =
-      Win64EH::Instruction::SaveXMM(Label, Register, Offset);
+  WinEH::Instruction Inst = Win64EH::Instruction::SaveXMM(
+      Label, encodeSEHRegNum(Context, Register), Offset);
   CurFrame->Instructions.push_back(Inst);
 }
 
@@ -981,7 +1034,7 @@ void MCStreamer::Finish() {
   if (!FatRelocs.empty()) {
     MCSection *DefaultRelocSection = Context.getELFSection("__cap_relocs",
         ELF::SHT_PROGBITS, ELF::SHF_ALLOC);
-    DefaultRelocSection->setAlignment(8);
+    DefaultRelocSection->setAlignment(llvm::Align(8));
     for (auto &R : FatRelocs) {
       MCSymbol *Sym;
       const MCExpr *Value;
@@ -993,7 +1046,7 @@ void MCStreamer::Finish() {
         RelocSection =
           Context.getELFSection("__cap_relocs", ELF::SHT_PROGBITS,
                                 ELF::SHF_ALLOC | ELF::SHF_GROUP, 0, GroupName);
-        RelocSection->setAlignment(8);
+        RelocSection->setAlignment(llvm::Align(8));
       } else {
         RelocSection = DefaultRelocSection;
       }
@@ -1117,6 +1170,10 @@ void MCStreamer::EmitCOFFSymbolStorageClass(int StorageClass) {
 void MCStreamer::EmitCOFFSymbolType(int Type) {
   llvm_unreachable("this directive only supported on COFF targets");
 }
+void MCStreamer::EmitXCOFFLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
+                                            unsigned ByteAlign) {
+  llvm_unreachable("this directive only supported on XCOFF targets");
+}
 void MCStreamer::emitELFSize(MCSymbol *Symbol, const MCExpr *Value) {}
 void MCStreamer::emitELFSymverDirective(StringRef AliasName,
                                         const MCSymbol *Aliasee) {}
@@ -1187,6 +1244,15 @@ void MCStreamer::EmitVersionForTarget(const Triple &Target,
   unsigned Major;
   unsigned Minor;
   unsigned Update;
+  if (Target.isMacCatalystEnvironment()) {
+    // Mac Catalyst always uses the build version load command.
+    Target.getiOSVersion(Major, Minor, Update);
+    assert(Major && "A non-zero major version is expected");
+    EmitBuildVersion(MachO::PLATFORM_MACCATALYST, Major, Minor, Update,
+                     SDKVersion);
+    return;
+  }
+
   MCVersionMinType VersionType;
   if (Target.isWatchOS()) {
     VersionType = MCVM_WatchOSVersionMin;

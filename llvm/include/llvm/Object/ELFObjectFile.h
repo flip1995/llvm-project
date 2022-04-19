@@ -41,7 +41,7 @@
 namespace llvm {
 namespace object {
 
-constexpr int NumElfSymbolTypes = 8;
+constexpr int NumElfSymbolTypes = 16;
 extern const llvm::EnumEntry<unsigned> ElfSymbolTypes[NumElfSymbolTypes];
 
 class elf_symbol_iterator;
@@ -54,7 +54,6 @@ class ELFObjectFileBase : public ObjectFile {
 protected:
   ELFObjectFileBase(unsigned int Type, MemoryBufferRef Source);
 
-  virtual uint16_t getEMachine() const = 0;
   virtual uint64_t getSymbolSize(DataRefImpl Symb) const = 0;
   virtual uint8_t getSymbolBinding(DataRefImpl Symb) const = 0;
   virtual uint8_t getSymbolOther(DataRefImpl Symb) const = 0;
@@ -90,6 +89,8 @@ public:
   void setARMSubArch(Triple &TheTriple) const override;
 
   virtual uint16_t getEType() const = 0;
+
+  virtual uint16_t getEMachine() const = 0;
 
   std::vector<std::pair<DataRefImpl, uint64_t>> getPltAddresses() const;
 };
@@ -460,13 +461,15 @@ Expected<StringRef> ELFObjectFile<ELFT>::getSymbolName(DataRefImpl Sym) const {
   if (!SymStrTabOrErr)
     return SymStrTabOrErr.takeError();
   Expected<StringRef> Name = ESym->getName(*SymStrTabOrErr);
+  if (Name && !Name->empty())
+    return Name;
 
   // If the symbol name is empty use the section name.
-  if ((!Name || Name->empty()) && ESym->getType() == ELF::STT_SECTION) {
-    StringRef SecName;
-    Expected<section_iterator> Sec = getSymbolSection(Sym);
-    if (Sec && !(*Sec)->getName(SecName))
-      return SecName;
+  if (ESym->getType() == ELF::STT_SECTION) {
+    if (Expected<section_iterator> SecOrErr = getSymbolSection(Sym)) {
+      consumeError(Name.takeError());
+      return (*SecOrErr)->getName();
+    }
   }
   return Name;
 }

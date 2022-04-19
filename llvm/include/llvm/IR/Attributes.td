@@ -88,6 +88,9 @@ def NoCapture : EnumAttr<"nocapture">;
 /// Call cannot be duplicated.
 def NoDuplicate : EnumAttr<"noduplicate">;
 
+/// Function does not deallocate memory.
+def NoFree : EnumAttr<"nofree">;
+
 /// Disable implicit floating point insts.
 def NoImplicitFloat : EnumAttr<"noimplicitfloat">;
 
@@ -108,6 +111,9 @@ def NoRedZone : EnumAttr<"noredzone">;
 
 /// Mark the function as not returning.
 def NoReturn : EnumAttr<"noreturn">;
+
+/// Function does not synchronize.
+def NoSync : EnumAttr<"nosync">;
 
 /// Disable Indirect Branch Tracking.
 def NoCfCheck : EnumAttr<"nocf_check">;
@@ -182,6 +188,9 @@ def SanitizeMemory : EnumAttr<"sanitize_memory">;
 /// HWAddressSanitizer is on.
 def SanitizeHWAddress : EnumAttr<"sanitize_hwaddress">;
 
+/// MemTagSanitizer is on.
+def SanitizeMemTag : EnumAttr<"sanitize_memtag">;
+
 /// Speculative Load Hardening is enabled.
 ///
 /// Note that this uses the default compatibility (always compatible during
@@ -198,6 +207,9 @@ def SwiftSelf : EnumAttr<"swiftself">;
 
 /// Function must be in a unwind table.
 def UWTable : EnumAttr<"uwtable">;
+
+/// Function always comes back to callsite.
+def WillReturn : EnumAttr<"willreturn">;
 
 /// Function only writes to memory.
 def WriteOnly : EnumAttr<"writeonly">;
@@ -227,6 +239,7 @@ def : CompatRule<"isEqual<SanitizeAddressAttr>">;
 def : CompatRule<"isEqual<SanitizeThreadAttr>">;
 def : CompatRule<"isEqual<SanitizeMemoryAttr>">;
 def : CompatRule<"isEqual<SanitizeHWAddressAttr>">;
+def : CompatRule<"isEqual<SanitizeMemTagAttr>">;
 def : CompatRule<"isEqual<SafeStackAttr>">;
 def : CompatRule<"isEqual<ShadowCallStackAttr>">;
 

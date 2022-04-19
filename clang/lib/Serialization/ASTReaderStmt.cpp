@@ -52,7 +52,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Bitcode/BitstreamReader.h"
+#include "llvm/Bitstream/BitstreamReader.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
@@ -533,6 +533,18 @@ void ASTStmtReader::VisitExpr(Expr *E) {
 
 void ASTStmtReader::VisitConstantExpr(ConstantExpr *E) {
   VisitExpr(E);
+  E->ConstantExprBits.ResultKind = Record.readInt();
+  switch (E->ConstantExprBits.ResultKind) {
+  case ConstantExpr::RSK_Int64: {
+    E->Int64Result() = Record.readInt();
+    uint64_t tmp = Record.readInt();
+    E->ConstantExprBits.IsUnsigned = tmp & 0x1;
+    E->ConstantExprBits.BitWidth = tmp >> 1;
+    break;
+  }
+  case ConstantExpr::RSK_APValue:
+    E->APValueResult() = Record.readAPValue();
+  }
   E->setSubExpr(Record.readSubExpr());
 }
 
@@ -590,7 +602,8 @@ void ASTStmtReader::VisitFixedPointLiteral(FixedPointLiteral *E) {
 
 void ASTStmtReader::VisitFloatingLiteral(FloatingLiteral *E) {
   VisitExpr(E);
-  E->setRawSemantics(static_cast<Stmt::APFloatSemantics>(Record.readInt()));
+  E->setRawSemantics(
+      static_cast<llvm::APFloatBase::Semantics>(Record.readInt()));
   E->setExact(Record.readInt());
   E->setValue(Record.getContext(), Record.readAPFloat(E->getSemantics()));
   E->setLocation(ReadSourceLocation());
@@ -1504,6 +1517,12 @@ void ASTStmtReader::VisitCXXFunctionalCastExpr(CXXFunctionalCastExpr *E) {
   E->setRParenLoc(ReadSourceLocation());
 }
 
+void ASTStmtReader::VisitBuiltinBitCastExpr(BuiltinBitCastExpr *E) {
+  VisitExplicitCastExpr(E);
+  E->KWLoc = ReadSourceLocation();
+  E->RParenLoc = ReadSourceLocation();
+}
+
 void ASTStmtReader::VisitUserDefinedLiteral(UserDefinedLiteral *E) {
   VisitCallExpr(E);
   E->UDSuffixLoc = ReadSourceLocation();
@@ -2048,6 +2067,18 @@ void ASTStmtReader::VisitOMPLoopDirective(OMPLoopDirective *D) {
   for (unsigned i = 0; i < CollapsedNum; ++i)
     Sub.push_back(Record.readSubExpr());
   D->setFinals(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Record.readSubExpr());
+  D->setDependentCounters(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Record.readSubExpr());
+  D->setDependentInits(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Record.readSubExpr());
+  D->setFinalsConditions(Sub);
 }
 
 void ASTStmtReader::VisitOMPParallelDirective(OMPParallelDirective *D) {
@@ -2386,7 +2417,13 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
   Stmt::EmptyShell Empty;
 
   while (true) {
-    llvm::BitstreamEntry Entry = Cursor.advanceSkippingSubblocks();
+    llvm::Expected<llvm::BitstreamEntry> MaybeEntry =
+        Cursor.advanceSkippingSubblocks();
+    if (!MaybeEntry) {
+      Error(toString(MaybeEntry.takeError()));
+      return nullptr;
+    }
+    llvm::BitstreamEntry Entry = MaybeEntry.get();
 
     switch (Entry.Kind) {
     case llvm::BitstreamEntry::SubBlock: // Handled for us already.
@@ -2404,7 +2441,12 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
     Stmt *S = nullptr;
     bool Finished = false;
     bool IsStmtReference = false;
-    switch ((StmtCode)Record.readRecord(Cursor, Entry.ID)) {
+    Expected<unsigned> MaybeStmtCode = Record.readRecord(Cursor, Entry.ID);
+    if (!MaybeStmtCode) {
+      Error(toString(MaybeStmtCode.takeError()));
+      return nullptr;
+    }
+    switch ((StmtCode)MaybeStmtCode.get()) {
     case STMT_STOP:
       Finished = true;
       break;
@@ -2517,7 +2559,11 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
 
     case EXPR_CONSTANT:
-      S = new (Context) ConstantExpr(Empty);
+      S = ConstantExpr::CreateEmpty(
+          Context,
+          static_cast<ConstantExpr::ResultStorageKind>(
+              Record[ASTStmtReader::NumExprFields]),
+          Empty);
       break;
 
     case EXPR_PREDEFINED:
@@ -2838,7 +2884,7 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
 
     case STMT_CXX_TRY:
       S = CXXTryStmt::Create(Context, Empty,
-             /*NumHandlers=*/Record[ASTStmtReader::NumStmtFields]);
+             /*numHandlers=*/Record[ASTStmtReader::NumStmtFields]);
       break;
 
     case STMT_CXX_FOR_RANGE:

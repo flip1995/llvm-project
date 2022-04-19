@@ -24,7 +24,6 @@
 #include "lldb/Expression/FunctionCaller.h"
 #include "lldb/Symbol/ClangASTContext.h"
 #include "lldb/Symbol/ObjectFile.h"
-#include "lldb/Target/CPPLanguageRuntime.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -39,6 +38,7 @@
 
 #include "Plugins/Process/Utility/HistoryThread.h"
 #include "Plugins/Language/ObjC/NSString.h"
+#include "Plugins/LanguageRuntime/CPlusPlus/CPPLanguageRuntime.h"
 
 #include <vector>
 
@@ -552,7 +552,7 @@ ThreadSP AppleObjCRuntime::GetBacktraceThreadFromException(
 
   if (pcs.empty()) return ThreadSP();
 
-  ThreadSP new_thread_sp(new HistoryThread(*m_process, 0, pcs, 0, false));
+  ThreadSP new_thread_sp(new HistoryThread(*m_process, 0, pcs));
   m_process->GetExtendedThreadList().AddThread(new_thread_sp);
   return new_thread_sp;
 }

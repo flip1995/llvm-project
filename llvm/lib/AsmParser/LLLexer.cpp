@@ -653,6 +653,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(nobuiltin);
   KEYWORD(nocapture);
   KEYWORD(noduplicate);
+  KEYWORD(nofree);
   KEYWORD(noimplicitfloat);
   KEYWORD(noinline);
   KEYWORD(norecurse);
@@ -660,6 +661,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(nonnull);
   KEYWORD(noredzone);
   KEYWORD(noreturn);
+  KEYWORD(nosync);
   KEYWORD(nocf_check);
   KEYWORD(nounwind);
   KEYWORD(optforfuzzing);
@@ -680,12 +682,14 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(shadowcallstack);
   KEYWORD(sanitize_address);
   KEYWORD(sanitize_hwaddress);
+  KEYWORD(sanitize_memtag);
   KEYWORD(sanitize_thread);
   KEYWORD(sanitize_memory);
   KEYWORD(speculative_load_hardening);
   KEYWORD(swifterror);
   KEYWORD(swiftself);
   KEYWORD(uwtable);
+  KEYWORD(willreturn);
   KEYWORD(writeonly);
   KEYWORD(zeroext);
   KEYWORD(immarg);
@@ -710,6 +714,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(xchg); KEYWORD(nand); KEYWORD(max); KEYWORD(min); KEYWORD(umax);
   KEYWORD(umin);
 
+  KEYWORD(vscale);
   KEYWORD(x);
   KEYWORD(blockaddress);
 
@@ -754,6 +759,8 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(critical);
   KEYWORD(relbf);
   KEYWORD(variable);
+  KEYWORD(vTableFuncs);
+  KEYWORD(virtFunc);
   KEYWORD(aliasee);
   KEYWORD(refs);
   KEYWORD(typeIdInfo);
@@ -766,6 +773,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(offset);
   KEYWORD(args);
   KEYWORD(typeid);
+  KEYWORD(typeidCompatibleVTable);
   KEYWORD(summary);
   KEYWORD(typeTestRes);
   KEYWORD(kind);

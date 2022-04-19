@@ -575,6 +575,14 @@ public:
     addFnAttr(Attribute::Speculatable);
   }
 
+  /// Determine if the call might deallocate memory.
+  bool doesNotFreeMemory() const {
+    return onlyReadsMemory() || hasFnAttribute(Attribute::NoFree);
+  }
+  void setDoesNotFreeMemory() {
+    addFnAttr(Attribute::NoFree);
+  }
+
   /// Determine if the function is known not to recurse, directly or
   /// indirectly.
   bool doesNotRecurse() const {
@@ -711,6 +719,12 @@ public:
   const_arg_iterator arg_end() const {
     CheckLazyArguments();
     return Arguments + NumArgs;
+  }
+
+  Argument* getArg(unsigned i) const {
+    assert (i < NumArgs && "getArg() out of range!");
+    CheckLazyArguments();
+    return Arguments + i;
   }
 
   iterator_range<arg_iterator> args() {

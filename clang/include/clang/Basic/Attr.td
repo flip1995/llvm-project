@@ -14,6 +14,7 @@ class DocumentationCategory<string name> {
 }
 def DocCatFunction : DocumentationCategory<"Function Attributes">;
 def DocCatVariable : DocumentationCategory<"Variable Attributes">;
+def DocCatField : DocumentationCategory<"Field Attributes">;
 def DocCatType : DocumentationCategory<"Type Attributes">;
 def DocCatStmt : DocumentationCategory<"Statement Attributes">;
 def DocCatDecl : DocumentationCategory<"Declaration Attributes">;
@@ -294,6 +295,7 @@ class LangOpt<string name, code customCode = [{}]> {
 def MicrosoftExt : LangOpt<"MicrosoftExt">;
 def Borland : LangOpt<"Borland">;
 def CUDA : LangOpt<"CUDA">;
+def HIP : LangOpt<"HIP">;
 def COnly : LangOpt<"COnly", "!LangOpts.CPlusPlus">;
 def CPlusPlus : LangOpt<"CPlusPlus">;
 def OpenCL : LangOpt<"OpenCL">;
@@ -315,12 +317,14 @@ class TargetSpec {
   // Specifies Operating Systems for which the target applies, based off the
   // OSType enumeration in Triple.h
   list<string> OSes;
-  // Specifies the C++ ABIs for which the target applies, based off the
-  // TargetCXXABI::Kind in TargetCXXABI.h.
-  list<string> CXXABIs;
   // Specifies Object Formats for which the target applies, based off the
   // ObjectFormatType enumeration in Triple.h
   list<string> ObjectFormats;
+  // A custom predicate, written as an expression evaluated in a context
+  // with the following declarations in scope:
+  //   const clang::TargetInfo &Target;
+  //   const llvm::Triple &T = Target.getTriple();
+  code CustomCode = [{}];
 }
 
 class TargetArch<list<string> arches> : TargetSpec {
@@ -338,8 +342,11 @@ def TargetWebAssembly : TargetArch<["wasm32", "wasm64"]>;
 def TargetWindows : TargetArch<["x86", "x86_64", "arm", "thumb", "aarch64"]> {
   let OSes = ["Win32"];
 }
+def TargetItaniumCXXABI : TargetSpec {
+  let CustomCode = [{ Target.getCXXABI().isItaniumFamily() }];
+}
 def TargetMicrosoftCXXABI : TargetArch<["x86", "x86_64", "arm", "thumb", "aarch64"]> {
-  let CXXABIs = ["Microsoft"];
+  let CustomCode = [{ Target.getCXXABI().isMicrosoft() }];
 }
 def TargetELF : TargetSpec {
   let ObjectFormats = ["ELF"];
@@ -904,6 +911,17 @@ def Const : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def ConstInit : InheritableAttr {
+  // This attribute does not have a C [[]] spelling because it requires the
+  // CPlusPlus language option.
+  let Spellings = [Keyword<"constinit">,
+                   Clang<"require_constant_initialization", 0>];
+  let Subjects = SubjectList<[GlobalVar], ErrorDiag>;
+  let Accessors = [Accessor<"isConstinit", [Keyword<"constinit">]>];
+  let Documentation = [ConstInitDocs];
+  let LangOpts = [CPlusPlus];
+}
+
 def Constructor : InheritableAttr {
   let Spellings = [GCC<"constructor">];
   let Args = [DefaultIntArgument<"Priority", 65535>];
@@ -949,6 +967,13 @@ def CUDADevice : InheritableAttr {
   let Subjects = SubjectList<[Function, Var]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
+}
+
+def HIPPinnedShadow : InheritableAttr {
+  let Spellings = [GNU<"hip_pinned_shadow">, Declspec<"__hip_pinned_shadow__">];
+  let Subjects = SubjectList<[Var]>;
+  let LangOpts = [HIP];
+  let Documentation = [HIPPinnedShadowDocs];
 }
 
 def CUDADeviceBuiltin : IgnoredAttr {
@@ -1156,7 +1181,7 @@ def ExtVectorType : Attr {
 
 def FallThrough : StmtAttr {
   let Spellings = [CXX11<"", "fallthrough", 201603>, C2x<"", "fallthrough">,
-                   CXX11<"clang", "fallthrough">];
+                   CXX11<"clang", "fallthrough">, GCC<"fallthrough">];
 //  let Subjects = [NullStmt];
   let Documentation = [FallthroughDocs];
 }
@@ -1406,6 +1431,12 @@ def NeonVectorType : TypeAttr {
   let Documentation = [Undocumented];
   // Represented as VectorType instead.
   let ASTNode = 0;
+}
+
+def NoUniqueAddress : InheritableAttr, TargetSpecificAttr<TargetItaniumCXXABI> {
+  let Spellings = [CXX11<"", "no_unique_address", 201803>];
+  let Subjects = SubjectList<[NonBitField], ErrorDiag>;
+  let Documentation = [NoUniqueAddressDocs];
 }
 
 def ReturnsTwice : InheritableAttr {
@@ -1977,15 +2008,6 @@ def ReqdWorkGroupSize : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
-def RequireConstantInit : InheritableAttr {
-  // This attribute does not have a C [[]] spelling because it requires the
-  // CPlusPlus language option.
-  let Spellings = [Clang<"require_constant_initialization", 0>];
-  let Subjects = SubjectList<[GlobalVar], ErrorDiag>;
-  let Documentation = [RequireConstantInitDocs];
-  let LangOpts = [CPlusPlus];
-}
-
 def WorkGroupSizeHint :  InheritableAttr {
   // Does not have a [[]] spelling because it is an OpenCL-related attribute.
   let Spellings = [GNU<"work_group_size_hint">];
@@ -2011,6 +2033,8 @@ def Section : InheritableAttr {
   let Documentation = [SectionDocs];
 }
 
+// This is used for `__declspec(code_seg("segname"))`, but not for
+// `#pragma code_seg("segname")`.
 def CodeSeg : InheritableAttr {
   let Spellings = [Declspec<"code_seg">];
   let Args = [StringArgument<"Name">];
@@ -2380,11 +2404,19 @@ def WarnUnused : InheritableAttr {
 }
 
 def WarnUnusedResult : InheritableAttr {
-  let Spellings = [CXX11<"", "nodiscard", 201603>, C2x<"", "nodiscard">,
+  let Spellings = [CXX11<"", "nodiscard", 201907>, C2x<"", "nodiscard">,
                    CXX11<"clang", "warn_unused_result">,
                    GCC<"warn_unused_result">];
   let Subjects = SubjectList<[ObjCMethod, Enum, Record, FunctionLike]>;
+  let Args = [StringArgument<"Message", 1>];
   let Documentation = [WarnUnusedResultsDocs];
+  let AdditionalMembers = [{
+    // Check whether this the C++11 nodiscard version, even in non C++11
+    // spellings.
+    bool IsCXX11NoDiscard() const {
+      return this->getSemanticSpelling() == CXX11_nodiscard;
+    }
+  }];
 }
 
 def Weak : InheritableAttr {
@@ -2471,6 +2503,12 @@ def NoSanitizeSpecific : InheritableAttr {
   let Documentation = [NoSanitizeAddressDocs, NoSanitizeThreadDocs,
                        NoSanitizeMemoryDocs];
   let ASTNode = 0;
+}
+
+def CFICanonicalJumpTable : InheritableAttr {
+  let Spellings = [Clang<"cfi_canonical_jump_table">];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [CFICanonicalJumpTableDocs];
 }
 
 // C/C++ Thread safety attributes (e.g. for deadlock, data race checking)
@@ -2833,6 +2871,20 @@ def TypeTagForDatatype : InheritableAttr {
   let Documentation = [TypeTagForDatatypeDocs];
 }
 
+def Owner : InheritableAttr {
+  let Spellings = [CXX11<"gsl", "Owner">];
+  let Subjects = SubjectList<[Struct]>;
+  let Args = [TypeArgument<"DerefType", /*opt=*/1>];
+  let Documentation = [LifetimeOwnerDocs];
+}
+
+def Pointer : InheritableAttr {
+  let Spellings = [CXX11<"gsl", "Pointer">];
+  let Subjects = SubjectList<[Struct]>;
+  let Args = [TypeArgument<"DerefType", /*opt=*/1>];
+  let Documentation = [LifetimePointerDocs];
+}
+
 // Microsoft-related attributes
 
 def MSNoVTable : InheritableAttr, TargetSpecificAttr<TargetMicrosoftCXXABI> {
@@ -3026,10 +3078,12 @@ def LoopHint : Attr {
   let Args = [EnumArgument<"Option", "OptionType",
                           ["vectorize", "vectorize_width", "interleave", "interleave_count",
                            "unroll", "unroll_count", "unroll_and_jam", "unroll_and_jam_count",
-                           "pipeline", "pipeline_initiation_interval", "distribute"],
+                           "pipeline", "pipeline_initiation_interval", "distribute",
+                           "vectorize_predicate"],
                           ["Vectorize", "VectorizeWidth", "Interleave", "InterleaveCount",
                            "Unroll", "UnrollCount", "UnrollAndJam", "UnrollAndJamCount",
-                           "PipelineDisabled", "PipelineInitiationInterval", "Distribute"]>,
+                           "PipelineDisabled", "PipelineInitiationInterval", "Distribute",
+                           "VectorizePredicate"]>,
               EnumArgument<"State", "LoopHintState",
                            ["enable", "disable", "numeric", "assume_safety", "full"],
                            ["Enable", "Disable", "Numeric", "AssumeSafety", "Full"]>,
@@ -3049,12 +3103,13 @@ def LoopHint : Attr {
     case PipelineDisabled: return "pipeline";
     case PipelineInitiationInterval: return "pipeline_initiation_interval";
     case Distribute: return "distribute";
+    case VectorizePredicate: return "vectorize_predicate";
     }
     llvm_unreachable("Unhandled LoopHint option.");
   }
 
   void printPrettyPragma(raw_ostream &OS, const PrintingPolicy &Policy) const {
-    unsigned SpellingIndex = getSpellingListIndex();
+    unsigned SpellingIndex = getAttributeSpellingListIndex();
     // For "#pragma unroll" and "#pragma nounroll" the string "unroll" or
     // "nounroll" is already emitted as the pragma name.
     if (SpellingIndex == Pragma_nounroll || SpellingIndex == Pragma_nounroll_and_jam)
@@ -3090,7 +3145,7 @@ def LoopHint : Attr {
 
   // Return a string suitable for identifying this attribute in diagnostics.
   std::string getDiagnosticName(const PrintingPolicy &Policy) const {
-    unsigned SpellingIndex = getSpellingListIndex();
+    unsigned SpellingIndex = getAttributeSpellingListIndex();
     if (SpellingIndex == Pragma_nounroll)
       return "#pragma nounroll";
     else if (SpellingIndex == Pragma_unroll)
@@ -3221,11 +3276,16 @@ def OMPDeclareTargetDecl : InheritableAttr {
   let Args = [
     EnumArgument<"MapType", "MapTypeTy",
                  [ "to", "link" ],
-                 [ "MT_To", "MT_Link" ]>
+                 [ "MT_To", "MT_Link" ]>,
+    EnumArgument<"DevType", "DevTypeTy",
+                 [ "host", "nohost", "any" ],
+                 [ "DT_Host", "DT_NoHost", "DT_Any" ]>
   ];
   let AdditionalMembers = [{
     void printPrettyPragma(raw_ostream &OS, const PrintingPolicy &Policy) const {
       // Use fake syntax because it is for testing and debugging purpose only.
+      if (getDevType() != DT_Any)
+        OS << " device_type(" << ConvertDevTypeTyToStr(getDevType()) << ")";
       if (getMapType() != MT_To)
         OS << ' ' << ConvertMapTypeTyToStr(getMapType());
     }
@@ -3235,6 +3295,14 @@ def OMPDeclareTargetDecl : InheritableAttr {
         return llvm::None;
       if (const auto *Attr = VD->getAttr<OMPDeclareTargetDeclAttr>())
         return Attr->getMapType();
+
+      return llvm::None;
+    }
+    static llvm::Optional<DevTypeTy> getDeviceType(const ValueDecl *VD) {
+      if (!VD->hasAttrs())
+        return llvm::None;
+      if (const auto *Attr = VD->getAttr<OMPDeclareTargetDeclAttr>())
+        return Attr->getDevType();
 
       return llvm::None;
     }

@@ -1,0 +1,13 @@
+static_library("GSYM") {
+  output_name = "LLVMDebugInfoGSYM"
+  deps = [
+    "//llvm/lib/Support",
+  ]
+  sources = [
+    "FileWriter.cpp",
+    "FunctionInfo.cpp",
+    "InlineInfo.cpp",
+    "LineTable.cpp",
+    "Range.cpp",
+  ]
+}

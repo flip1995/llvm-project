@@ -25,10 +25,10 @@ let Predicates = [FeatureNoVectorEnhancements1] in
 let Predicates = [FeatureVectorEnhancements1] in
   def SelectVR128 : SelectWrapper<f128, VR128>;
 
-defm CondStoreF32 : CondStores<FP32, nonvolatile_store,
-                               nonvolatile_load, bdxaddr20only>;
-defm CondStoreF64 : CondStores<FP64, nonvolatile_store,
-                               nonvolatile_load, bdxaddr20only>;
+defm CondStoreF32 : CondStores<FP32, simple_store,
+                               simple_load, bdxaddr20only>;
+defm CondStoreF64 : CondStores<FP64, simple_store,
+                               simple_load, bdxaddr20only>;
 
 //===----------------------------------------------------------------------===//
 // Move instructions
@@ -208,14 +208,14 @@ let Predicates = [FeatureNoVectorEnhancements1] in {
 
 // Extend memory floating-point values to wider representations.
 let Uses = [FPC], mayRaiseFPException = 1 in {
-  def LDEB : UnaryRXE<"ldeb", 0xED04, extloadf32, FP64,  4>;
-  def LXEB : UnaryRXE<"lxeb", 0xED06, null_frag,  FP128, 4>;
-  def LXDB : UnaryRXE<"lxdb", 0xED05, null_frag,  FP128, 8>;
+  def LDEB : UnaryRXE<"ldeb", 0xED04, any_extloadf32, FP64, 4>;
+  def LXEB : UnaryRXE<"lxeb", 0xED06, null_frag, FP128, 4>;
+  def LXDB : UnaryRXE<"lxdb", 0xED05, null_frag, FP128, 8>;
 }
 let Predicates = [FeatureNoVectorEnhancements1] in {
-  def : Pat<(f128 (extloadf32 bdxaddr12only:$src)),
+  def : Pat<(f128 (any_extloadf32 bdxaddr12only:$src)),
             (LXEB bdxaddr12only:$src)>;
-  def : Pat<(f128 (extloadf64 bdxaddr12only:$src)),
+  def : Pat<(f128 (any_extloadf64 bdxaddr12only:$src)),
             (LXDB bdxaddr12only:$src)>;
 }
 
@@ -276,13 +276,13 @@ let Uses = [FPC], mayRaiseFPException = 1, Defs = [CC] in {
 }
 
 // fp_to_sint always rounds towards zero, which is modifier value 5.
-def : Pat<(i32 (fp_to_sint FP32:$src)),  (CFEBR 5, FP32:$src)>;
-def : Pat<(i32 (fp_to_sint FP64:$src)),  (CFDBR 5, FP64:$src)>;
-def : Pat<(i32 (fp_to_sint FP128:$src)), (CFXBR 5, FP128:$src)>;
+def : Pat<(i32 (any_fp_to_sint FP32:$src)),  (CFEBR 5, FP32:$src)>;
+def : Pat<(i32 (any_fp_to_sint FP64:$src)),  (CFDBR 5, FP64:$src)>;
+def : Pat<(i32 (any_fp_to_sint FP128:$src)), (CFXBR 5, FP128:$src)>;
 
-def : Pat<(i64 (fp_to_sint FP32:$src)),  (CGEBR 5, FP32:$src)>;
-def : Pat<(i64 (fp_to_sint FP64:$src)),  (CGDBR 5, FP64:$src)>;
-def : Pat<(i64 (fp_to_sint FP128:$src)), (CGXBR 5, FP128:$src)>;
+def : Pat<(i64 (any_fp_to_sint FP32:$src)),  (CGEBR 5, FP32:$src)>;
+def : Pat<(i64 (any_fp_to_sint FP64:$src)),  (CGDBR 5, FP64:$src)>;
+def : Pat<(i64 (any_fp_to_sint FP128:$src)), (CGXBR 5, FP128:$src)>;
 
 // The FP extension feature provides versions of the above that allow
 // also specifying the inexact-exception suppression flag.
@@ -309,13 +309,13 @@ let Predicates = [FeatureFPExtension] in {
     def CLGXBR : TernaryRRFe<"clgxbr", 0xB3AE, GR64, FP128>;
   }
 
-  def : Pat<(i32 (fp_to_uint FP32:$src)),  (CLFEBR 5, FP32:$src,  0)>;
-  def : Pat<(i32 (fp_to_uint FP64:$src)),  (CLFDBR 5, FP64:$src,  0)>;
-  def : Pat<(i32 (fp_to_uint FP128:$src)), (CLFXBR 5, FP128:$src, 0)>;
+  def : Pat<(i32 (any_fp_to_uint FP32:$src)),  (CLFEBR 5, FP32:$src,  0)>;
+  def : Pat<(i32 (any_fp_to_uint FP64:$src)),  (CLFDBR 5, FP64:$src,  0)>;
+  def : Pat<(i32 (any_fp_to_uint FP128:$src)), (CLFXBR 5, FP128:$src, 0)>;
 
-  def : Pat<(i64 (fp_to_uint FP32:$src)),  (CLGEBR 5, FP32:$src,  0)>;
-  def : Pat<(i64 (fp_to_uint FP64:$src)),  (CLGDBR 5, FP64:$src,  0)>;
-  def : Pat<(i64 (fp_to_uint FP128:$src)), (CLGXBR 5, FP128:$src, 0)>;
+  def : Pat<(i64 (any_fp_to_uint FP32:$src)),  (CLGEBR 5, FP32:$src,  0)>;
+  def : Pat<(i64 (any_fp_to_uint FP64:$src)),  (CLGDBR 5, FP64:$src,  0)>;
+  def : Pat<(i64 (any_fp_to_uint FP128:$src)), (CLGXBR 5, FP128:$src, 0)>;
 }
 
 

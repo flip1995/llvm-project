@@ -215,6 +215,16 @@ public:
     return -1;
   }
 
+  bool collectFlatAddressOperands(SmallVectorImpl<int> &OpIndexes,
+                                  Intrinsic::ID IID) const {
+    return false;
+  }
+
+  bool rewriteIntrinsicWithAddressSpace(IntrinsicInst *II,
+                                        Value *OldV, Value *NewV) const {
+    return false;
+  }
+
   bool isLegalAddImmediate(int64_t imm) {
     return getTLI()->isLegalAddImmediate(imm);
   }
@@ -317,7 +327,7 @@ public:
   unsigned getEstimatedNumberOfCaseClusters(const SwitchInst &SI,
                                             unsigned &JumpTableSize) {
     /// Try to find the estimated number of clusters. Note that the number of
-    /// clusters identified in this function could be different from the actural
+    /// clusters identified in this function could be different from the actual
     /// numbers found in lowering. This function ignore switches that are
     /// lowered with a mix of jump table / bit test / BTree. This function was
     /// initially intended to be used when estimating the cost of switch in
@@ -373,10 +383,6 @@ public:
     return N;
   }
 
-  unsigned getJumpBufAlignment() { return getTLI()->getJumpBufAlignment(); }
-
-  unsigned getJumpBufSize() { return getTLI()->getJumpBufSize(); }
-
   bool shouldBuildLookupTables() {
     const TargetLoweringBase *TLI = getTLI();
     return TLI->isOperationLegalOrCustom(ISD::BR_JT, MVT::Other) ||
@@ -428,6 +434,8 @@ public:
   }
 
   unsigned getInliningThresholdMultiplier() { return 1; }
+
+  int getInlinerVectorBonusPercent() { return 150; }
 
   void getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
                                TTI::UnrollingPreferences &UP) {
@@ -497,7 +505,7 @@ public:
   bool isHardwareLoopProfitable(Loop *L, ScalarEvolution &SE,
                                 AssumptionCache &AC,
                                 TargetLibraryInfo *LibInfo,
-                                TTI::HardwareLoopInfo &HWLoopInfo) {
+                                HardwareLoopInfo &HWLoopInfo) {
     return BaseT::isHardwareLoopProfitable(L, SE, AC, LibInfo, HWLoopInfo);
   }
 
@@ -1280,12 +1288,12 @@ public:
     case Intrinsic::experimental_vector_reduce_fmin:
       return ConcreteTTI->getMinMaxReductionCost(
           Tys[0], CmpInst::makeCmpResultType(Tys[0]), /*IsPairwiseForm=*/false,
-          /*IsSigned=*/true);
+          /*IsUnsigned=*/true);
     case Intrinsic::experimental_vector_reduce_umax:
     case Intrinsic::experimental_vector_reduce_umin:
       return ConcreteTTI->getMinMaxReductionCost(
           Tys[0], CmpInst::makeCmpResultType(Tys[0]), /*IsPairwiseForm=*/false,
-          /*IsSigned=*/false);
+          /*IsUnsigned=*/false);
     case Intrinsic::sadd_sat:
     case Intrinsic::ssub_sat: {
       Type *CondTy = Type::getInt1Ty(RetTy->getContext());

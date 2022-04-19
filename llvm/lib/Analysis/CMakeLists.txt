@@ -42,7 +42,6 @@ add_llvm_library(LLVMAnalysis
   InstructionSimplify.cpp
   Interval.cpp
   IntervalPartition.cpp
-  IteratedDominanceFrontier.cpp
   LazyBranchProbabilityInfo.cpp
   LazyBlockFrequencyInfo.cpp
   LazyCallGraph.cpp
@@ -52,6 +51,7 @@ add_llvm_library(LLVMAnalysis
   Loads.cpp
   LoopAccessAnalysis.cpp
   LoopAnalysisManager.cpp
+  LoopCacheAnalysis.cpp
   LoopUnrollAnalyzer.cpp
   LoopInfo.cpp
   LoopPass.cpp

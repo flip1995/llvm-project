@@ -492,12 +492,15 @@ namespace {
         cast<CXXMethodDecl>(CGF.CurCodeDecl)->getParent();
 
       const CXXDestructorDecl *D = BaseClass->getDestructor();
+      // We are already inside a destructor, so presumably the object being
+      // destroyed should have the expected type.
+      QualType ThisTy = D->getThisObjectType();
       Address Addr =
         CGF.GetAddressOfDirectBaseInCompleteClass(CGF.LoadCXXThisAddress(),
                                                   DerivedClass, BaseClass,
                                                   BaseIsVirtual);
       CGF.EmitCXXDestructorCall(D, Dtor_Base, BaseIsVirtual,
-                                /*Delegating=*/false, Addr);
+                                /*Delegating=*/false, Addr, ThisTy);
     }
   };
 
@@ -557,7 +560,7 @@ static void EmitBaseInitializer(CodeGenFunction &CGF,
           AggValueSlot::IsDestructed,
           AggValueSlot::DoesNotNeedGCBarriers,
           AggValueSlot::IsNotAliased,
-          CGF.overlapForBaseInit(ClassDecl, BaseClassDecl, isBaseVirtual));
+          CGF.getOverlapForBaseInit(ClassDecl, BaseClassDecl, isBaseVirtual));
 
   CGF.EmitAggExpr(BaseInit->getInit(), AggSlot);
 
@@ -646,7 +649,7 @@ static void EmitMemberInitializer(CodeGenFunction &CGF,
       LValue Src = CGF.EmitLValueForFieldInitialization(ThisRHSLV, Field);
 
       // Copy the aggregate.
-      CGF.EmitAggregateCopy(LHS, Src, FieldType, CGF.overlapForFieldInit(Field),
+      CGF.EmitAggregateCopy(LHS, Src, FieldType, CGF.getOverlapForFieldInit(Field),
                             LHS.isVolatileQualified());
       // Ensure that we destroy the objects if an exception is thrown later in
       // the constructor.
@@ -682,7 +685,7 @@ void CodeGenFunction::EmitInitializerForField(FieldDecl *Field, LValue LHS,
             AggValueSlot::IsDestructed,
             AggValueSlot::DoesNotNeedGCBarriers,
             AggValueSlot::IsNotAliased,
-            overlapForFieldInit(Field),
+            getOverlapForFieldInit(Field),
             AggValueSlot::IsNotZeroed,
             // Checks are made by the code that calls constructor.
             AggValueSlot::IsSanitizerChecked);
@@ -1442,9 +1445,11 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
   if (DtorType == Dtor_Deleting) {
     RunCleanupsScope DtorEpilogue(*this);
     EnterDtorCleanups(Dtor, Dtor_Deleting);
-    if (HaveInsertPoint())
+    if (HaveInsertPoint()) {
+      QualType ThisTy = Dtor->getThisObjectType();
       EmitCXXDestructorCall(Dtor, Dtor_Complete, /*ForVirtualBase=*/false,
-                            /*Delegating=*/false, LoadCXXThisAddress());
+                            /*Delegating=*/false, LoadCXXThisAddress(), ThisTy);
+    }
     return;
   }
 
@@ -1475,8 +1480,9 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
     EnterDtorCleanups(Dtor, Dtor_Complete);
 
     if (!isTryBody) {
+      QualType ThisTy = Dtor->getThisObjectType();
       EmitCXXDestructorCall(Dtor, Dtor_Base, /*ForVirtualBase=*/false,
-                            /*Delegating=*/false, LoadCXXThisAddress());
+                            /*Delegating=*/false, LoadCXXThisAddress(), ThisTy);
       break;
     }
 
@@ -2015,7 +2021,7 @@ void CodeGenFunction::destroyCXXObject(CodeGenFunction &CGF,
   const CXXDestructorDecl *dtor = record->getDestructor();
   assert(!dtor->isTrivial());
   CGF.EmitCXXDestructorCall(dtor, Dtor_Complete, /*for vbase*/ false,
-                            /*Delegating=*/false, addr);
+                            /*Delegating=*/false, addr, type);
 }
 
 void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
@@ -2370,8 +2376,11 @@ namespace {
       : Dtor(D), Addr(Addr), Type(Type) {}
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
+      // We are calling the destructor from within the constructor.
+      // Therefore, "this" should have the expected type.
+      QualType ThisTy = Dtor->getThisObjectType();
       CGF.EmitCXXDestructorCall(Dtor, Type, /*ForVirtualBase=*/false,
-                                /*Delegating=*/true, Addr);
+                                /*Delegating=*/true, Addr, ThisTy);
     }
   };
 } // end anonymous namespace
@@ -2409,31 +2418,32 @@ CodeGenFunction::EmitDelegatingCXXConstructorCall(const CXXConstructorDecl *Ctor
 void CodeGenFunction::EmitCXXDestructorCall(const CXXDestructorDecl *DD,
                                             CXXDtorType Type,
                                             bool ForVirtualBase,
-                                            bool Delegating,
-                                            Address This) {
+                                            bool Delegating, Address This,
+                                            QualType ThisTy) {
   CGM.getCXXABI().EmitDestructorCall(*this, DD, Type, ForVirtualBase,
-                                     Delegating, This);
+                                     Delegating, This, ThisTy);
 }
 
 namespace {
   struct CallLocalDtor final : EHScopeStack::Cleanup {
     const CXXDestructorDecl *Dtor;
     Address Addr;
+    QualType Ty;
 
-    CallLocalDtor(const CXXDestructorDecl *D, Address Addr)
-      : Dtor(D), Addr(Addr) {}
+    CallLocalDtor(const CXXDestructorDecl *D, Address Addr, QualType Ty)
+        : Dtor(D), Addr(Addr), Ty(Ty) {}
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
       CGF.EmitCXXDestructorCall(Dtor, Dtor_Complete,
                                 /*ForVirtualBase=*/false,
-                                /*Delegating=*/false, Addr);
+                                /*Delegating=*/false, Addr, Ty);
     }
   };
 } // end anonymous namespace
 
 void CodeGenFunction::PushDestructorCleanup(const CXXDestructorDecl *D,
-                                            Address Addr) {
-  EHStack.pushCleanup<CallLocalDtor>(NormalAndEHCleanup, D, Addr);
+                                            QualType T, Address Addr) {
+  EHStack.pushCleanup<CallLocalDtor>(NormalAndEHCleanup, D, Addr, T);
 }
 
 void CodeGenFunction::PushDestructorCleanup(QualType T, Address Addr) {
@@ -2443,7 +2453,7 @@ void CodeGenFunction::PushDestructorCleanup(QualType T, Address Addr) {
 
   const CXXDestructorDecl *D = ClassDecl->getDestructor();
   assert(D && D->isUsed() && "destructor not marked as used!");
-  PushDestructorCleanup(D, Addr);
+  PushDestructorCleanup(D, T, Addr);
 }
 
 void CodeGenFunction::InitializeVTablePointer(const VPtr &Vptr) {

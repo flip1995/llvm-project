@@ -76,7 +76,8 @@ enum DiagnosticKind {
   DK_PGOProfile,
   DK_Unsupported,
   DK_CheriInefficient,
-  DK_FirstPluginKind
+  DK_FirstPluginKind,
+  DK_MisExpect
 };
 
 /// Get the next available kind ID for a plugin diagnostic.
@@ -664,7 +665,7 @@ public:
 private:
   /// The IR value (currently basic block) that the optimization operates on.
   /// This is currently used to provide run-time hotness information with PGO.
-  const Value *CodeRegion;
+  const Value *CodeRegion = nullptr;
 };
 
 /// Diagnostic information for applied optimization remarks.
@@ -1001,6 +1002,25 @@ public:
   const Twine &getMessage() const { return Msg; }
 
   void print(DiagnosticPrinter &DP) const override;
+};
+
+/// Diagnostic information for MisExpect analysis.
+class DiagnosticInfoMisExpect : public DiagnosticInfoWithLocationBase {
+public:
+    DiagnosticInfoMisExpect(const Instruction *Inst, Twine &Msg);
+
+  /// \see DiagnosticInfo::print.
+  void print(DiagnosticPrinter &DP) const override;
+
+  static bool classof(const DiagnosticInfo *DI) {
+    return DI->getKind() == DK_MisExpect;
+  }
+
+  const Twine &getMsg() const { return Msg; }
+
+private:
+  /// Message to report.
+  const Twine &Msg;
 };
 
 // Diagnostic for inefficient CHERI code generation (e.g. unaligned capability

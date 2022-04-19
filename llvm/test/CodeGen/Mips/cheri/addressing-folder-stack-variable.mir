@@ -35,7 +35,7 @@
 ...
 ---
 name:            _ZN3JSC8WeakImpl7jsValueEv
-alignment:       3
+alignment:       8
 exposesReturnsTwice: false
 legalized:       false
 regBankSelected: false
@@ -70,7 +70,7 @@ frameInfo:
 fixedStack:      []
 stack:           
   - { id: 0, name: this.addr, type: default, offset: 0, size: 16, alignment: 16, 
-      stack-id: 0, callee-saved-register: '', callee-saved-restored: true, 
+      stack-id: default, callee-saved-register: '', callee-saved-restored: true, 
       debug-info-variable: '', debug-info-expression: '', debug-info-location: '' }
 constants:       []
 body:             |

@@ -158,7 +158,7 @@ public:
   }
 
   void cycleEvent() {
-    if (CriticalPredecessor.Cycles)
+    if (isWaiting() && CriticalPredecessor.Cycles)
       CriticalPredecessor.Cycles--;
   }
 };
@@ -285,7 +285,7 @@ public:
 
   unsigned createMemoryGroup() {
     Groups.insert(
-        std::make_pair(NextGroupID, llvm::make_unique<MemoryGroup>()));
+        std::make_pair(NextGroupID, std::make_unique<MemoryGroup>()));
     return NextGroupID++;
   }
 

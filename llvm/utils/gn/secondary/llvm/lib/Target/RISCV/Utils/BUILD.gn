@@ -1,5 +1,6 @@
 import("//llvm/utils/TableGen/tablegen.gni")
 
+# Generates RISCVGenSystemOperands.inc
 tablegen("RISCVGenSystemOperands") {
   visibility = [ ":Utils" ]
   args = [ "-gen-searchable-tables" ]
@@ -14,6 +15,9 @@ static_library("Utils") {
   deps = [
     "//llvm/lib/MC",
     "//llvm/lib/Support",
+
+    # MCTargetDesc depends on Utils, so we can't depend on the full
+    # MCTargetDesc target here: it would form a cycle.
     "//llvm/lib/Target/RISCV/MCTargetDesc:tablegen",
   ]
 

@@ -12,6 +12,7 @@
 
 #define LLVM_NO_DEFAULT_ADDRESS_SPACE
 
+#include "llvm/Transforms/Instrumentation/SanitizerCoverage.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/EHPersonalities.h"
@@ -178,24 +179,21 @@ SanitizerCoverageOptions OverrideFromCL(SanitizerCoverageOptions Options) {
   return Options;
 }
 
-class SanitizerCoverageModule : public ModulePass {
-public:
-  SanitizerCoverageModule(
-      const SanitizerCoverageOptions &Options = SanitizerCoverageOptions())
-      : ModulePass(ID), Options(OverrideFromCL(Options)) {
-    initializeSanitizerCoverageModulePass(*PassRegistry::getPassRegistry());
-  }
-  bool runOnModule(Module &M) override;
-  bool runOnFunction(Function &F);
-  static char ID; // Pass identification, replacement for typeid
-  StringRef getPassName() const override { return "SanitizerCoverageModule"; }
+using DomTreeCallback = function_ref<const DominatorTree *(Function &F)>;
+using PostDomTreeCallback =
+    function_ref<const PostDominatorTree *(Function &F)>;
 
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<DominatorTreeWrapperPass>();
-    AU.addRequired<PostDominatorTreeWrapperPass>();
-  }
+class ModuleSanitizerCoverage {
+public:
+  ModuleSanitizerCoverage(
+      const SanitizerCoverageOptions &Options = SanitizerCoverageOptions())
+      : Options(OverrideFromCL(Options)) {}
+  bool instrumentModule(Module &M, DomTreeCallback DTCallback,
+                        PostDomTreeCallback PDTCallback);
 
 private:
+  void instrumentFunction(Function &F, DomTreeCallback DTCallback,
+                          PostDomTreeCallback PDTCallback);
   void InjectCoverageForIndirectCalls(Function &F,
                                       ArrayRef<Instruction *> IndirCalls);
   void InjectTraceForCmp(Function &F, ArrayRef<Instruction *> CmpTraceTargets);
@@ -237,7 +235,7 @@ private:
   FunctionCallee SanCovTraceSwitchFunction;
   GlobalVariable *SanCovLowestStack;
   InlineAsm *EmptyAsm;
-  Type *IntptrTy, *PcAddrTy, *PcAddrPtrTy, *Int64Ty, *GlobalsInt64PtrTy, *Int32Ty,
+  Type *IntptrTy, *PcAddrTy, *Int64Ty, *GlobalsInt64PtrTy, *Int32Ty,
       *GlobalsInt32PtrTy, *Int16Ty, *Int8Ty, *GlobalsInt8PtrTy;
   Module *CurModule;
   std::string CurModuleUniqueId;
@@ -254,10 +252,57 @@ private:
   SanitizerCoverageOptions Options;
 };
 
+class ModuleSanitizerCoverageLegacyPass : public ModulePass {
+public:
+  ModuleSanitizerCoverageLegacyPass(
+      const SanitizerCoverageOptions &Options = SanitizerCoverageOptions())
+      : ModulePass(ID), Options(Options) {
+    initializeModuleSanitizerCoverageLegacyPassPass(
+        *PassRegistry::getPassRegistry());
+  }
+  bool runOnModule(Module &M) override {
+    ModuleSanitizerCoverage ModuleSancov(Options);
+    auto DTCallback = [this](Function &F) -> const DominatorTree * {
+      return &this->getAnalysis<DominatorTreeWrapperPass>(F).getDomTree();
+    };
+    auto PDTCallback = [this](Function &F) -> const PostDominatorTree * {
+      return &this->getAnalysis<PostDominatorTreeWrapperPass>(F)
+                  .getPostDomTree();
+    };
+    return ModuleSancov.instrumentModule(M, DTCallback, PDTCallback);
+  }
+
+  static char ID; // Pass identification, replacement for typeid
+  StringRef getPassName() const override { return "ModuleSanitizerCoverage"; }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<DominatorTreeWrapperPass>();
+    AU.addRequired<PostDominatorTreeWrapperPass>();
+  }
+
+private:
+  SanitizerCoverageOptions Options;
+};
+
 } // namespace
 
+PreservedAnalyses ModuleSanitizerCoveragePass::run(Module &M,
+                                                   ModuleAnalysisManager &MAM) {
+  ModuleSanitizerCoverage ModuleSancov(Options);
+  auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  auto DTCallback = [&FAM](Function &F) -> const DominatorTree * {
+    return &FAM.getResult<DominatorTreeAnalysis>(F);
+  };
+  auto PDTCallback = [&FAM](Function &F) -> const PostDominatorTree * {
+    return &FAM.getResult<PostDominatorTreeAnalysis>(F);
+  };
+  if (ModuleSancov.instrumentModule(M, DTCallback, PDTCallback))
+    return PreservedAnalyses::none();
+  return PreservedAnalyses::all();
+}
+
 std::pair<Value *, Value *>
-SanitizerCoverageModule::CreateSecStartEnd(Module &M, const char *Section,
+ModuleSanitizerCoverage::CreateSecStartEnd(Module &M, const char *Section,
                                            Type *Ty) {
   GlobalVariable *SecStart =
       new GlobalVariable(M, Ty, false, GlobalVariable::ExternalLinkage, nullptr,
@@ -280,7 +325,7 @@ SanitizerCoverageModule::CreateSecStartEnd(Module &M, const char *Section,
   return std::make_pair(IRB.CreatePointerCast(GEP, Ty), SecEndPtr);
 }
 
-Function *SanitizerCoverageModule::CreateInitCallsForSections(
+Function *ModuleSanitizerCoverage::CreateInitCallsForSections(
     Module &M, const char *CtorName, const char *InitFunctionName, Type *Ty,
     const char *Section) {
   auto SecStartEnd = CreateSecStartEnd(M, Section, Ty);
@@ -312,7 +357,8 @@ Function *SanitizerCoverageModule::CreateInitCallsForSections(
   return CtorFunc;
 }
 
-bool SanitizerCoverageModule::runOnModule(Module &M) {
+bool ModuleSanitizerCoverage::instrumentModule(
+    Module &M, DomTreeCallback DTCallback, PostDomTreeCallback PDTCallback) {
   if (Options.CoverageType == SanitizerCoverageOptions::SCK_None)
     return false;
   C = &(M.getContext());
@@ -327,7 +373,7 @@ bool SanitizerCoverageModule::runOnModule(Module &M) {
   IntptrTy = Type::getIntNTy(*C, DL->getPointerSizeInBits(0));
 
   PcAddrTy = Type::getIntNTy(*C, DL->getIndexSizeInBits(DL->getProgramAddressSpace()));
-  PcAddrPtrTy = PcAddrTy->getPointerTo(DL->getGlobalsAddressSpace());
+  Type *PcAddrPtrTy = PcAddrTy->getPointerTo(DL->getGlobalsAddressSpace());
   Type *VoidTy = Type::getVoidTy(*C);
   IRBuilder<> IRB(*C);
   GlobalsInt64PtrTy =
@@ -411,7 +457,7 @@ bool SanitizerCoverageModule::runOnModule(Module &M) {
       M.getOrInsertFunction(SanCovTracePCGuardName, VoidTy, GlobalsInt32PtrTy);
 
   for (auto &F : M)
-    runOnFunction(F);
+    instrumentFunction(F, DTCallback, PDTCallback);
 
   Function *Ctor = nullptr;
 
@@ -526,29 +572,30 @@ static bool IsInterestingCmp(ICmpInst *CMP, const DominatorTree *DT,
   return true;
 }
 
-bool SanitizerCoverageModule::runOnFunction(Function &F) {
+void ModuleSanitizerCoverage::instrumentFunction(
+    Function &F, DomTreeCallback DTCallback, PostDomTreeCallback PDTCallback) {
   if (F.empty())
-    return false;
+    return;
   if (F.getName().find(".module_ctor") != std::string::npos)
-    return false; // Should not instrument sanitizer init functions.
+    return; // Should not instrument sanitizer init functions.
   if (F.getName().startswith("__sanitizer_"))
-    return false;  // Don't instrument __sanitizer_* callbacks.
+    return; // Don't instrument __sanitizer_* callbacks.
   // Don't touch available_externally functions, their actual body is elewhere.
   if (F.getLinkage() == GlobalValue::AvailableExternallyLinkage)
-    return false;
+    return;
   // Don't instrument MSVC CRT configuration helpers. They may run before normal
   // initialization.
   if (F.getName() == "__local_stdio_printf_options" ||
       F.getName() == "__local_stdio_scanf_options")
-    return false;
+    return;
   if (isa<UnreachableInst>(F.getEntryBlock().getTerminator()))
-    return false;
+    return;
   // Don't instrument functions using SEH for now. Splitting basic blocks like
   // we do for coverage breaks WinEHPrepare.
   // FIXME: Remove this when SEH no longer uses landingpad pattern matching.
   if (F.hasPersonalityFn() &&
       isAsynchronousEHPersonality(classifyEHPersonality(F.getPersonalityFn())))
-    return false;
+    return;
   if (Options.CoverageType >= SanitizerCoverageOptions::SCK_Edge)
     SplitAllCriticalEdges(F, CriticalEdgeSplittingOptions().setIgnoreUnreachableDests());
   SmallVector<Instruction *, 8> IndirCalls;
@@ -558,10 +605,8 @@ bool SanitizerCoverageModule::runOnFunction(Function &F) {
   SmallVector<BinaryOperator *, 8> DivTraceTargets;
   SmallVector<GetElementPtrInst *, 8> GepTraceTargets;
 
-  const DominatorTree *DT =
-      &getAnalysis<DominatorTreeWrapperPass>(F).getDomTree();
-  const PostDominatorTree *PDT =
-      &getAnalysis<PostDominatorTreeWrapperPass>(F).getPostDomTree();
+  const DominatorTree *DT = DTCallback(F);
+  const PostDominatorTree *PDT = PDTCallback(F);
   bool IsLeafFunc = true;
 
   for (auto &BB : F) {
@@ -601,10 +646,9 @@ bool SanitizerCoverageModule::runOnFunction(Function &F) {
   InjectTraceForSwitch(F, SwitchTraceTargets);
   InjectTraceForDiv(F, DivTraceTargets);
   InjectTraceForGep(F, GepTraceTargets);
-  return true;
 }
 
-GlobalVariable *SanitizerCoverageModule::CreateFunctionLocalArrayInSection(
+GlobalVariable *ModuleSanitizerCoverage::CreateFunctionLocalArrayInSection(
     size_t NumElements, Function &F, Type *Ty, const char *Section) {
   ArrayType *ArrayTy = ArrayType::get(Ty, NumElements);
   auto Array = new GlobalVariable(
@@ -628,7 +672,7 @@ GlobalVariable *SanitizerCoverageModule::CreateFunctionLocalArrayInSection(
 }
 
 GlobalVariable *
-SanitizerCoverageModule::CreatePCArray(Function &F,
+ModuleSanitizerCoverage::CreatePCArray(Function &F,
                                        ArrayRef<BasicBlock *> AllBlocks) {
   size_t N = AllBlocks.size();
   assert(N);
@@ -653,7 +697,7 @@ SanitizerCoverageModule::CreatePCArray(Function &F,
   return PCArray;
 }
 
-void SanitizerCoverageModule::CreateFunctionLocalArrays(
+void ModuleSanitizerCoverage::CreateFunctionLocalArrays(
     Function &F, ArrayRef<BasicBlock *> AllBlocks) {
   if (Options.TracePCGuard)
     FunctionGuardArray = CreateFunctionLocalArrayInSection(
@@ -667,7 +711,7 @@ void SanitizerCoverageModule::CreateFunctionLocalArrays(
     FunctionPCsArray = CreatePCArray(F, AllBlocks);
 }
 
-bool SanitizerCoverageModule::InjectCoverage(Function &F,
+bool ModuleSanitizerCoverage::InjectCoverage(Function &F,
                                              ArrayRef<BasicBlock *> AllBlocks,
                                              bool IsLeafFunc) {
   if (AllBlocks.empty()) return false;
@@ -684,7 +728,7 @@ bool SanitizerCoverageModule::InjectCoverage(Function &F,
 //     The cache is used to speed up recording the caller-callee pairs.
 // The address of the caller is passed implicitly via caller PC.
 // CacheSize is encoded in the name of the run-time function.
-void SanitizerCoverageModule::InjectCoverageForIndirectCalls(
+void ModuleSanitizerCoverage::InjectCoverageForIndirectCalls(
     Function &F, ArrayRef<Instruction *> IndirCalls) {
   if (IndirCalls.empty())
     return;
@@ -703,7 +747,7 @@ void SanitizerCoverageModule::InjectCoverageForIndirectCalls(
 // __sanitizer_cov_trace_switch(CondValue,
 //      {NumCases, ValueSizeInBits, Case0Value, Case1Value, Case2Value, ... })
 
-void SanitizerCoverageModule::InjectTraceForSwitch(
+void ModuleSanitizerCoverage::InjectTraceForSwitch(
     Function &, ArrayRef<Instruction *> SwitchTraceTargets) {
   for (auto I : SwitchTraceTargets) {
     if (SwitchInst *SI = dyn_cast<SwitchInst>(I)) {
@@ -742,7 +786,7 @@ void SanitizerCoverageModule::InjectTraceForSwitch(
   }
 }
 
-void SanitizerCoverageModule::InjectTraceForDiv(
+void ModuleSanitizerCoverage::InjectTraceForDiv(
     Function &, ArrayRef<BinaryOperator *> DivTraceTargets) {
   for (auto BO : DivTraceTargets) {
     IRBuilder<> IRB(BO);
@@ -760,7 +804,7 @@ void SanitizerCoverageModule::InjectTraceForDiv(
   }
 }
 
-void SanitizerCoverageModule::InjectTraceForGep(
+void ModuleSanitizerCoverage::InjectTraceForGep(
     Function &, ArrayRef<GetElementPtrInst *> GepTraceTargets) {
   for (auto GEP : GepTraceTargets) {
     IRBuilder<> IRB(GEP);
@@ -771,7 +815,7 @@ void SanitizerCoverageModule::InjectTraceForGep(
   }
 }
 
-void SanitizerCoverageModule::InjectTraceForCmp(
+void ModuleSanitizerCoverage::InjectTraceForCmp(
     Function &, ArrayRef<Instruction *> CmpTraceTargets) {
   for (auto I : CmpTraceTargets) {
     if (ICmpInst *ICMP = dyn_cast<ICmpInst>(I)) {
@@ -806,7 +850,7 @@ void SanitizerCoverageModule::InjectTraceForCmp(
   }
 }
 
-void SanitizerCoverageModule::InjectCoverageAtBlock(Function &F, BasicBlock &BB,
+void ModuleSanitizerCoverage::InjectCoverageAtBlock(Function &F, BasicBlock &BB,
                                                     size_t Idx,
                                                     bool IsLeafFunc) {
   BasicBlock::iterator IP = BB.getFirstInsertionPt();
@@ -855,10 +899,10 @@ void SanitizerCoverageModule::InjectCoverageAtBlock(Function &F, BasicBlock &BB,
   }
   if (Options.StackDepth && IsEntryBB && !IsLeafFunc) {
     // Check stack depth.  If it's the deepest so far, record it.
+    Module *M = F.getParent();
     Function *GetFrameAddr = Intrinsic::getDeclaration(
-        F.getParent(), Intrinsic::frameaddress,
-        Int8Ty->getPointerTo(
-            F.getParent()->getDataLayout().getProgramAddressSpace()));
+        M, Intrinsic::frameaddress,
+        IRB.getInt8PtrTy(M->getDataLayout().getAllocaAddrSpace()));
     auto FrameAddrPtr =
         IRB.CreateCall(GetFrameAddr, {Constant::getNullValue(Int32Ty)});
     auto FrameAddrInt = IRB.CreatePtrToInt(FrameAddrPtr, IntptrTy);
@@ -873,7 +917,7 @@ void SanitizerCoverageModule::InjectCoverageAtBlock(Function &F, BasicBlock &BB,
 }
 
 std::string
-SanitizerCoverageModule::getSectionName(const std::string &Section) const {
+ModuleSanitizerCoverage::getSectionName(const std::string &Section) const {
   if (TargetTriple.isOSBinFormatCOFF()) {
     if (Section == SanCovCountersSectionName)
       return ".SCOV$CM";
@@ -887,32 +931,29 @@ SanitizerCoverageModule::getSectionName(const std::string &Section) const {
 }
 
 std::string
-SanitizerCoverageModule::getSectionStart(const std::string &Section) const {
+ModuleSanitizerCoverage::getSectionStart(const std::string &Section) const {
   if (TargetTriple.isOSBinFormatMachO())
     return "\1section$start$__DATA$__" + Section;
   return "__start___" + Section;
 }
 
 std::string
-SanitizerCoverageModule::getSectionEnd(const std::string &Section) const {
+ModuleSanitizerCoverage::getSectionEnd(const std::string &Section) const {
   if (TargetTriple.isOSBinFormatMachO())
     return "\1section$end$__DATA$__" + Section;
   return "__stop___" + Section;
 }
 
-
-char SanitizerCoverageModule::ID = 0;
-INITIALIZE_PASS_BEGIN(SanitizerCoverageModule, "sancov",
-                      "SanitizerCoverage: TODO."
-                      "ModulePass",
-                      false, false)
+char ModuleSanitizerCoverageLegacyPass::ID = 0;
+INITIALIZE_PASS_BEGIN(ModuleSanitizerCoverageLegacyPass, "sancov",
+                      "Pass for instrumenting coverage on functions", false,
+                      false)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(PostDominatorTreeWrapperPass)
-INITIALIZE_PASS_END(SanitizerCoverageModule, "sancov",
-                    "SanitizerCoverage: TODO."
-                    "ModulePass",
-                    false, false)
-ModulePass *llvm::createSanitizerCoverageModulePass(
+INITIALIZE_PASS_END(ModuleSanitizerCoverageLegacyPass, "sancov",
+                    "Pass for instrumenting coverage on functions", false,
+                    false)
+ModulePass *llvm::createModuleSanitizerCoverageLegacyPassPass(
     const SanitizerCoverageOptions &Options) {
-  return new SanitizerCoverageModule(Options);
+  return new ModuleSanitizerCoverageLegacyPass(Options);
 }

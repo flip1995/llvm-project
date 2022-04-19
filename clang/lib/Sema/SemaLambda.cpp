@@ -370,7 +370,7 @@ Sema::ExpressionEvaluationContextRecord::getMangleNumberingContext(
 CXXMethodDecl *Sema::startLambdaDefinition(
     CXXRecordDecl *Class, SourceRange IntroducerRange,
     TypeSourceInfo *MethodTypeInfo, SourceLocation EndLoc,
-    ArrayRef<ParmVarDecl *> Params, const bool IsConstexprSpecified,
+    ArrayRef<ParmVarDecl *> Params, ConstexprSpecKind ConstexprKind,
     Optional<std::pair<unsigned, Decl *>> Mangling) {
   QualType MethodType = MethodTypeInfo->getType();
   TemplateParameterList *TemplateParams =
@@ -400,17 +400,15 @@ CXXMethodDecl *Sema::startLambdaDefinition(
     = IntroducerRange.getBegin().getRawEncoding();
   MethodNameLoc.CXXOperatorName.EndOpNameLoc
     = IntroducerRange.getEnd().getRawEncoding();
-  CXXMethodDecl *Method
-    = CXXMethodDecl::Create(Context, Class, EndLoc,
-                            DeclarationNameInfo(MethodName,
-                                                IntroducerRange.getBegin(),
-                                                MethodNameLoc),
-                            MethodType, MethodTypeInfo,
-                            SC_None,
-                            /*isInline=*/true,
-                            IsConstexprSpecified,
-                            EndLoc);
+  CXXMethodDecl *Method = CXXMethodDecl::Create(
+      Context, Class, EndLoc,
+      DeclarationNameInfo(MethodName, IntroducerRange.getBegin(),
+                          MethodNameLoc),
+      MethodType, MethodTypeInfo, SC_None,
+      /*isInline=*/true, ConstexprKind, EndLoc);
   Method->setAccess(AS_public);
+  if (!TemplateParams)
+    Class->addDecl(Method);
 
   // Temporarily set the lexical declaration context to the current
   // context, so that the Scope stack matches the lexical nesting.
@@ -422,9 +420,10 @@ CXXMethodDecl *Sema::startLambdaDefinition(
                                          TemplateParams,
                                          Method) : nullptr;
   if (TemplateMethod) {
-    TemplateMethod->setLexicalDeclContext(CurContext);
     TemplateMethod->setAccess(AS_public);
     Method->setDescribedFunctionTemplate(TemplateMethod);
+    Class->addDecl(TemplateMethod);
+    TemplateMethod->setLexicalDeclContext(CurContext);
   }
 
   // Add parameters.
@@ -843,6 +842,8 @@ VarDecl *Sema::createLambdaInitCaptureVarDecl(SourceLocation Loc,
   NewVD->setInitStyle(static_cast<VarDecl::InitializationStyle>(InitStyle));
   NewVD->markUsed(Context);
   NewVD->setInit(Init);
+  if (NewVD->isParameterPack())
+    getCurLambda()->LocalPacks.push_back(NewVD);
   return NewVD;
 }
 
@@ -932,15 +933,15 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
     // Check for unexpanded parameter packs in the method type.
     if (MethodTyInfo->getType()->containsUnexpandedParameterPack())
-      ContainsUnexpandedParameterPack = true;
+      DiagnoseUnexpandedParameterPack(Intro.Range.getBegin(), MethodTyInfo,
+                                      UPPC_DeclarationType);
   }
 
   CXXRecordDecl *Class = createLambdaClosureType(Intro.Range, MethodTyInfo,
                                                  KnownDependent, Intro.Default);
-
   CXXMethodDecl *Method =
       startLambdaDefinition(Class, Intro.Range, MethodTyInfo, EndLoc, Params,
-                            ParamInfo.getDeclSpec().isConstexprSpecified());
+                            ParamInfo.getDeclSpec().getConstexprSpecifier());
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
 
@@ -1057,7 +1058,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
       if (C->Init.get()->containsUnexpandedParameterPack() &&
           !C->InitCaptureType.get()->getAs<PackExpansionType>())
-        ContainsUnexpandedParameterPack = true;
+        DiagnoseUnexpandedParameterPack(C->Init.get(), UPPC_Initializer);
 
       unsigned InitStyle;
       switch (C->InitKind) {
@@ -1188,7 +1189,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   }
   finishLambdaExplicitCaptures(LSI);
 
-  LSI->ContainsUnexpandedParameterPack = ContainsUnexpandedParameterPack;
+  LSI->ContainsUnexpandedParameterPack |= ContainsUnexpandedParameterPack;
 
   // Add lambda parameters into scope.
   addLambdaParameters(Intro.Captures, Method, CurScope);
@@ -1332,7 +1333,7 @@ static void addFunctionPointerConversion(Sema &S,
         S.Context.getTranslationUnitDecl(), From->getBeginLoc(),
         From->getLocation(), From->getIdentifier(), From->getType(),
         From->getTypeSourceInfo(), From->getStorageClass(),
-        /*DefaultArg=*/nullptr));
+        /*DefArg=*/nullptr));
     CallOpConvTL.setParam(I, From);
     CallOpConvNameTL.setParam(I, From);
   }
@@ -1341,7 +1342,7 @@ static void addFunctionPointerConversion(Sema &S,
       S.Context, Class, Loc,
       DeclarationNameInfo(ConversionName, Loc, ConvNameLoc), ConvTy, ConvTSI,
       /*isInline=*/true, ExplicitSpecifier(),
-      /*isConstexpr=*/S.getLangOpts().CPlusPlus17,
+      S.getLangOpts().CPlusPlus17 ? CSK_constexpr : CSK_unspecified,
       CallOperator->getBody()->getEndLoc());
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
@@ -1380,8 +1381,7 @@ static void addFunctionPointerConversion(Sema &S,
   CXXMethodDecl *Invoke = CXXMethodDecl::Create(
       S.Context, Class, Loc, DeclarationNameInfo(InvokerName, Loc),
       InvokerFunctionTy, CallOperator->getTypeSourceInfo(), SC_Static,
-      /*IsInline=*/true,
-      /*IsConstexpr=*/false, CallOperator->getBody()->getEndLoc());
+      /*isInline=*/true, CSK_unspecified, CallOperator->getBody()->getEndLoc());
   for (unsigned I = 0, N = CallOperator->getNumParams(); I != N; ++I)
     InvokerParams[I]->setOwningFunction(Invoke);
   Invoke->setParams(InvokerParams);
@@ -1427,8 +1427,8 @@ static void addBlockPointerConversion(Sema &S,
   CXXConversionDecl *Conversion = CXXConversionDecl::Create(
       S.Context, Class, Loc, DeclarationNameInfo(Name, Loc, NameLoc), ConvTy,
       S.Context.getTrivialTypeSourceInfo(ConvTy, Loc),
-      /*isInline=*/true, ExplicitSpecifier(),
-      /*isConstexpr=*/false, CallOperator->getBody()->getEndLoc());
+      /*isInline=*/true, ExplicitSpecifier(), CSK_unspecified,
+      CallOperator->getBody()->getEndLoc());
   Conversion->setAccess(AS_public);
   Conversion->setImplicit(true);
   Class->addDecl(Conversion);
@@ -1644,8 +1644,9 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
         ? CallOperator->getDescribedFunctionTemplate()
         : cast<Decl>(CallOperator);
 
+    // FIXME: Is this really the best choice? Keeping the lexical decl context
+    // set as CurContext seems more faithful to the source.
     TemplateOrNonTemplateCallOperatorDecl->setLexicalDeclContext(Class);
-    Class->addDecl(TemplateOrNonTemplateCallOperatorDecl);
 
     PopExpressionEvaluationContext();
 
@@ -1781,10 +1782,11 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
       !CallOperator->isConstexpr() &&
       !isa<CoroutineBodyStmt>(CallOperator->getBody()) &&
       !Class->getDeclContext()->isDependentContext()) {
-    TentativeAnalysisScope DiagnosticScopeGuard(*this);
-    CallOperator->setConstexpr(
-        CheckConstexprFunctionDecl(CallOperator) &&
-        CheckConstexprFunctionBody(CallOperator, CallOperator->getBody()));
+    CallOperator->setConstexprKind(
+        CheckConstexprFunctionDefinition(CallOperator,
+                                         CheckConstexprKind::CheckValid)
+            ? CSK_constexpr
+            : CSK_unspecified);
   }
 
   // Emit delayed shadowing warnings now that the full capture list is known.
@@ -1863,7 +1865,7 @@ ExprResult Sema::BuildBlockForLambdaConversion(SourceLocation CurrentLocation,
         Context, Block, From->getBeginLoc(), From->getLocation(),
         From->getIdentifier(), From->getType(), From->getTypeSourceInfo(),
         From->getStorageClass(),
-        /*DefaultArg=*/nullptr));
+        /*DefArg=*/nullptr));
   }
   Block->setParams(BlockParams);
 
@@ -1878,8 +1880,8 @@ ExprResult Sema::BuildBlockForLambdaConversion(SourceLocation CurrentLocation,
                                     ConvLocation, nullptr,
                                     Src->getType(), CapVarTSI,
                                     SC_None);
-  BlockDecl::Capture Capture(/*Variable=*/CapVar, /*ByRef=*/false,
-                             /*Nested=*/false, /*Copy=*/Init.get());
+  BlockDecl::Capture Capture(/*variable=*/CapVar, /*byRef=*/false,
+                             /*nested=*/false, /*copy=*/Init.get());
   Block->setCaptures(Context, Capture, /*CapturesCXXThis=*/false);
 
   // Add a fake function body to the block. IR generation is responsible

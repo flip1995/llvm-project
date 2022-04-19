@@ -37,8 +37,9 @@ static cl::opt<unsigned> MaxInterleaveGroupFactor(
     cl::init(8));
 
 /// Return true if all of the intrinsic's arguments and return type are scalars
-/// for the scalar form of the intrinsic and vectors for the vector form of the
-/// intrinsic.
+/// for the scalar form of the intrinsic, and vectors for the vector form of the
+/// intrinsic (except operands that are marked as always being scalar by
+/// hasVectorInstrinsicScalarOpd).
 bool llvm::isTriviallyVectorizable(Intrinsic::ID ID) {
   switch (ID) {
   case Intrinsic::bswap: // Begin integer bit-manipulation.
@@ -53,7 +54,9 @@ bool llvm::isTriviallyVectorizable(Intrinsic::ID ID) {
   case Intrinsic::uadd_sat:
   case Intrinsic::usub_sat:
   case Intrinsic::smul_fix:
+  case Intrinsic::smul_fix_sat:
   case Intrinsic::umul_fix:
+  case Intrinsic::umul_fix_sat:
   case Intrinsic::sqrt: // Begin floating-point.
   case Intrinsic::sin:
   case Intrinsic::cos:
@@ -85,8 +88,7 @@ bool llvm::isTriviallyVectorizable(Intrinsic::ID ID) {
   }
 }
 
-/// Identifies if the intrinsic has a scalar operand. It check for
-/// ctlz,cttz and powi special intrinsics whose argument is scalar.
+/// Identifies if the vector form of the intrinsic has a scalar operand.
 bool llvm::hasVectorInstrinsicScalarOpd(Intrinsic::ID ID,
                                         unsigned ScalarOpdIdx) {
   switch (ID) {
@@ -95,7 +97,9 @@ bool llvm::hasVectorInstrinsicScalarOpd(Intrinsic::ID ID,
   case Intrinsic::powi:
     return (ScalarOpdIdx == 1);
   case Intrinsic::smul_fix:
+  case Intrinsic::smul_fix_sat:
   case Intrinsic::umul_fix:
+  case Intrinsic::umul_fix_sat:
     return (ScalarOpdIdx == 2);
   default:
     return false;
@@ -962,6 +966,10 @@ void InterleavedAccessInfo::analyzeInterleaving(
         // instructions that precede it.
         if (isInterleaved(A)) {
           InterleaveGroup<Instruction> *StoreGroup = getInterleaveGroup(A);
+
+          LLVM_DEBUG(dbgs() << "LV: Invalidated store group due to "
+                               "dependence between " << *A << " and "<< *B << '\n');
+
           StoreGroups.remove(StoreGroup);
           releaseGroup(StoreGroup);
         }

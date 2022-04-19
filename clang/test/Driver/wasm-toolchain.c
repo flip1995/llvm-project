@@ -48,11 +48,11 @@
 
 // Thread-related command line tests.
 
-// '-pthread' sets '-target-feature +atomics' and '--shared-memory'
+// '-pthread' sets +atomics, +bulk-memory, +mutable-globals, and --shared-memory
 // RUN: %clang -### -no-canonical-prefixes -target wasm32-unknown-unknown \
 // RUN:    --sysroot=/foo %s -fuse-ld=wasm-ld -pthread 2>&1 \
 // RUN:  | FileCheck -check-prefix=PTHREAD %s
-// PTHREAD: clang{{.*}}" "-cc1" {{.*}} "-target-feature" "+atomics"
+// PTHREAD: clang{{.*}}" "-cc1" {{.*}} "-target-feature" "+atomics" "-target-feature" "+bulk-memory" "-target-feature" "+mutable-globals"
 // PTHREAD: wasm-ld{{.*}}" "-lpthread" "--shared-memory"
 
 // '-pthread' not allowed with '-mno-atomics'
@@ -60,3 +60,38 @@
 // RUN:     --sysroot=/foo %s -pthread -mno-atomics 2>&1 \
 // RUN:   | FileCheck -check-prefix=PTHREAD_NO_ATOMICS %s
 // PTHREAD_NO_ATOMICS: invalid argument '-pthread' not allowed with '-mno-atomics'
+
+// '-pthread' not allowed with '-mno-bulk-memory'
+// RUN: %clang -### -no-canonical-prefixes -target wasm32-unknown-unknown \
+// RUN:     --sysroot=/foo %s -pthread -mno-bulk-memory 2>&1 \
+// RUN:   | FileCheck -check-prefix=PTHREAD_NO_BULK_MEM %s
+// PTHREAD_NO_BULK_MEM: invalid argument '-pthread' not allowed with '-mno-bulk-memory'
+
+// '-pthread' not allowed with '-mno-mutable-globals'
+// RUN: %clang -### -no-canonical-prefixes -target wasm32-unknown-unknown \
+// RUN:     --sysroot=/foo %s -pthread -mno-mutable-globals 2>&1 \
+// RUN:   | FileCheck -check-prefix=PTHREAD_NO_MUT_GLOBALS %s
+// PTHREAD_NO_MUT_GLOBALS: invalid argument '-pthread' not allowed with '-mno-mutable-globals'
+
+// '-fwasm-exceptions' sets +exception-handling
+// RUN: %clang -### -no-canonical-prefixes -target wasm32-unknown-unknown \
+// RUN:    --sysroot=/foo %s -fwasm-exceptions 2>&1 \
+// RUN:  | FileCheck -check-prefix=WASM_EXCEPTIONS %s
+// WASM_EXCEPTIONS: clang{{.*}}" "-cc1" {{.*}} "-target-feature" "+exception-handling"
+
+// '-fwasm-exceptions' not allowed with '-mno-exception-handling'
+// RUN: %clang -### -no-canonical-prefixes -target wasm32-unknown-unknown \
+// RUN:     --sysroot=/foo %s -fwasm-exceptions -mno-exception-handling 2>&1 \
+// RUN:   | FileCheck -check-prefix=WASM_EXCEPTIONS_NO_EH %s
+// WASM_EXCEPTIONS_NO_EH: invalid argument '-fwasm-exceptions' not allowed with '-mno-exception-handling'
+
+// '-fwasm-exceptions' not allowed with
+// '-mllvm -enable-emscripten-cxx-exceptions'
+// RUN: %clang -### -no-canonical-prefixes -target wasm32-unknown-unknown \
+// RUN:     --sysroot=/foo %s -fwasm-exceptions -mllvm -enable-emscripten-cxx-exceptions 2>&1 \
+// RUN:   | FileCheck -check-prefix=WASM_EXCEPTIONS_EMSCRIPTEN_EH %s
+// WASM_EXCEPTIONS_EMSCRIPTEN_EH: invalid argument '-fwasm-exceptions' not allowed with '-mllvm -enable-emscripten-cxx-exceptions'
+
+// RUN: %clang %s -### -fsanitize=address -target wasm32-unknown-emscripten 2>&1 | FileCheck -check-prefix=CHECK-ASAN-EMSCRIPTEN %s
+// CHECK-ASAN-EMSCRIPTEN: "-fsanitize=address"
+// CHECK-ASAN-EMSCRIPTEN: "-fsanitize-address-globals-dead-stripping"

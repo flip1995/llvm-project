@@ -140,6 +140,8 @@ public:
 
   unsigned getInliningThresholdMultiplier() { return 1; }
 
+  int getInlinerVectorBonusPercent() { return 150; }
+
   unsigned getMemcpyCost(const Instruction *I) {
     return TTI::TCC_Expensive;
   }
@@ -152,6 +154,16 @@ public:
 
   unsigned getFlatAddressSpace () {
     return -1;
+  }
+
+  bool collectFlatAddressOperands(SmallVectorImpl<int> &OpIndexes,
+                                  Intrinsic::ID IID) const {
+    return false;
+  }
+
+  bool rewriteIntrinsicWithAddressSpace(IntrinsicInst *II,
+                                        Value *OldV, Value *NewV) const {
+    return false;
   }
 
   bool isLoweredToCall(const Function *F) {
@@ -193,7 +205,7 @@ public:
   bool isHardwareLoopProfitable(Loop *L, ScalarEvolution &SE,
                                 AssumptionCache &AC,
                                 TargetLibraryInfo *LibInfo,
-                                TTI::HardwareLoopInfo &HWLoopInfo) {
+                                HardwareLoopInfo &HWLoopInfo) {
     return false;
   }
 
@@ -221,6 +233,12 @@ public:
 
   bool canMacroFuseCmp() { return false; }
 
+  bool canSaveCmp(Loop *L, BranchInst **BI, ScalarEvolution *SE, LoopInfo *LI,
+                  DominatorTree *DT, AssumptionCache *AC,
+                  TargetLibraryInfo *LibInfo) {
+    return false;
+  }
+
   bool shouldFavorPostInc() const { return false; }
 
   bool shouldFavorBackedgeIndex(const Loop *L) const { return false; }
@@ -228,6 +246,20 @@ public:
   bool isLegalMaskedStore(Type *DataType) { return false; }
 
   bool isLegalMaskedLoad(Type *DataType) { return false; }
+
+  bool isLegalNTStore(Type *DataType, llvm::Align Alignment) {
+    // By default, assume nontemporal memory stores are available for stores
+    // that are aligned and have a size that is a power of 2.
+    unsigned DataSize = DL.getTypeStoreSize(DataType);
+    return Alignment >= DataSize && isPowerOf2_32(DataSize);
+  }
+
+  bool isLegalNTLoad(Type *DataType, llvm::Align Alignment) {
+    // By default, assume nontemporal memory loads are available for loads that
+    // are aligned and have a size that is a power of 2.
+    unsigned DataSize = DL.getTypeStoreSize(DataType);
+    return Alignment >= DataSize && isPowerOf2_32(DataSize);
+  }
 
   bool isLegalMaskedScatter(Type *DataType) { return false; }
 
@@ -282,9 +314,9 @@ public:
 
   bool enableAggressiveInterleaving(bool LoopHasReductions) { return false; }
 
-  const TTI::MemCmpExpansionOptions *enableMemCmpExpansion(
-      bool IsZeroCmp) const {
-    return nullptr;
+  TTI::MemCmpExpansionOptions enableMemCmpExpansion(bool OptSize,
+                                                    bool IsZeroCmp) const {
+    return {};
   }
 
   bool enableInterleavedAccessVectorization() { return false; }
@@ -558,6 +590,10 @@ public:
     return true;
   }
 
+  unsigned getGISelRematGlobalCost() const {
+    return 1;
+  }
+
 protected:
   // Obtain the minimum required size to hold the value (without the sign)
   // In case of a vector it returns the min required size for one element.
@@ -803,6 +839,9 @@ public:
   unsigned getUserCost(const User *U, ArrayRef<const Value *> Operands) {
     if (isa<PHINode>(U))
       return TTI::TCC_Free; // Model all PHI nodes as free.
+
+    if (isa<ExtractValueInst>(U))
+      return TTI::TCC_Free; // Model all ExtractValue nodes as free.
 
     // Static alloca doesn't generate target instructions.
     if (auto *A = dyn_cast<AllocaInst>(U))

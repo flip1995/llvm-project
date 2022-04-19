@@ -521,9 +521,11 @@ private:
 //                                AtomicCmpXchgInst Class
 //===----------------------------------------------------------------------===//
 
-/// an instruction that atomically checks whether a
+/// An instruction that atomically checks whether a
 /// specified value is in a memory location, and, if it is, stores a new value
-/// there.  Returns the value that was loaded.
+/// there. The value returned by this instruction is a pair containing the
+/// original value as first element, and an i1 indicating success (true) or
+/// failure (false) as second element.
 ///
 class AtomicCmpXchgInst : public Instruction {
   void Init(Value *Ptr, Value *Cmp, Value *NewVal,
@@ -1762,6 +1764,10 @@ public:
   void setTrueValue(Value *V) { Op<1>() = V; }
   void setFalseValue(Value *V) { Op<2>() = V; }
 
+  /// Swap the true and false values of the select instruction.
+  /// This doesn't swap prof metadata.
+  void swapValues() { Op<1>().swap(Op<2>()); }
+
   /// Return a string if the specified operands are invalid
   /// for a select operation, otherwise return null.
   static const char *areInvalidOperands(Value *Cond, Value *True, Value *False);
@@ -2674,7 +2680,7 @@ public:
   }
 
   /// Replace every incoming basic block \p Old to basic block \p New.
-  void replaceIncomingBlockWith(BasicBlock *Old, BasicBlock *New) {
+  void replaceIncomingBlockWith(const BasicBlock *Old, BasicBlock *New) {
     assert(New && Old && "PHI node got a null basic block!");
     for (unsigned Op = 0, NumOps = getNumOperands(); Op != NumOps; ++Op)
       if (getIncomingBlock(Op) == Old)
@@ -2722,6 +2728,19 @@ public:
     int Idx = getBasicBlockIndex(BB);
     assert(Idx >= 0 && "Invalid basic block argument!");
     return getIncomingValue(Idx);
+  }
+
+  /// Set every incoming value(s) for block \p BB to \p V.
+  void setIncomingValueForBlock(const BasicBlock *BB, Value *V) {
+    assert(BB && "PHI node got a null basic block!");
+    bool Found = false;
+    for (unsigned Op = 0, NumOps = getNumOperands(); Op != NumOps; ++Op)
+      if (getIncomingBlock(Op) == BB) {
+        Found = true;
+        setIncomingValue(Op, V);
+      }
+    (void)Found;
+    assert(Found && "Invalid basic block argument to set!");
   }
 
   /// If the specified PHI node always merges together the
@@ -3440,16 +3459,7 @@ public:
 class SwitchInstProfUpdateWrapper {
   SwitchInst &SI;
   Optional<SmallVector<uint32_t, 8> > Weights = None;
-
-  // Sticky invalid state is needed to safely ignore operations with prof data
-  // in cases where SwitchInstProfUpdateWrapper is created from SwitchInst
-  // with inconsistent prof data. TODO: once we fix all prof data
-  // inconsistencies we can turn invalid state to assertions.
-  enum {
-    Invalid,
-    Initialized,
-    Changed
-  } State = Invalid;
+  bool Changed = false;
 
 protected:
   static MDNode *getProfBranchWeightsMD(const SwitchInst &SI);
@@ -3467,7 +3477,7 @@ public:
   SwitchInstProfUpdateWrapper(SwitchInst &SI) : SI(SI) { init(); }
 
   ~SwitchInstProfUpdateWrapper() {
-    if (State == Changed)
+    if (Changed)
       SI.setMetadata(LLVMContext::MD_prof, buildProfBranchWeightsMD());
   }
 
@@ -3923,6 +3933,9 @@ class CallBrInst : public CallBase {
             ArrayRef<BasicBlock *> IndirectDests, ArrayRef<Value *> Args,
             ArrayRef<OperandBundleDef> Bundles, const Twine &NameStr);
 
+  /// Should the Indirect Destinations change, scan + update the Arg list.
+  void updateArgBlockAddresses(unsigned i, BasicBlock *B);
+
   /// Compute the number of operands to allocate.
   static int ComputeNumOperands(int NumArgs, int NumIndirectDests,
                                 int NumBundleInputs = 0) {
@@ -4060,7 +4073,7 @@ public:
     return cast<BasicBlock>(*(&Op<-1>() - getNumIndirectDests() - 1));
   }
   BasicBlock *getIndirectDest(unsigned i) const {
-    return cast<BasicBlock>(*(&Op<-1>() - getNumIndirectDests() + i));
+    return cast_or_null<BasicBlock>(*(&Op<-1>() - getNumIndirectDests() + i));
   }
   SmallVector<BasicBlock *, 16> getIndirectDests() const {
     SmallVector<BasicBlock *, 16> IndirectDests;
@@ -4072,6 +4085,7 @@ public:
     *(&Op<-1>() - getNumIndirectDests() - 1) = reinterpret_cast<Value *>(B);
   }
   void setIndirectDest(unsigned i, BasicBlock *B) {
+    updateArgBlockAddresses(i, B);
     *(&Op<-1>() - getNumIndirectDests() + i) = reinterpret_cast<Value *>(B);
   }
 
@@ -4081,11 +4095,10 @@ public:
     return i == 0 ? getDefaultDest() : getIndirectDest(i - 1);
   }
 
-  void setSuccessor(unsigned idx, BasicBlock *NewSucc) {
-    assert(idx < getNumIndirectDests() + 1 &&
+  void setSuccessor(unsigned i, BasicBlock *NewSucc) {
+    assert(i < getNumIndirectDests() + 1 &&
            "Successor # out of range for callbr!");
-    *(&Op<-1>() - getNumIndirectDests() -1 + idx) =
-        reinterpret_cast<Value *>(NewSucc);
+    return i == 0 ? setDefaultDest(NewSucc) : setIndirectDest(i - 1, NewSucc);
   }
 
   unsigned getNumSuccessors() const { return getNumIndirectDests() + 1; }
@@ -5236,22 +5249,29 @@ public:
 
 /// A helper function that returns the pointer operand of a load or store
 /// instruction. Returns nullptr if not load or store.
-inline Value *getLoadStorePointerOperand(Value *V) {
+inline const Value *getLoadStorePointerOperand(const Value *V) {
   if (auto *Load = dyn_cast<LoadInst>(V))
     return Load->getPointerOperand();
   if (auto *Store = dyn_cast<StoreInst>(V))
     return Store->getPointerOperand();
   return nullptr;
 }
+inline Value *getLoadStorePointerOperand(Value *V) {
+  return const_cast<Value *>(
+      getLoadStorePointerOperand(static_cast<const Value *>(V)));
+}
 
 /// A helper function that returns the pointer operand of a load, store
 /// or GEP instruction. Returns nullptr if not load, store, or GEP.
-inline Value *getPointerOperand(Value *V) {
+inline const Value *getPointerOperand(const Value *V) {
   if (auto *Ptr = getLoadStorePointerOperand(V))
     return Ptr;
   if (auto *Gep = dyn_cast<GetElementPtrInst>(V))
     return Gep->getPointerOperand();
   return nullptr;
+}
+inline Value *getPointerOperand(Value *V) {
+  return const_cast<Value *>(getPointerOperand(static_cast<const Value *>(V)));
 }
 
 /// A helper function that returns the alignment of load or store instruction.

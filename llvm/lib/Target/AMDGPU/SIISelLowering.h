@@ -60,7 +60,7 @@ private:
   SDValue lowerImage(SDValue Op, const AMDGPU::ImageDimIntrinsicInfo *Intr,
                      SelectionDAG &DAG) const;
   SDValue lowerSBuffer(EVT VT, SDLoc DL, SDValue Rsrc, SDValue Offset,
-                       SDValue GLC, SelectionDAG &DAG) const;
+                       SDValue GLC, SDValue DLC, SelectionDAG &DAG) const;
 
   SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, SelectionDAG &DAG) const;
@@ -94,6 +94,9 @@ private:
                               SelectionDAG &DAG, ArrayRef<SDValue> Ops,
                               bool IsIntrinsic = false) const;
 
+  SDValue lowerIntrinsicLoad(MemSDNode *M, bool IsFormat, SelectionDAG &DAG,
+                             ArrayRef<SDValue> Ops) const;
+
   // Call DAG.getMemIntrinsicNode for a load, but first widen a dwordx3 type to
   // dwordx4 if on SI.
   SDValue getMemIntrinsicNode(unsigned Opcode, const SDLoc &DL, SDVTList VTList,
@@ -121,8 +124,10 @@ private:
                              SelectionDAG &DAG) const;
 
   SDValue lowerADDRSPACECAST(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerINSERT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerINSERT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerEXTRACT_VECTOR_ELT(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerVECTOR_SHUFFLE(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerTRAP(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerDEBUGTRAP(SDValue Op, SelectionDAG &DAG) const;
@@ -233,6 +238,11 @@ public:
   bool canMergeStoresTo(unsigned AS, EVT MemVT,
                         const SelectionDAG &DAG) const override;
 
+  bool allowsMisalignedMemoryAccessesImpl(
+      unsigned Size, unsigned AS, unsigned Align,
+      MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
+      bool *IsFast = nullptr) const;
+
   bool allowsMisalignedMemoryAccesses(
       EVT VT, unsigned AS, unsigned Align,
       MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
@@ -313,6 +323,10 @@ public:
   MachineBasicBlock *splitKillBlock(MachineInstr &MI,
                                     MachineBasicBlock *BB) const;
 
+  void bundleInstWithWaitcnt(MachineInstr &MI) const;
+  MachineBasicBlock *emitGWSMemViolTestLoop(MachineInstr &MI,
+                                            MachineBasicBlock *BB) const;
+
   MachineBasicBlock *
   EmitInstrWithCustomInserter(MachineInstr &MI,
                               MachineBasicBlock *BB) const override;
@@ -325,6 +339,7 @@ public:
   bool isFMAFasterThanFMulAndFAdd(EVT VT) const override;
   SDValue splitUnaryVectorOp(SDValue Op, SelectionDAG &DAG) const;
   SDValue splitBinaryVectorOp(SDValue Op, SelectionDAG &DAG) const;
+  SDValue splitTernaryVectorOp(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
 
   void ReplaceNodeResults(SDNode *N, SmallVectorImpl<SDValue> &Results,
@@ -369,7 +384,33 @@ public:
                                     unsigned Depth = 0) const override;
   AtomicExpansionKind shouldExpandAtomicRMWInIR(AtomicRMWInst *) const override;
 
-  unsigned getPrefLoopAlignment(MachineLoop *ML) const override;
+  llvm::Align getPrefLoopAlignment(MachineLoop *ML) const override;
+
+  void allocateHSAUserSGPRs(CCState &CCInfo,
+                            MachineFunction &MF,
+                            const SIRegisterInfo &TRI,
+                            SIMachineFunctionInfo &Info) const;
+
+  void allocateSystemSGPRs(CCState &CCInfo,
+                           MachineFunction &MF,
+                           SIMachineFunctionInfo &Info,
+                           CallingConv::ID CallConv,
+                           bool IsShader) const;
+
+  void allocateSpecialEntryInputVGPRs(CCState &CCInfo,
+                                      MachineFunction &MF,
+                                      const SIRegisterInfo &TRI,
+                                      SIMachineFunctionInfo &Info) const;
+  void allocateSpecialInputSGPRs(
+    CCState &CCInfo,
+    MachineFunction &MF,
+    const SIRegisterInfo &TRI,
+    SIMachineFunctionInfo &Info) const;
+
+  void allocateSpecialInputVGPRs(CCState &CCInfo,
+                                 MachineFunction &MF,
+                                 const SIRegisterInfo &TRI,
+                                 SIMachineFunctionInfo &Info) const;
 };
 
 } // End namespace llvm
