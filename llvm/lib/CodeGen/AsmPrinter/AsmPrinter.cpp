@@ -299,8 +299,11 @@ bool AsmPrinter::doInitialization(Module &M) {
   // don't, this at least helps the user find where a global came from.
   if (MAI->hasSingleParameterDotFile()) {
     // .file "foo.c"
-    OutStreamer->emitFileDirective(
-        llvm::sys::path::filename(M.getSourceFileName()));
+    if (MAI->hasBasenameOnlyForFileDirective())
+      OutStreamer->emitFileDirective(
+          llvm::sys::path::filename(M.getSourceFileName()));
+    else
+      OutStreamer->emitFileDirective(M.getSourceFileName());
   }
 
   GCModuleInfo *MI = getAnalysisIfAvailable<GCModuleInfo>();
@@ -356,7 +359,7 @@ bool AsmPrinter::doInitialization(Module &M) {
     isCFIMoveForDebugging = true;
     if (MAI->getExceptionHandlingType() != ExceptionHandling::DwarfCFI)
       break;
-    for (auto &F: M.getFunctionList()) {
+    for (auto &F : M.getFunctionList()) {
       // If the module contains any function with unwind data,
       // .eh_frame has to be emitted.
       // Ignore functions that won't get emitted.

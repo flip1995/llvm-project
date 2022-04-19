@@ -315,8 +315,12 @@ def note_riscv_repeated_interrupt_attribute : Note<
   "repeated RISC-V 'interrupt' attribute is here">;
 def warn_unused_parameter : Warning<"unused parameter %0">,
   InGroup<UnusedParameter>, DefaultIgnore;
+def warn_unused_but_set_parameter : Warning<"parameter %0 set but not used">,
+  InGroup<UnusedButSetParameter>, DefaultIgnore;
 def warn_unused_variable : Warning<"unused variable %0">,
   InGroup<UnusedVariable>, DefaultIgnore;
+def warn_unused_but_set_variable : Warning<"variable %0 set but not used">,
+  InGroup<UnusedButSetVariable>, DefaultIgnore;
 def warn_unused_local_typedef : Warning<
   "unused %select{typedef|type alias}0 %1">,
   InGroup<UnusedLocalTypedef>, DefaultIgnore;
@@ -4084,6 +4088,8 @@ def note_protocol_decl_undefined : Note<
 def err_attribute_preferred_name_arg_invalid : Error<
   "argument %0 to 'preferred_name' attribute is not a typedef for "
   "a specialization of %1">;
+def err_attribute_builtin_alias : Error<
+  "%0 attribute can only be applied to a ARM or RISC-V builtin">;
 
 // called-once attribute diagnostics.
 def err_called_once_attribute_wrong_type : Error<

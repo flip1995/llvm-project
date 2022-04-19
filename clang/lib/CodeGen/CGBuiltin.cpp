@@ -17514,7 +17514,7 @@ Value *CodeGenFunction::EmitWebAssemblyBuiltinExpr(unsigned BuiltinID,
     Function *Callee = CGM.getIntrinsic(IntNo, ConvertType(E->getType()));
     return Builder.CreateCall(Callee, Value);
   }
-  case WebAssembly::BI__builtin_wasm_swizzle_v8x16: {
+  case WebAssembly::BI__builtin_wasm_swizzle_i8x16: {
     Value *Src = EmitScalarExpr(E->getArg(0));
     Value *Indices = EmitScalarExpr(E->getArg(1));
     Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_swizzle);
@@ -17613,7 +17613,8 @@ Value *CodeGenFunction::EmitWebAssemblyBuiltinExpr(unsigned BuiltinID,
   }
   case WebAssembly::BI__builtin_wasm_abs_i8x16:
   case WebAssembly::BI__builtin_wasm_abs_i16x8:
-  case WebAssembly::BI__builtin_wasm_abs_i32x4: {
+  case WebAssembly::BI__builtin_wasm_abs_i32x4:
+  case WebAssembly::BI__builtin_wasm_abs_i64x2: {
     Value *Vec = EmitScalarExpr(E->getArg(0));
     Value *Neg = Builder.CreateNeg(Vec, "neg");
     Constant *Zero = llvm::Constant::getNullValue(Vec->getType());
@@ -17759,20 +17760,14 @@ Value *CodeGenFunction::EmitWebAssemblyBuiltinExpr(unsigned BuiltinID,
     Function *Callee = CGM.getIntrinsic(Intrinsic::wasm_popcnt);
     return Builder.CreateCall(Callee, {Vec});
   }
-  case WebAssembly::BI__builtin_wasm_any_true_i8x16:
-  case WebAssembly::BI__builtin_wasm_any_true_i16x8:
-  case WebAssembly::BI__builtin_wasm_any_true_i32x4:
-  case WebAssembly::BI__builtin_wasm_any_true_i64x2:
+  case WebAssembly::BI__builtin_wasm_any_true_v128:
   case WebAssembly::BI__builtin_wasm_all_true_i8x16:
   case WebAssembly::BI__builtin_wasm_all_true_i16x8:
   case WebAssembly::BI__builtin_wasm_all_true_i32x4:
   case WebAssembly::BI__builtin_wasm_all_true_i64x2: {
     unsigned IntNo;
     switch (BuiltinID) {
-    case WebAssembly::BI__builtin_wasm_any_true_i8x16:
-    case WebAssembly::BI__builtin_wasm_any_true_i16x8:
-    case WebAssembly::BI__builtin_wasm_any_true_i32x4:
-    case WebAssembly::BI__builtin_wasm_any_true_i64x2:
+    case WebAssembly::BI__builtin_wasm_any_true_v128:
       IntNo = Intrinsic::wasm_anytrue;
       break;
     case WebAssembly::BI__builtin_wasm_all_true_i8x16:
@@ -17923,7 +17918,7 @@ Value *CodeGenFunction::EmitWebAssemblyBuiltinExpr(unsigned BuiltinID,
     Function *Callee = CGM.getIntrinsic(IntNo);
     return Builder.CreateCall(Callee, {Ptr, Vec, LaneIdx});
   }
-  case WebAssembly::BI__builtin_wasm_shuffle_v8x16: {
+  case WebAssembly::BI__builtin_wasm_shuffle_i8x16: {
     Value *Ops[18];
     size_t OpIdx = 0;
     Ops[OpIdx++] = EmitScalarExpr(E->getArg(0));
@@ -18206,6 +18201,10 @@ Value *CodeGenFunction::EmitRISCVBuiltinExpr(unsigned BuiltinID,
   case RISCV::BI__builtin_riscv_clmul:
   case RISCV::BI__builtin_riscv_clmulh:
   case RISCV::BI__builtin_riscv_clmulr:
+  case RISCV::BI__builtin_riscv_bcompress_32:
+  case RISCV::BI__builtin_riscv_bcompress_64:
+  case RISCV::BI__builtin_riscv_bdecompress_32:
+  case RISCV::BI__builtin_riscv_bdecompress_64:
   case RISCV::BI__builtin_riscv_grev_32:
   case RISCV::BI__builtin_riscv_grev_64:
   case RISCV::BI__builtin_riscv_gorc_32:
@@ -18243,6 +18242,16 @@ Value *CodeGenFunction::EmitRISCVBuiltinExpr(unsigned BuiltinID,
       break;
     case RISCV::BI__builtin_riscv_clmulr:
       ID = Intrinsic::riscv_clmulr;
+      break;
+
+    // Zbe
+    case RISCV::BI__builtin_riscv_bcompress_32:
+    case RISCV::BI__builtin_riscv_bcompress_64:
+      ID = Intrinsic::riscv_bcompress;
+      break;
+    case RISCV::BI__builtin_riscv_bdecompress_32:
+    case RISCV::BI__builtin_riscv_bdecompress_64:
+      ID = Intrinsic::riscv_bdecompress;
       break;
 
     // Zbp

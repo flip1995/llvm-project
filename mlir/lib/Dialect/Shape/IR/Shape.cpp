@@ -470,8 +470,12 @@ void AssumingAllOp::build(OpBuilder &b, OperationState &state,
 //===----------------------------------------------------------------------===//
 
 OpFoldResult BroadcastOp::fold(ArrayRef<Attribute> operands) {
-  if (shapes().size() == 1)
+  if (shapes().size() == 1) {
+    // Otherwise, we need a cast which would be a canonicalization, not folding.
+    if (shapes().front().getType() != getType())
+      return nullptr;
     return shapes().front();
+  }
 
   // TODO: Support folding with more than 2 input shapes
   if (shapes().size() > 2)
@@ -530,8 +534,14 @@ struct RemoveEmptyShapeOperandsPattern : public OpRewritePattern<OpTy> {
   LogicalResult matchAndRewrite(OpTy op,
                                 PatternRewriter &rewriter) const override {
     auto isPotentiallyNonEmptyShape = [](Value shape) {
-      if (auto constShape = shape.getDefiningOp<ConstShapeOp>())
-        return constShape.shape().size() != 0;
+      if (auto extentTensorTy = shape.getType().dyn_cast<RankedTensorType>()) {
+        if (extentTensorTy.getDimSize(0) == 0)
+          return false;
+      }
+      if (auto constShape = shape.getDefiningOp<ConstShapeOp>()) {
+        if (constShape.shape().empty())
+          return false;
+      }
       return true;
     };
     auto newOperands = llvm::to_vector<8>(
@@ -554,12 +564,26 @@ struct BroadcastForwardSingleOperandPattern
 
   LogicalResult matchAndRewrite(BroadcastOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getNumOperands() == 1) {
-      Value uniqueShapeOperand = op.shapes().front();
-      rewriter.replaceOp(op, uniqueShapeOperand);
-      return success();
+    if (op.getNumOperands() != 1)
+      return failure();
+    Value replacement = op.shapes().front();
+
+    // Insert cast if needed.
+    if (replacement.getType() != op.getType()) {
+      auto loc = op.getLoc();
+      if (op.getType().isa<ShapeType>()) {
+        replacement = rewriter.create<FromExtentTensorOp>(loc, replacement);
+      } else {
+        assert(!op.getType().isa<ShapeType>() &&
+               !replacement.getType().isa<ShapeType>() &&
+               "expect extent tensor cast");
+        replacement =
+            rewriter.create<tensor::CastOp>(loc, op.getType(), replacement);
+      }
     }
-    return failure();
+
+    rewriter.replaceOp(op, replacement);
+    return success();
   }
 };
 
@@ -689,7 +713,8 @@ void CstrBroadcastableOp::getCanonicalizationPatterns(
   // folding in case additional shape information is inferred at some point that
   // does not result in folding.
   patterns.add<CstrBroadcastableEqOps,
-               RemoveDuplicateOperandsPattern<CstrBroadcastableOp>>(context);
+               RemoveDuplicateOperandsPattern<CstrBroadcastableOp>,
+               RemoveEmptyShapeOperandsPattern<CstrBroadcastableOp>>(context);
 }
 
 // Return true if there is exactly one attribute not representing a scalar

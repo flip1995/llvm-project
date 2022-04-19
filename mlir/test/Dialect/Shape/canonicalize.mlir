@@ -639,6 +639,20 @@ func @f() {
 }
 
 // -----
+// Empty shape arguments can be removed from broadcastable ops.
+// CHECK-LABEL: func @f
+// CHECK-SAME:  (%[[ARG0:.*]]: tensor<?xindex>, %[[ARG1:.*]]: tensor<?xindex>, %{{.*}}: tensor<0xindex>)
+func @f(%arg0 : tensor<?xindex>, %arg1 : tensor<?xindex>, %arg2 : tensor<0xindex>) {
+  // CHECK-NOT: const_shape
+  // CHECK: cstr_broadcastable %[[ARG0]], %[[ARG1]] : tensor<?xindex>, tensor<?xindex>
+  %0 = shape.const_shape [] : !shape.shape
+  %1 = shape.cstr_broadcastable %arg0, %arg1, %0, %arg2
+      : tensor<?xindex>, tensor<?xindex>, !shape.shape, tensor<0xindex>
+  "consume.witness"(%1) : (!shape.witness) -> ()
+  return
+}
+
+// -----
 // Broadcastable with non-broadcastable constant shapes is always false
 // CHECK-LABEL: func @static_non_broadcastable
 func @static_non_broadcastable() {
@@ -1217,13 +1231,35 @@ func @broadcast_on_duplicate_shapes(%a : !shape.shape, %b : !shape.shape)
 // -----
 
 // CHECK-LABEL: @broadcast_on_single_operand
-// CHECK-SAME: (%[[A:.*]]: tensor<3xindex>)
-func @broadcast_on_single_operand(%a : tensor<3xindex>) {
+// CHECK-SAME: (%[[A:.*]]: tensor<?xindex>)
+func @broadcast_on_single_operand(%a : tensor<?xindex>) {
   // CHECK-NOT: broadcast
   // CHECK: "use"(%[[A]])
-  %0 = shape.broadcast %a : tensor<3xindex> -> tensor<?xindex>
+  %0 = shape.broadcast %a : tensor<?xindex> -> tensor<?xindex>
   "use"(%0) : (tensor<?xindex>) -> ()
   return
+}
+
+// -----
+
+// CHECK-LABEL: @broadcast_as_tensor_cast
+// CHECK-SAME: (%[[A:.*]]: tensor<3xindex>)
+func @broadcast_as_tensor_cast(%a : tensor<3xindex>) -> tensor<?xindex> {
+  // CHECK: %[[RESULT:.*]] = tensor.cast %[[A]] : tensor<3xindex> to tensor<?xindex>
+  // CHECK: return %[[RESULT]] : tensor<?xindex>
+  %0 = shape.broadcast %a : tensor<3xindex> -> tensor<?xindex>
+  return %0 : tensor<?xindex>
+}
+
+// -----
+
+// CHECK-LABEL: @broadcast_as_from_extent_tensor
+// CHECK-SAME: (%[[A:.*]]: tensor<?xindex>)
+func @broadcast_as_from_extent_tensor(%a : tensor<?xindex>) -> !shape.shape {
+  // CHECK: %[[RESULT:.*]] = shape.from_extent_tensor %[[A]] : tensor<?xindex>
+  // CHECK: return %[[RESULT]] : !shape.shape
+  %0 = shape.broadcast %a : tensor<?xindex> -> !shape.shape
+  return %0 : !shape.shape
 }
 
 // -----
