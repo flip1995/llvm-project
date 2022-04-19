@@ -54,22 +54,13 @@
 ; GCN-O0-NEXT:      AMDGPU Annotate Kernel Features
 ; GCN-O0-NEXT:      FunctionPass Manager
 ; GCN-O0-NEXT:        AMDGPU Lower Kernel Arguments
-; GCN-O0-NEXT:      Analysis if a function is memory bound
-; GCN-O0-NEXT:      FunctionPass Manager
 ; GCN-O0-NEXT:        Lazy Value Information Analysis
 ; GCN-O0-NEXT:        Lower SwitchInst's to branches
 ; GCN-O0-NEXT:        Lower invoke and unwind, for unwindless code generators
 ; GCN-O0-NEXT:        Remove unreachable blocks from the CFG
-; GCN-O0-NEXT:        Dominator Tree Construction
-; GCN-O0-NEXT:        Basic Alias Analysis (stateless AA impl)
-; GCN-O0-NEXT:        Function Alias Analysis Results
-; GCN-O0-NEXT:        Flatten the CFG
-; GCN-O0-NEXT:        Dominator Tree Construction
-; GCN-O0-NEXT:        Basic Alias Analysis (stateless AA impl)
-; GCN-O0-NEXT:        Function Alias Analysis Results
-; GCN-O0-NEXT:        Natural Loop Information
-; GCN-O0-NEXT:        Code sinking
 ; GCN-O0-NEXT:        Post-Dominator Tree Construction
+; GCN-O0-NEXT:        Dominator Tree Construction
+; GCN-O0-NEXT:        Natural Loop Information
 ; GCN-O0-NEXT:        Legacy Divergence Analysis
 ; GCN-O0-NEXT:        Unify divergent function exit nodes
 ; GCN-O0-NEXT:        Lazy Value Information Analysis
@@ -138,7 +129,6 @@
 ; GCN-O0-NEXT:        SI Memory Legalizer
 ; GCN-O0-NEXT:        MachinePostDominator Tree Construction
 ; GCN-O0-NEXT:        SI insert wait instructions
-; GCN-O0-NEXT:        SI Shrink Instructions
 ; GCN-O0-NEXT:        Insert required mode register values
 ; GCN-O0-NEXT:        MachineDominator Tree Construction
 ; GCN-O0-NEXT:        SI Final Branch Preparation
@@ -146,6 +136,8 @@
 ; GCN-O0-NEXT:        Branch relaxation pass
 ; GCN-O0-NEXT:        Register Usage Information Collector Pass
 ; GCN-O0-NEXT:        Live DEBUG_VALUE analysis
+; GCN-O0-NEXT:      Function register usage analysis
+; GCN-O0-NEXT:      FunctionPass Manager
 ; GCN-O0-NEXT:        Lazy Machine Block Frequency Analysis
 ; GCN-O0-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O0-NEXT:        AMDGPU Assembly Printer
@@ -225,8 +217,6 @@
 ; GCN-O1-NEXT:      AMDGPU Annotate Kernel Features
 ; GCN-O1-NEXT:      FunctionPass Manager
 ; GCN-O1-NEXT:        AMDGPU Lower Kernel Arguments
-; GCN-O1-NEXT:      Analysis if a function is memory bound
-; GCN-O1-NEXT:      FunctionPass Manager
 ; GCN-O1-NEXT:        Dominator Tree Construction
 ; GCN-O1-NEXT:        Natural Loop Information
 ; GCN-O1-NEXT:        CodeGen Prepare
@@ -350,7 +340,6 @@
 ; GCN-O1-NEXT:        SI lower SGPR spill instructions
 ; GCN-O1-NEXT:        Virtual Register Map
 ; GCN-O1-NEXT:        Live Register Matrix
-; GCN-O1-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O1-NEXT:        Greedy Register Allocator
 ; GCN-O1-NEXT:        GCN NSA Reassign
 ; GCN-O1-NEXT:        Virtual Register Rewriter
@@ -397,6 +386,8 @@
 ; GCN-O1-NEXT:        Branch relaxation pass
 ; GCN-O1-NEXT:        Register Usage Information Collector Pass
 ; GCN-O1-NEXT:        Live DEBUG_VALUE analysis
+; GCN-O1-NEXT:      Function register usage analysis
+; GCN-O1-NEXT:      FunctionPass Manager
 ; GCN-O1-NEXT:        Lazy Machine Block Frequency Analysis
 ; GCN-O1-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O1-NEXT:        AMDGPU Assembly Printer
@@ -495,8 +486,6 @@
 ; GCN-O1-OPTS-NEXT:      AMDGPU Annotate Kernel Features
 ; GCN-O1-OPTS-NEXT:      FunctionPass Manager
 ; GCN-O1-OPTS-NEXT:        AMDGPU Lower Kernel Arguments
-; GCN-O1-OPTS-NEXT:      Analysis if a function is memory bound
-; GCN-O1-OPTS-NEXT:      FunctionPass Manager
 ; GCN-O1-OPTS-NEXT:        Dominator Tree Construction
 ; GCN-O1-OPTS-NEXT:        Natural Loop Information
 ; GCN-O1-OPTS-NEXT:        CodeGen Prepare
@@ -634,7 +623,6 @@
 ; GCN-O1-OPTS-NEXT:        SI lower SGPR spill instructions
 ; GCN-O1-OPTS-NEXT:        Virtual Register Map
 ; GCN-O1-OPTS-NEXT:        Live Register Matrix
-; GCN-O1-OPTS-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O1-OPTS-NEXT:        Greedy Register Allocator
 ; GCN-O1-OPTS-NEXT:        GCN NSA Reassign
 ; GCN-O1-OPTS-NEXT:        Virtual Register Rewriter
@@ -681,6 +669,8 @@
 ; GCN-O1-OPTS-NEXT:        Branch relaxation pass
 ; GCN-O1-OPTS-NEXT:        Register Usage Information Collector Pass
 ; GCN-O1-OPTS-NEXT:        Live DEBUG_VALUE analysis
+; GCN-O1-OPTS-NEXT:      Function register usage analysis
+; GCN-O1-OPTS-NEXT:      FunctionPass Manager
 ; GCN-O1-OPTS-NEXT:        Lazy Machine Block Frequency Analysis
 ; GCN-O1-OPTS-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O1-OPTS-NEXT:        AMDGPU Assembly Printer
@@ -779,8 +769,6 @@
 ; GCN-O2-NEXT:      AMDGPU Annotate Kernel Features
 ; GCN-O2-NEXT:      FunctionPass Manager
 ; GCN-O2-NEXT:        AMDGPU Lower Kernel Arguments
-; GCN-O2-NEXT:      Analysis if a function is memory bound
-; GCN-O2-NEXT:      FunctionPass Manager
 ; GCN-O2-NEXT:        Dominator Tree Construction
 ; GCN-O2-NEXT:        Natural Loop Information
 ; GCN-O2-NEXT:        CodeGen Prepare
@@ -829,6 +817,7 @@
 ; GCN-O2-NEXT:        SI annotate control flow
 ; GCN-O2-NEXT:        LCSSA Verifier
 ; GCN-O2-NEXT:        Loop-Closed SSA Form Pass
+; GCN-O2-NEXT:      Analysis if a function is memory bound
 ; GCN-O2-NEXT:      DummyCGSCCPass
 ; GCN-O2-NEXT:      FunctionPass Manager
 ; GCN-O2-NEXT:        Safe Stack instrumentation pass
@@ -919,7 +908,6 @@
 ; GCN-O2-NEXT:        SI lower SGPR spill instructions
 ; GCN-O2-NEXT:        Virtual Register Map
 ; GCN-O2-NEXT:        Live Register Matrix
-; GCN-O2-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O2-NEXT:        Greedy Register Allocator
 ; GCN-O2-NEXT:        GCN NSA Reassign
 ; GCN-O2-NEXT:        Virtual Register Rewriter
@@ -966,6 +954,8 @@
 ; GCN-O2-NEXT:        Branch relaxation pass
 ; GCN-O2-NEXT:        Register Usage Information Collector Pass
 ; GCN-O2-NEXT:        Live DEBUG_VALUE analysis
+; GCN-O2-NEXT:      Function register usage analysis
+; GCN-O2-NEXT:      FunctionPass Manager
 ; GCN-O2-NEXT:        Lazy Machine Block Frequency Analysis
 ; GCN-O2-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O2-NEXT:        AMDGPU Assembly Printer
@@ -1077,8 +1067,6 @@
 ; GCN-O3-NEXT:      AMDGPU Annotate Kernel Features
 ; GCN-O3-NEXT:      FunctionPass Manager
 ; GCN-O3-NEXT:        AMDGPU Lower Kernel Arguments
-; GCN-O3-NEXT:      Analysis if a function is memory bound
-; GCN-O3-NEXT:      FunctionPass Manager
 ; GCN-O3-NEXT:        Dominator Tree Construction
 ; GCN-O3-NEXT:        Natural Loop Information
 ; GCN-O3-NEXT:        CodeGen Prepare
@@ -1127,6 +1115,7 @@
 ; GCN-O3-NEXT:        SI annotate control flow
 ; GCN-O3-NEXT:        LCSSA Verifier
 ; GCN-O3-NEXT:        Loop-Closed SSA Form Pass
+; GCN-O3-NEXT:      Analysis if a function is memory bound
 ; GCN-O3-NEXT:      DummyCGSCCPass
 ; GCN-O3-NEXT:      FunctionPass Manager
 ; GCN-O3-NEXT:        Safe Stack instrumentation pass
@@ -1217,7 +1206,6 @@
 ; GCN-O3-NEXT:        SI lower SGPR spill instructions
 ; GCN-O3-NEXT:        Virtual Register Map
 ; GCN-O3-NEXT:        Live Register Matrix
-; GCN-O3-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O3-NEXT:        Greedy Register Allocator
 ; GCN-O3-NEXT:        GCN NSA Reassign
 ; GCN-O3-NEXT:        Virtual Register Rewriter
@@ -1264,6 +1252,8 @@
 ; GCN-O3-NEXT:        Branch relaxation pass
 ; GCN-O3-NEXT:        Register Usage Information Collector Pass
 ; GCN-O3-NEXT:        Live DEBUG_VALUE analysis
+; GCN-O3-NEXT:      Function register usage analysis
+; GCN-O3-NEXT:      FunctionPass Manager
 ; GCN-O3-NEXT:        Lazy Machine Block Frequency Analysis
 ; GCN-O3-NEXT:        Machine Optimization Remark Emitter
 ; GCN-O3-NEXT:        AMDGPU Assembly Printer

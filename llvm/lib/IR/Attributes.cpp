@@ -689,23 +689,27 @@ uint64_t AttributeSet::getDereferenceableOrNullBytes() const {
 }
 
 Type *AttributeSet::getByRefType() const {
-  return SetNode ? SetNode->getByRefType() : nullptr;
+  return SetNode ? SetNode->getAttributeType(Attribute::ByRef) : nullptr;
 }
 
 Type *AttributeSet::getByValType() const {
-  return SetNode ? SetNode->getByValType() : nullptr;
+  return SetNode ? SetNode->getAttributeType(Attribute::ByVal) : nullptr;
 }
 
 Type *AttributeSet::getStructRetType() const {
-  return SetNode ? SetNode->getStructRetType() : nullptr;
+  return SetNode ? SetNode->getAttributeType(Attribute::StructRet) : nullptr;
 }
 
 Type *AttributeSet::getPreallocatedType() const {
-  return SetNode ? SetNode->getPreallocatedType() : nullptr;
+  return SetNode ? SetNode->getAttributeType(Attribute::Preallocated) : nullptr;
 }
 
 Type *AttributeSet::getInAllocaType() const {
-  return SetNode ? SetNode->getInAllocaType() : nullptr;
+  return SetNode ? SetNode->getAttributeType(Attribute::InAlloca) : nullptr;
+}
+
+Type *AttributeSet::getElementType() const {
+  return SetNode ? SetNode->getAttributeType(Attribute::ElementType) : nullptr;
 }
 
 std::pair<unsigned, Optional<unsigned>> AttributeSet::getAllocSizeArgs() const {
@@ -897,32 +901,8 @@ MaybeAlign AttributeSetNode::getStackAlignment() const {
   return None;
 }
 
-Type *AttributeSetNode::getByValType() const {
-  if (auto A = findEnumAttribute(Attribute::ByVal))
-    return A->getValueAsType();
-  return nullptr;
-}
-
-Type *AttributeSetNode::getStructRetType() const {
-  if (auto A = findEnumAttribute(Attribute::StructRet))
-    return A->getValueAsType();
-  return nullptr;
-}
-
-Type *AttributeSetNode::getByRefType() const {
-  if (auto A = findEnumAttribute(Attribute::ByRef))
-    return A->getValueAsType();
-  return nullptr;
-}
-
-Type *AttributeSetNode::getPreallocatedType() const {
-  if (auto A = findEnumAttribute(Attribute::Preallocated))
-    return A->getValueAsType();
-  return nullptr;
-}
-
-Type *AttributeSetNode::getInAllocaType() const {
-  if (auto A = findEnumAttribute(Attribute::InAlloca))
+Type *AttributeSetNode::getAttributeType(Attribute::AttrKind Kind) const {
+  if (auto A = findEnumAttribute(Kind))
     return A->getValueAsType();
   return nullptr;
 }
@@ -1355,17 +1335,6 @@ AttributeList AttributeList::removeAttributes(LLVMContext &C,
   return getImpl(C, AttrSets);
 }
 
-AttributeList
-AttributeList::removeParamUndefImplyingAttributes(LLVMContext &C,
-                                                  unsigned ArgNo) const {
-  AttrBuilder B;
-  B.addAttribute(Attribute::NoUndef);
-  B.addAttribute(Attribute::NonNull);
-  B.addDereferenceableAttr(1);
-  B.addDereferenceableOrNullAttr(1);
-  return removeParamAttributes(C, ArgNo, B);
-}
-
 AttributeList AttributeList::addDereferenceableAttr(LLVMContext &C,
                                                     unsigned Index,
                                                     uint64_t Bytes) const {
@@ -1485,6 +1454,10 @@ Type *AttributeList::getParamPreallocatedType(unsigned Index) const {
 
 Type *AttributeList::getParamInAllocaType(unsigned Index) const {
   return getAttributes(Index + FirstArgIndex).getInAllocaType();
+}
+
+Type *AttributeList::getParamElementType(unsigned Index) const {
+  return getAttributes(Index + FirstArgIndex).getElementType();
 }
 
 MaybeAlign AttributeList::getStackAlignment(unsigned Index) const {
@@ -1923,22 +1896,32 @@ AttrBuilder AttributeFuncs::typeIncompatible(Type *Ty) {
         .addAttribute(Attribute::NoAlias)
         .addAttribute(Attribute::NoCapture)
         .addAttribute(Attribute::NonNull)
+        .addAttribute(Attribute::ReadNone)
+        .addAttribute(Attribute::ReadOnly)
+        .addAttribute(Attribute::SwiftError)
         .addAlignmentAttr(1)             // the int here is ignored
         .addDereferenceableAttr(1)       // the int here is ignored
         .addDereferenceableOrNullAttr(1) // the int here is ignored
-        .addAttribute(Attribute::ReadNone)
-        .addAttribute(Attribute::ReadOnly)
         .addPreallocatedAttr(Ty)
         .addInAllocaAttr(Ty)
         .addByValAttr(Ty)
         .addStructRetAttr(Ty)
-        .addByRefAttr(Ty);
+        .addByRefAttr(Ty)
+        .addTypeAttr(Attribute::ElementType, Ty);
 
   // Some attributes can apply to all "values" but there are no `void` values.
   if (Ty->isVoidTy())
     Incompatible.addAttribute(Attribute::NoUndef);
 
   return Incompatible;
+}
+
+AttrBuilder AttributeFuncs::getUBImplyingAttributes() {
+  AttrBuilder B;
+  B.addAttribute(Attribute::NoUndef);
+  B.addDereferenceableAttr(1);
+  B.addDereferenceableOrNullAttr(1);
+  return B;
 }
 
 template<typename AttrClass>

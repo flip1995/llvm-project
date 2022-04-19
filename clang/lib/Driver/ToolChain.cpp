@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Driver/ToolChain.h"
-#include "InputInfo.h"
 #include "ToolChains/Arch/ARM.h"
 #include "ToolChains/Arch/Mips.h"
 #include "ToolChains/Arch/RISCV.h"
@@ -20,6 +19,7 @@
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
+#include "clang/Driver/InputInfo.h"
 #include "clang/Driver/Job.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/SanitizerArgs.h"
@@ -402,6 +402,9 @@ static StringRef getArchNameForCompilerRTLib(const ToolChain &TC,
     assert(Triple.getSubArch() != llvm::Triple::NoSubArch && "purecap triple should have subarch");
     return Triple.getArchName();
   }
+
+  if (TC.getArch() == llvm::Triple::x86_64 && Triple.isX32())
+    return "x32";
 
   return llvm::Triple::getArchTypeName(TC.getArch());
 }

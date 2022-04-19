@@ -1776,10 +1776,14 @@ void Verifier::verifyParameterAttrs(AttributeSet Attrs, Type *Ty,
          V);
 
   AttrBuilder IncompatibleAttrs = AttributeFuncs::typeIncompatible(Ty);
-  Assert(!AttrBuilder(Attrs).overlaps(IncompatibleAttrs),
-         "Wrong types for attribute: " +
-             AttributeSet::get(Context, IncompatibleAttrs).getAsString(),
-         V);
+  for (Attribute Attr : Attrs) {
+    if (!Attr.isStringAttribute() &&
+        IncompatibleAttrs.contains(Attr.getKindAsEnum())) {
+      CheckFailed("Attribute '" + Attr.getAsString() +
+                  "' applied to incompatible type!", V);
+      return;
+    }
+  }
 
   if (PointerType *PTy = dyn_cast<PointerType>(Ty)) {
     if (Attrs.hasAttribute(Attribute::ByVal)) {
@@ -1827,18 +1831,12 @@ void Verifier::verifyParameterAttrs(AttributeSet Attrs, Type *Ty,
         Assert(Attrs.getInAllocaType() == PTy->getElementType(),
                "Attribute 'inalloca' type does not match parameter!", V);
       }
+
+      if (Attrs.hasAttribute(Attribute::ElementType)) {
+        Assert(Attrs.getElementType() == PTy->getElementType(),
+               "Attribute 'elementtype' type does not match parameter!", V);
+      }
     }
-  } else {
-    Assert(!Attrs.hasAttribute(Attribute::ByVal),
-           "Attribute 'byval' only applies to parameters with pointer type!",
-           V);
-    Assert(!Attrs.hasAttribute(Attribute::ByRef),
-           "Attribute 'byref' only applies to parameters with pointer type!",
-           V);
-    Assert(!Attrs.hasAttribute(Attribute::SwiftError),
-           "Attribute 'swifterror' only applies to parameters "
-           "with pointer type!",
-           V);
   }
 }
 
@@ -1899,6 +1897,8 @@ void Verifier::verifyFunctionAttrs(FunctionType *FT, AttributeList Attrs,
     if (!IsIntrinsic) {
       Assert(!ArgAttrs.hasAttribute(Attribute::ImmArg),
              "immarg attribute only applies to intrinsics",V);
+      Assert(!ArgAttrs.hasAttribute(Attribute::ElementType),
+             "Attribute 'elementtype' can only be applied to intrinsics.", V);
     }
 
     verifyParameterAttrs(ArgAttrs, Ty, V);
@@ -2344,17 +2344,19 @@ void Verifier::visitFunction(const Function &F) {
   Assert(verifyAttributeCount(Attrs, FT->getNumParams()),
          "Attribute after last parameter!", &F);
 
-  bool isLLVMdotName = F.getName().size() >= 5 &&
-                       F.getName().substr(0, 5) == "llvm.";
+  bool IsIntrinsic = F.isIntrinsic();
 
   // Check function attributes.
-  verifyFunctionAttrs(FT, Attrs, &F, isLLVMdotName);
+  verifyFunctionAttrs(FT, Attrs, &F, IsIntrinsic);
 
   // On function declarations/definitions, we do not support the builtin
   // attribute. We do not check this in VerifyFunctionAttrs since that is
   // checking for Attributes that can/can not ever be on functions.
   Assert(!Attrs.hasFnAttribute(Attribute::Builtin),
          "Attribute 'builtin' can only be applied to a callsite.", &F);
+
+  Assert(!Attrs.hasAttrSomewhere(Attribute::ElementType),
+         "Attribute 'elementtype' can only be applied to a callsite.", &F);
 
   // Check that this function meets the restrictions on this calling convention.
   // Sometimes varargs is used for perfectly forwarding thunks, so some of these
@@ -2422,7 +2424,7 @@ void Verifier::visitFunction(const Function &F) {
            FT->getParamType(i));
     Assert(Arg.getType()->isFirstClassType(),
            "Function arguments must have first-class types!", &Arg);
-    if (!isLLVMdotName) {
+    if (!IsIntrinsic) {
       Assert(!Arg.getType()->isMetadataTy(),
              "Function takes metadata but isn't an intrinsic", &Arg, &F);
       Assert(!Arg.getType()->isTokenTy(),
@@ -2438,7 +2440,7 @@ void Verifier::visitFunction(const Function &F) {
     ++i;
   }
 
-  if (!isLLVMdotName) {
+  if (!IsIntrinsic) {
     Assert(!F.getReturnType()->isTokenTy(),
            "Function returns a token but isn't an intrinsic", &F);
     Assert(!F.getReturnType()->isX86_AMXTy(),
@@ -2482,7 +2484,7 @@ void Verifier::visitFunction(const Function &F) {
   } else {
     // Verify that this function (which has a body) is not named "llvm.*".  It
     // is not legal to define intrinsics.
-    Assert(!isLLVMdotName, "llvm intrinsics cannot be defined!", &F);
+    Assert(!IsIntrinsic, "llvm intrinsics cannot be defined!", &F);
 
     // Check the entry node
     const BasicBlock *Entry = &F.getEntryBlock();
@@ -2537,7 +2539,7 @@ void Verifier::visitFunction(const Function &F) {
   // direct call/invokes, never having its "address taken".
   // Only do this if the module is materialized, otherwise we don't have all the
   // uses.
-  if (F.getIntrinsicID() && F.getParent()->isMaterialized()) {
+  if (F.isIntrinsic() && F.getParent()->isMaterialized()) {
     const User *U;
     if (F.hasAddressTaken(&U))
       Assert(false, "Invalid user of intrinsic instruction!", U);
@@ -3089,11 +3091,12 @@ void Verifier::visitCallBase(CallBase &Call) {
   Assert(verifyAttributeCount(Attrs, Call.arg_size()),
          "Attribute after last parameter!", Call);
 
-  bool IsIntrinsic = Call.getCalledFunction() &&
-                     Call.getCalledFunction()->getName().startswith("llvm.");
-
   Function *Callee =
       dyn_cast<Function>(Call.getCalledOperand()->stripPointerCasts());
+  bool IsIntrinsic = Callee && Callee->isIntrinsic();
+  if (IsIntrinsic)
+    Assert(Callee->getValueType() == FTy,
+           "Intrinsic called with incompatible signature", Call);
 
   if (Attrs.hasFnAttribute(Attribute::Speculatable)) {
     // Don't allow speculatable on call sites, unless the underlying function
@@ -3347,8 +3350,9 @@ static AttrBuilder getParameterABIAttributes(int I, AttributeList Attrs) {
       Attribute::ByRef};
   AttrBuilder Copy;
   for (auto AK : ABIAttrs) {
-    if (Attrs.hasParamAttribute(I, AK))
-      Copy.addAttribute(AK);
+    Attribute Attr = Attrs.getParamAttributes(I).getAttribute(AK);
+    if (Attr.isValid())
+      Copy.addAttribute(Attr);
   }
 
   // `align` is ABI-affecting only in combination with `byval` or `byref`.
@@ -5327,6 +5331,14 @@ void Verifier::visitIntrinsicCall(Intrinsic::ID ID, CallBase &Call) {
   }
   case Intrinsic::experimental_noalias_scope_decl: {
     NoAliasScopeDecls.push_back(cast<IntrinsicInst>(&Call));
+    break;
+  }
+  case Intrinsic::preserve_array_access_index:
+  case Intrinsic::preserve_struct_access_index: {
+    Type *ElemTy = Call.getAttributes().getParamElementType(0);
+    Assert(ElemTy,
+           "Intrinsic requires elementtype attribute on first argument.",
+           &Call);
     break;
   }
   };

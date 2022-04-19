@@ -126,6 +126,11 @@ option(LIBCXX_ENABLE_VENDOR_AVAILABILITY_ANNOTATIONS
    to provide compile-time errors when using features unavailable on some version of
    the shared library they shipped should turn this on and see `include/__availability`
    for more details." OFF)
+option(LIBCXX_ENABLE_INCOMPLETE_FEATURES
+    "Whether to enable support for incomplete library features. Incomplete features
+    are new library features under development. These features don't guarantee
+    ABI stability nor the quality of completed library features. Vendors
+    shipping the library may want to disable this option." ON)
 set(LIBCXX_TEST_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/test/configs/legacy.cfg.in" CACHE STRING
     "The Lit testing configuration to use when running the tests.")
 set(LIBCXX_TEST_PARAMS "" CACHE STRING
@@ -254,7 +259,7 @@ option(LIBCXXABI_USE_LLVM_UNWINDER "Build and use the LLVM unwinder." OFF)
 
 # Target options --------------------------------------------------------------
 option(LIBCXX_BUILD_32_BITS "Build 32 bit libc++." ${LLVM_BUILD_32_BITS})
-set(LIBCXX_TARGET_TRIPLE "${TARGET_TRIPLE}" CACHE STRING "Use alternate target triple.")
+set(LIBCXX_TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}" CACHE STRING "Use alternate target triple.")
 set(LIBCXX_SYSROOT "" CACHE STRING "Use alternate sysroot.")
 set(LIBCXX_GCC_TOOLCHAIN "" CACHE STRING "Use alternate GCC toolchain.")
 
@@ -468,17 +473,17 @@ include(HandleLibcxxFlags)
 add_target_flags_if(LIBCXX_BUILD_32_BITS "-m32")
 
 if(LIBCXX_TARGET_TRIPLE)
-  add_target_flags("--target=${LIBCXX_TARGET_TRIPLE}")
+  add_target_flags_if_supported("--target=${LIBCXX_TARGET_TRIPLE}")
 elseif(CMAKE_CXX_COMPILER_TARGET)
   set(LIBCXX_TARGET_TRIPLE "${CMAKE_CXX_COMPILER_TARGET}")
 endif()
 if(LIBCXX_SYSROOT)
-  add_target_flags("--sysroot=${LIBCXX_SYSROOT}")
+  add_target_flags_if_supported("--sysroot=${LIBCXX_SYSROOT}")
 elseif(CMAKE_SYSROOT)
   set(LIBCXX_SYSROOT "${CMAKE_SYSROOT}")
 endif()
 if(LIBCXX_GCC_TOOLCHAIN)
-  add_target_flags("--gcc-toolchain=${LIBCXX_GCC_TOOLCHAIN}")
+  add_target_flags_if_supported("--gcc-toolchain=${LIBCXX_GCC_TOOLCHAIN}")
 elseif(CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN)
   set(LIBCXX_GCC_TOOLCHAIN "${CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN}")
 endif()
@@ -891,6 +896,10 @@ config_define_if_not(LIBCXX_ENABLE_FILESYSTEM _LIBCPP_HAS_NO_FILESYSTEM_LIBRARY)
 config_define_if_not(LIBCXX_ENABLE_RANDOM_DEVICE _LIBCPP_HAS_NO_RANDOM_DEVICE)
 config_define_if_not(LIBCXX_ENABLE_LOCALIZATION _LIBCPP_HAS_NO_LOCALIZATION)
 config_define_if_not(LIBCXX_ENABLE_VENDOR_AVAILABILITY_ANNOTATIONS _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS)
+# Incomplete features get their own specific disabling flags. This makes it
+# easier to grep for target specific flags once the feature is complete.
+config_define_if_not(LIBCXX_ENABLE_INCOMPLETE_FEATURES _LIBCPP_HAS_NO_INCOMPLETE_FORMAT)
+config_define_if_not(LIBCXX_ENABLE_INCOMPLETE_FEATURES _LIBCPP_HAS_NO_INCOMPLETE_RANGES)
 
 if (LIBCXX_ABI_DEFINES)
   set(abi_defines)
@@ -934,6 +943,7 @@ endfunction()
 #===============================================================================
 add_subdirectory(include)
 add_subdirectory(src)
+add_subdirectory(utils)
 
 set(LIBCXX_TEST_DEPS "")
 
