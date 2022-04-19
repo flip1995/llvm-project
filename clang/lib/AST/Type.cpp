@@ -126,8 +126,7 @@ ArrayType::ArrayType(TypeClass tc, QualType et, QualType can,
     //   template<int ...N> int arr[] = {N...};
     : Type(tc, can,
            et->getDependence() |
-               (sz ? toTypeDependence(
-                         turnValueToTypeDependence(sz->getDependence()))
+               (sz ? toTypeDependence(sz->getDependence())
                    : TypeDependence::None) |
                (tc == VariableArray ? TypeDependence::VariablyModified
                                     : TypeDependence::None) |
@@ -3193,7 +3192,7 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
   case Id: \
     return Name;
 #include "clang/Basic/AArch64SVEACLETypes.def"
-#define PPC_MMA_VECTOR_TYPE(Name, Id, Size) \
+#define PPC_VECTOR_TYPE(Name, Id, Size) \
   case Id: \
     return #Name;
 #include "clang/Basic/PPCTypes.def"
@@ -3508,9 +3507,8 @@ QualType MacroQualifiedType::getModifiedType() const {
 
 TypeOfExprType::TypeOfExprType(Expr *E, QualType can)
     : Type(TypeOfExpr, can,
-           toTypeDependence(E->getDependence()) |
-               (E->getType()->getDependence() &
-                TypeDependence::VariablyModified)),
+           typeToTypeDependence(E->getDependence(),
+                                E->getType()->getDependence())),
       TOExpr(E) {}
 
 bool TypeOfExprType::isSugared() const {
@@ -3530,18 +3528,12 @@ void DependentTypeOfExprType::Profile(llvm::FoldingSetNodeID &ID,
 }
 
 DecltypeType::DecltypeType(Expr *E, QualType underlyingType, QualType can)
-    // C++11 [temp.type]p2: "If an expression e involves a template parameter,
-    // decltype(e) denotes a unique dependent type." Hence a decltype type is
-    // type-dependent even if its expression is only instantiation-dependent.
     : Type(Decltype, can,
-           toTypeDependence(E->getDependence()) |
-               (E->isInstantiationDependent() ? TypeDependence::Dependent
-                                              : TypeDependence::None) |
-               (E->getType()->getDependence() &
-                TypeDependence::VariablyModified)),
+           typeToTypeDependence(E->getDependence(),
+                                E->getType()->getDependence())),
       E(E), UnderlyingType(underlyingType) {}
 
-bool DecltypeType::isSugared() const { return !E->isInstantiationDependent(); }
+bool DecltypeType::isSugared() const { return !E->isTypeDependent(); }
 
 QualType DecltypeType::desugar() const {
   if (isSugared())
@@ -3715,24 +3707,24 @@ void SubstTemplateTypeParmPackType::Profile(llvm::FoldingSetNodeID &ID,
     ID.AddPointer(P.getAsType().getAsOpaquePtr());
 }
 
-bool TemplateSpecializationType::
-anyDependentTemplateArguments(const TemplateArgumentListInfo &Args,
-                              bool &InstantiationDependent) {
-  return anyDependentTemplateArguments(Args.arguments(),
-                                       InstantiationDependent);
+bool TemplateSpecializationType::anyDependentTemplateArguments(
+    const TemplateArgumentListInfo &Args, ArrayRef<TemplateArgument> Converted) {
+  return anyDependentTemplateArguments(Args.arguments(), Converted);
 }
 
-bool TemplateSpecializationType::
-anyDependentTemplateArguments(ArrayRef<TemplateArgumentLoc> Args,
-                              bool &InstantiationDependent) {
-  for (const TemplateArgumentLoc &ArgLoc : Args) {
-    if (ArgLoc.getArgument().isDependent()) {
-      InstantiationDependent = true;
+bool TemplateSpecializationType::anyDependentTemplateArguments(
+    ArrayRef<TemplateArgumentLoc> Args, ArrayRef<TemplateArgument> Converted) {
+  for (const TemplateArgument &Arg : Converted)
+    if (Arg.isDependent())
       return true;
-    }
+  return false;
+}
 
+bool TemplateSpecializationType::anyInstantiationDependentTemplateArguments(
+      ArrayRef<TemplateArgumentLoc> Args) {
+  for (const TemplateArgumentLoc &ArgLoc : Args) {
     if (ArgLoc.getArgument().isInstantiationDependent())
-      InstantiationDependent = true;
+      return true;
   }
   return false;
 }
@@ -4224,7 +4216,7 @@ bool Type::canHaveNullability(bool ResultIfUnknown) const {
 #define SVE_TYPE(Name, Id, SingletonId) \
     case BuiltinType::Id:
 #include "clang/Basic/AArch64SVEACLETypes.def"
-#define PPC_MMA_VECTOR_TYPE(Name, Id, Size) \
+#define PPC_VECTOR_TYPE(Name, Id, Size) \
     case BuiltinType::Id:
 #include "clang/Basic/PPCTypes.def"
     case BuiltinType::BuiltinFn:

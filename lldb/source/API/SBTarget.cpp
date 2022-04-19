@@ -757,10 +757,46 @@ SBTarget::BreakpointCreateByLocation(const SBFileSpec &sb_file_spec,
                                                        offset, sb_module_list));
 }
 
-SBBreakpoint SBTarget::BreakpointCreateByLocationImpl(
-    const lldb::SBFileSpec &sb_file_spec, uint32_t line, uint32_t column,
+SBBreakpoint SBTarget::BreakpointCreateByLocation(
+    const SBFileSpec &sb_file_spec, uint32_t line, uint32_t column,
+    lldb::addr_t offset, SBFileSpecList &sb_module_list) {
+  LLDB_RECORD_METHOD(lldb::SBBreakpoint, SBTarget, BreakpointCreateByLocation,
+                     (const lldb::SBFileSpec &, uint32_t, uint32_t,
+                      lldb::addr_t, lldb::SBFileSpecList &),
+                     sb_file_spec, line, column, offset, sb_module_list);
+
+  SBBreakpoint sb_bp;
+  TargetSP target_sp(GetSP());
+  if (target_sp && line != 0) {
+    std::lock_guard<std::recursive_mutex> guard(target_sp->GetAPIMutex());
+
+    const LazyBool check_inlines = eLazyBoolCalculate;
+    const LazyBool skip_prologue = eLazyBoolCalculate;
+    const bool internal = false;
+    const bool hardware = false;
+    const LazyBool move_to_nearest_code = eLazyBoolCalculate;
+    const FileSpecList *module_list = nullptr;
+    if (sb_module_list.GetSize() > 0) {
+      module_list = sb_module_list.get();
+    }
+    sb_bp = target_sp->CreateBreakpoint(
+        module_list, *sb_file_spec, line, column, offset, check_inlines,
+        skip_prologue, internal, hardware, move_to_nearest_code);
+  }
+
+  return LLDB_RECORD_RESULT(sb_bp);
+}
+
+SBBreakpoint SBTarget::BreakpointCreateByLocation(
+    const SBFileSpec &sb_file_spec, uint32_t line, uint32_t column,
     lldb::addr_t offset, SBFileSpecList &sb_module_list,
-    const LazyBool move_to_nearest_code) {
+    bool move_to_nearest_code) {
+  LLDB_RECORD_METHOD(lldb::SBBreakpoint, SBTarget, BreakpointCreateByLocation,
+                     (const lldb::SBFileSpec &, uint32_t, uint32_t,
+                      lldb::addr_t, lldb::SBFileSpecList &, bool),
+                     sb_file_spec, line, column, offset, sb_module_list,
+                     move_to_nearest_code);
+
   SBBreakpoint sb_bp;
   TargetSP target_sp(GetSP());
   if (target_sp && line != 0) {
@@ -776,37 +812,11 @@ SBBreakpoint SBTarget::BreakpointCreateByLocationImpl(
     }
     sb_bp = target_sp->CreateBreakpoint(
         module_list, *sb_file_spec, line, column, offset, check_inlines,
-        skip_prologue, internal, hardware, move_to_nearest_code);
+        skip_prologue, internal, hardware,
+        move_to_nearest_code ? eLazyBoolYes : eLazyBoolNo);
   }
 
-  return sb_bp;
-}
-
-SBBreakpoint SBTarget::BreakpointCreateByLocation(
-    const SBFileSpec &sb_file_spec, uint32_t line, uint32_t column,
-    lldb::addr_t offset, SBFileSpecList &sb_module_list) {
-  LLDB_RECORD_METHOD(lldb::SBBreakpoint, SBTarget, BreakpointCreateByLocation,
-                     (const lldb::SBFileSpec &, uint32_t, uint32_t,
-                      lldb::addr_t, lldb::SBFileSpecList &),
-                     sb_file_spec, line, column, offset, sb_module_list);
-
-  return LLDB_RECORD_RESULT(BreakpointCreateByLocationImpl(
-      sb_file_spec, line, column, offset, sb_module_list, eLazyBoolCalculate));
-}
-
-SBBreakpoint SBTarget::BreakpointCreateByLocation(
-    const SBFileSpec &sb_file_spec, uint32_t line, uint32_t column,
-    lldb::addr_t offset, SBFileSpecList &sb_module_list,
-    bool move_to_nearest_code) {
-  LLDB_RECORD_METHOD(lldb::SBBreakpoint, SBTarget, BreakpointCreateByLocation,
-                     (const lldb::SBFileSpec &, uint32_t, uint32_t,
-                      lldb::addr_t, lldb::SBFileSpecList &, bool),
-                     sb_file_spec, line, column, offset, sb_module_list,
-                     move_to_nearest_code);
-
-  return LLDB_RECORD_RESULT(BreakpointCreateByLocationImpl(
-      sb_file_spec, line, column, offset, sb_module_list,
-      move_to_nearest_code ? eLazyBoolYes : eLazyBoolNo));
+  return LLDB_RECORD_RESULT(sb_bp);
 }
 
 SBBreakpoint SBTarget::BreakpointCreateByName(const char *symbol_name,

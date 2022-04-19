@@ -27,6 +27,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
 #include "clang/AST/PrettyPrinter.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/Specifiers.h"
@@ -550,27 +551,6 @@ HoverInfo getHoverContents(const NamedDecl *D, const SymbolIndex *Index) {
   return HI;
 }
 
-/// Generate a \p Hover object given the type \p T.
-HoverInfo getHoverContents(QualType T, ASTContext &ASTCtx,
-                           const SymbolIndex *Index) {
-  HoverInfo HI;
-
-  if (const auto *D = T->getAsTagDecl()) {
-    HI.Name = printName(ASTCtx, *D);
-    HI.Kind = index::getSymbolInfo(D).Kind;
-
-    const auto *CommentD = getDeclForComment(D);
-    HI.Documentation = getDeclComment(ASTCtx, *CommentD);
-    enhanceFromIndex(HI, *CommentD, Index);
-  } else {
-    // Builtin types
-    auto Policy = printingPolicyForDecls(ASTCtx.getPrintingPolicy());
-    Policy.SuppressTagKeyword = true;
-    HI.Name = T.getAsString(Policy);
-  }
-  return HI;
-}
-
 /// Generate a \p Hover object given the macro \p MacroDecl.
 HoverInfo getHoverContents(const DefinedMacro &Macro, ParsedAST &AST) {
   HoverInfo HI;
@@ -606,6 +586,52 @@ HoverInfo getHoverContents(const DefinedMacro &Macro, ParsedAST &AST) {
   return HI;
 }
 
+llvm::Optional<HoverInfo> getThisExprHoverContents(const CXXThisExpr *CTE,
+                                                   ASTContext &ASTCtx) {
+  QualType OriginThisType = CTE->getType()->getPointeeType();
+  QualType ClassType = declaredType(OriginThisType->getAsTagDecl());
+  // For partial specialization class, origin `this` pointee type will be
+  // parsed as `InjectedClassNameType`, which will ouput template arguments
+  // like "type-parameter-0-0". So we retrieve user written class type in this
+  // case.
+  QualType PrettyThisType = ASTCtx.getPointerType(
+      QualType(ClassType.getTypePtr(), OriginThisType.getCVRQualifiers()));
+
+  auto Policy = printingPolicyForDecls(ASTCtx.getPrintingPolicy());
+  Policy.SuppressTagKeyword = true;
+  Policy.SuppressScope = true;
+  HoverInfo HI;
+  HI.Name = "this";
+  HI.Definition = PrettyThisType.getAsString(Policy);
+  return HI;
+}
+
+/// Generate a HoverInfo object given the deduced type \p QT
+HoverInfo getDeducedTypeHoverContents(QualType QT, const syntax::Token &Tok,
+                                      ASTContext &ASTCtx,
+                                      const SymbolIndex *Index) {
+  HoverInfo HI;
+  // FIXME: distinguish decltype(auto) vs decltype(expr)
+  HI.Name = tok::getTokenName(Tok.kind());
+  HI.Kind = index::SymbolKind::TypeAlias;
+
+  auto PP = printingPolicyForDecls(ASTCtx.getLangOpts());
+
+  if (QT->isUndeducedAutoType()) {
+    HI.Definition = "/* not deduced */";
+  } else {
+    HI.Definition = QT.getAsString(PP);
+
+    if (const auto *D = QT->getAsTagDecl()) {
+      const auto *CommentD = getDeclForComment(D);
+      HI.Documentation = getDeclComment(ASTCtx, *CommentD);
+      enhanceFromIndex(HI, *CommentD, Index);
+    }
+  }
+
+  return HI;
+}
+
 bool isLiteral(const Expr *E) {
   // Unfortunately there's no common base Literal classes inherits from
   // (apart from Expr), therefore these exclusions.
@@ -628,15 +654,19 @@ llvm::StringLiteral getNameForExpr(const Expr *E) {
   return llvm::StringLiteral("expression");
 }
 
-// Generates hover info for evaluatable expressions.
+// Generates hover info for `this` and evaluatable expressions.
 // FIXME: Support hover for literals (esp user-defined)
-llvm::Optional<HoverInfo> getHoverContents(const Expr *E, ParsedAST &AST) {
+llvm::Optional<HoverInfo> getHoverContents(const Expr *E, ParsedAST &AST,
+                                           const SymbolIndex *Index) {
   // There's not much value in hovering over "42" and getting a hover card
   // saying "42 is an int", similar for other literals.
   if (isLiteral(E))
     return llvm::None;
 
   HoverInfo HI;
+  // For `this` expr we currently generate hover with pointee type.
+  if (const CXXThisExpr *CTE = dyn_cast<CXXThisExpr>(E))
+    return getThisExprHoverContents(CTE, AST.getASTContext());
   // For expressions we currently print the type and the value, iff it is
   // evaluatable.
   if (auto Val = printExprValue(E, AST.getASTContext())) {
@@ -833,10 +863,16 @@ llvm::Optional<HoverInfo> getHover(ParsedAST &AST, Position Pos,
       }
     } else if (Tok.kind() == tok::kw_auto || Tok.kind() == tok::kw_decltype) {
       if (auto Deduced = getDeducedType(AST.getASTContext(), Tok.location())) {
-        HI = getHoverContents(*Deduced, AST.getASTContext(), Index);
+        HI = getDeducedTypeHoverContents(*Deduced, Tok, AST.getASTContext(),
+                                         Index);
         HighlightRange = Tok.range(SM).toCharRange(SM);
         break;
       }
+
+      // If we can't find interesting hover information for this
+      // auto/decltype keyword, return nothing to avoid showing
+      // irrelevant or incorrect informations.
+      return llvm::None;
     }
   }
 
@@ -861,7 +897,7 @@ llvm::Optional<HoverInfo> getHover(ParsedAST &AST, Position Pos,
           HI->Value = printExprValue(N, AST.getASTContext());
         maybeAddCalleeArgInfo(N, *HI, AST.getASTContext().getPrintingPolicy());
       } else if (const Expr *E = N->ASTNode.get<Expr>()) {
-        HI = getHoverContents(E, AST);
+        HI = getHoverContents(E, AST, Index);
       }
       // FIXME: support hovers for other nodes?
       //  - built-in types

@@ -451,6 +451,8 @@ std::string Attribute::getAsString(bool InAttrGrp) const {
     return "zeroext";
   if (hasAttribute(Attribute::Cold))
     return "cold";
+  if (hasAttribute(Attribute::Hot))
+    return "hot";
   if (hasAttribute(Attribute::ImmArg))
     return "immarg";
   if (hasAttribute(Attribute::MustPreserveCheriTags))
@@ -1860,7 +1862,7 @@ bool AttrBuilder::hasAlignmentAttr() const {
   return Alignment != 0;
 }
 
-bool AttrBuilder::operator==(const AttrBuilder &B) {
+bool AttrBuilder::operator==(const AttrBuilder &B) const {
   if (Attrs != B.Attrs)
     return false;
 
