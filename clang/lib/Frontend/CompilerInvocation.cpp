@@ -784,7 +784,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
 
   const llvm::Triple::ArchType DebugEntryValueArchs[] = {
       llvm::Triple::x86, llvm::Triple::x86_64, llvm::Triple::aarch64,
-      llvm::Triple::arm, llvm::Triple::armeb};
+      llvm::Triple::arm, llvm::Triple::armeb, llvm::Triple::mips,
+      llvm::Triple::mipsel, llvm::Triple::mips64, llvm::Triple::mips64el};
 
   llvm::Triple T(TargetOpts.Triple);
   if (Opts.OptimizationLevel > 0 && Opts.hasReducedDebugInfo() &&
@@ -1024,15 +1025,10 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
         std::string(Args.getLastArgValue(OPT_coverage_data_file));
     Opts.CoverageNotesFile =
         std::string(Args.getLastArgValue(OPT_coverage_notes_file));
-    Opts.CoverageExtraChecksum = Args.hasArg(OPT_coverage_cfg_checksum);
-    Opts.CoverageNoFunctionNamesInData =
-        Args.hasArg(OPT_coverage_no_function_names_in_data);
     Opts.ProfileFilterFiles =
         std::string(Args.getLastArgValue(OPT_fprofile_filter_files_EQ));
     Opts.ProfileExcludeFiles =
         std::string(Args.getLastArgValue(OPT_fprofile_exclude_files_EQ));
-    Opts.CoverageExitBlockBeforeBody =
-        Args.hasArg(OPT_coverage_exit_block_before_body);
     if (Args.hasArg(OPT_coverage_version_EQ)) {
       StringRef CoverageVersion = Args.getLastArgValue(OPT_coverage_version_EQ);
       if (CoverageVersion.size() != 4) {
@@ -2471,7 +2467,7 @@ static const StringRef GetInputKindName(InputKind IK) {
 
 static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
                           const TargetOptions &TargetOpts,
-                          PreprocessorOptions &PPOpts, CodeGenOptions &CGOpts,
+                          PreprocessorOptions &PPOpts,
                           DiagnosticsEngine &Diags) {
   // FIXME: Cleanup per-file based stuff.
   LangStandard::Kind LangStd = LangStandard::lang_unspecified;
@@ -2966,6 +2962,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
     Diags.Report(diag::warn_fe_concepts_ts_flag);
   Opts.RecoveryAST =
       Args.hasFlag(OPT_frecovery_ast, OPT_fno_recovery_ast, false);
+  Opts.RecoveryASTType =
++      Args.hasFlag(OPT_frecovery_ast_type, OPT_fno_recovery_ast_type, false);
   Opts.HeinousExtensions = Args.hasArg(OPT_fheinous_gnu_extensions);
   Opts.AccessControl = !Args.hasArg(OPT_fno_access_control);
   Opts.ElideConstructors = !Args.hasArg(OPT_fno_elide_constructors);
@@ -3262,13 +3260,21 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.UnsafeFPMath = Args.hasArg(OPT_menable_unsafe_fp_math) ||
                       Args.hasArg(OPT_cl_unsafe_math_optimizations) ||
                       Args.hasArg(OPT_cl_fast_relaxed_math);
-  Opts.AllowFPReassoc = Opts.FastMath || CGOpts.Reassociate;
-  Opts.NoHonorNaNs =
-      Opts.FastMath || CGOpts.NoNaNsFPMath || Opts.FiniteMathOnly;
-  Opts.NoHonorInfs =
-      Opts.FastMath || CGOpts.NoInfsFPMath || Opts.FiniteMathOnly;
-  Opts.NoSignedZero = Opts.FastMath || CGOpts.NoSignedZeros;
-  Opts.AllowRecip = Opts.FastMath || CGOpts.ReciprocalMath;
+  Opts.AllowFPReassoc = Opts.FastMath || Args.hasArg(OPT_mreassociate);
+  Opts.NoHonorNaNs = Opts.FastMath || Opts.FiniteMathOnly ||
+                     Args.hasArg(OPT_menable_no_nans) ||
+                     Args.hasArg(OPT_cl_unsafe_math_optimizations) ||
+                     Args.hasArg(OPT_cl_finite_math_only) ||
+                     Args.hasArg(OPT_cl_fast_relaxed_math);
+  Opts.NoHonorInfs = Opts.FastMath || Opts.FiniteMathOnly ||
+                     Args.hasArg(OPT_menable_no_infinities) ||
+                     Args.hasArg(OPT_cl_finite_math_only) ||
+                     Args.hasArg(OPT_cl_fast_relaxed_math);
+  Opts.NoSignedZero = Opts.FastMath || (Args.hasArg(OPT_fno_signed_zeros) ||
+                      Args.hasArg(OPT_cl_no_signed_zeros) ||
+                      Args.hasArg(OPT_cl_unsafe_math_optimizations) ||
+                      Args.hasArg(OPT_cl_fast_relaxed_math));
+  Opts.AllowRecip = Opts.FastMath || Args.hasArg(OPT_freciprocal_math);
   // Currently there's no clang option to enable this individually
   Opts.ApproxFunc = Opts.FastMath;
 
@@ -3411,6 +3417,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.CompleteMemberPointers = Args.hasArg(OPT_fcomplete_member_pointers);
   Opts.BuildingPCHWithObjectFile = Args.hasArg(OPT_building_pch_with_obj);
 
+  Opts.MatrixTypes = Args.hasArg(OPT_fenable_matrix);
+
   Opts.MaxTokens = getLastArgIntValue(Args, OPT_fmax_tokens_EQ, 0, Diags);
 
   if (Arg *A = Args.getLastArg(OPT_msign_return_address_EQ)) {
@@ -3446,6 +3454,10 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   }
 
   Opts.BranchTargetEnforcement = Args.hasArg(OPT_mbranch_target_enforce);
+  Opts.SpeculativeLoadHardening = Args.hasArg(OPT_mspeculative_load_hardening);
+
+  Opts.CompatibilityQualifiedIdBlockParamTypeChecking =
+      Args.hasArg(OPT_fcompatibility_qualified_id_block_param_type_checking);
 }
 
 static bool isStrictlyPreprocessorAction(frontend::ActionKind Action) {
@@ -3761,7 +3773,7 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
     // Other LangOpts are only initialized when the input is not AST or LLVM IR.
     // FIXME: Should we really be calling this for an Language::Asm input?
     ParseLangArgs(LangOpts, Args, DashX, Res.getTargetOpts(),
-                  Res.getPreprocessorOpts(), Res.getCodeGenOpts(), Diags);
+                  Res.getPreprocessorOpts(), Diags);
     if (Res.getFrontendOpts().ProgramAction == frontend::RewriteObjC)
       LangOpts.ObjCExceptions = 1;
     if (T.isOSDarwin() && DashX.isPreprocessed()) {

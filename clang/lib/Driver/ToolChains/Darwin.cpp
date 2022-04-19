@@ -1158,7 +1158,8 @@ static void addSectalignToPage(const ArgList &Args, ArgStringList &CmdArgs,
 
 void Darwin::addProfileRTLibs(const ArgList &Args,
                               ArgStringList &CmdArgs) const {
-  if (!needsProfileRT(Args)) return;
+  if (!needsProfileRT(Args) && !needsGCovInstrumentation(Args))
+    return;
 
   AddLinkRuntimeLib(Args, CmdArgs, "profile",
                     RuntimeLinkOptions(RLO_AlwaysLink | RLO_FirstLink));
@@ -2375,6 +2376,10 @@ void Darwin::addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
     OS << "-target-sdk-version=" << SDKInfo->getVersion();
     CC1Args.push_back(DriverArgs.MakeArgString(OS.str()));
   }
+
+  // Enable compatibility mode for NSItemProviderCompletionHandler in
+  // Foundation/NSItemProvider.h.
+  CC1Args.push_back("-fcompatibility-qualified-id-block-type-checking");
 }
 
 DerivedArgList *
