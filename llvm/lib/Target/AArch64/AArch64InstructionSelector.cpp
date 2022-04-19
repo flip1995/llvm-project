@@ -260,9 +260,12 @@ private:
                                              MachineIRBuilder &MIB) const;
   ComplexRendererFns selectArithExtendedRegister(MachineOperand &Root) const;
 
-  void renderTruncImm(MachineInstrBuilder &MIB, const MachineInstr &MI) const;
-  void renderLogicalImm32(MachineInstrBuilder &MIB, const MachineInstr &I) const;
-  void renderLogicalImm64(MachineInstrBuilder &MIB, const MachineInstr &I) const;
+  void renderTruncImm(MachineInstrBuilder &MIB, const MachineInstr &MI,
+                      int OpIdx = -1) const;
+  void renderLogicalImm32(MachineInstrBuilder &MIB, const MachineInstr &I,
+                          int OpIdx = -1) const;
+  void renderLogicalImm64(MachineInstrBuilder &MIB, const MachineInstr &I,
+                          int OpIdx = -1) const;
 
   // Materialize a GlobalValue or BlockAddress using a movz+movk sequence.
   void materializeLargeCMVal(MachineInstr &I, const Value *V,
@@ -2002,9 +2005,8 @@ bool AArch64InstructionSelector::select(MachineInstr &I) {
     // Add and set the set condition flag.
     unsigned AddsOpc = OpSize == 32 ? AArch64::ADDSWrr : AArch64::ADDSXrr;
     MachineIRBuilder MIRBuilder(I);
-    auto AddsMI = MIRBuilder.buildInstr(
-        AddsOpc, {I.getOperand(0).getReg()},
-        {I.getOperand(2).getReg(), I.getOperand(3).getReg()});
+    auto AddsMI = MIRBuilder.buildInstr(AddsOpc, {I.getOperand(0)},
+                                        {I.getOperand(2), I.getOperand(3)});
     constrainSelectedInstRegOperands(*AddsMI, TII, TRI, RBI);
 
     // Now, put the overflow result in the register given by the first operand
@@ -3245,7 +3247,7 @@ AArch64InstructionSelector::emitADD(Register DefReg, MachineOperand &LHS,
   bool Is32Bit = MRI.getType(LHS.getReg()).getSizeInBits() == 32;
   auto ImmFns = selectArithImmed(RHS);
   unsigned Opc = OpcTable[Is32Bit][ImmFns.hasValue()];
-  auto AddMI = MIRBuilder.buildInstr(Opc, {DefReg}, {LHS.getReg()});
+  auto AddMI = MIRBuilder.buildInstr(Opc, {DefReg}, {LHS});
 
   // If we matched a valid constant immediate, add those operands.
   if (ImmFns) {
@@ -3271,7 +3273,7 @@ AArch64InstructionSelector::emitCMN(MachineOperand &LHS, MachineOperand &RHS,
   unsigned Opc = OpcTable[Is32Bit][ImmFns.hasValue()];
   Register ZReg = Is32Bit ? AArch64::WZR : AArch64::XZR;
 
-  auto CmpMI = MIRBuilder.buildInstr(Opc, {ZReg}, {LHS.getReg()});
+  auto CmpMI = MIRBuilder.buildInstr(Opc, {ZReg}, {LHS});
 
   // If we matched a valid constant immediate, add those operands.
   if (ImmFns) {
@@ -3696,22 +3698,51 @@ bool AArch64InstructionSelector::tryOptVectorDup(MachineInstr &I) const {
     return false;
 
   // The shuffle's second operand doesn't matter if the mask is all zero.
-  const Constant *Mask = I.getOperand(3).getShuffleMask();
-  if (!isa<ConstantAggregateZero>(Mask))
+  ArrayRef<int> Mask = I.getOperand(3).getShuffleMask();
+  if (!all_of(Mask, [](int Elem) { return Elem == 0; }))
     return false;
 
   // We're done, now find out what kind of splat we need.
   LLT VecTy = MRI.getType(I.getOperand(0).getReg());
   LLT EltTy = VecTy.getElementType();
-  if (VecTy.getSizeInBits() != 128 || EltTy.getSizeInBits() < 32) {
-    LLVM_DEBUG(dbgs() << "Could not optimize splat pattern < 128b yet");
+  if (EltTy.getSizeInBits() < 32) {
+    LLVM_DEBUG(dbgs() << "Could not optimize splat pattern < 32b elts yet");
     return false;
   }
   bool IsFP = ScalarRB->getID() == AArch64::FPRRegBankID;
-  static const unsigned OpcTable[2][2] = {
-      {AArch64::DUPv4i32gpr, AArch64::DUPv2i64gpr},
-      {AArch64::DUPv4i32lane, AArch64::DUPv2i64lane}};
-  unsigned Opc = OpcTable[IsFP][EltTy.getSizeInBits() == 64];
+  unsigned Opc = 0;
+  if (IsFP) {
+    switch (EltTy.getSizeInBits()) {
+    case 32:
+      if (VecTy.getNumElements() == 2) {
+        Opc = AArch64::DUPv2i32lane;
+      } else {
+        Opc = AArch64::DUPv4i32lane;
+        assert(VecTy.getNumElements() == 4);
+      }
+      break;
+    case 64:
+      assert(VecTy.getNumElements() == 2 && "Unexpected num elts");
+      Opc = AArch64::DUPv2i64lane;
+      break;
+    }
+  } else {
+    switch (EltTy.getSizeInBits()) {
+    case 32:
+      if (VecTy.getNumElements() == 2) {
+        Opc = AArch64::DUPv2i32gpr;
+      } else {
+        Opc = AArch64::DUPv4i32gpr;
+        assert(VecTy.getNumElements() == 4);
+      }
+      break;
+    case 64:
+      assert(VecTy.getNumElements() == 2 && "Unexpected num elts");
+      Opc = AArch64::DUPv2i64gpr;
+      break;
+    }
+  }
+  assert(Opc && "Did not compute an opcode for a dup");
 
   // For FP splats, we need to widen the scalar reg via undef too.
   if (IsFP) {
@@ -3746,14 +3777,11 @@ bool AArch64InstructionSelector::selectShuffleVector(
   const LLT Src1Ty = MRI.getType(Src1Reg);
   Register Src2Reg = I.getOperand(2).getReg();
   const LLT Src2Ty = MRI.getType(Src2Reg);
-  const Constant *ShuffleMask = I.getOperand(3).getShuffleMask();
+  ArrayRef<int> Mask = I.getOperand(3).getShuffleMask();
 
   MachineBasicBlock &MBB = *I.getParent();
   MachineFunction &MF = *MBB.getParent();
   LLVMContext &Ctx = MF.getFunction().getContext();
-
-  SmallVector<int, 8> Mask;
-  ShuffleVectorInst::getShuffleMask(ShuffleMask, Mask);
 
   // G_SHUFFLE_VECTOR is weird in that the source operands can be scalars, if
   // it's originated from a <1 x T> type. Those should have been lowered into
@@ -3823,9 +3851,8 @@ bool AArch64InstructionSelector::selectShuffleVector(
                     .addUse(Src2Reg)
                     .addImm(AArch64::qsub1);
 
-  auto TBL2 =
-      MIRBuilder.buildInstr(AArch64::TBLv16i8Two, {I.getOperand(0).getReg()},
-                            {RegSeq, IndexLoad->getOperand(0).getReg()});
+  auto TBL2 = MIRBuilder.buildInstr(AArch64::TBLv16i8Two, {I.getOperand(0)},
+                                    {RegSeq, IndexLoad->getOperand(0)});
   constrainSelectedInstRegOperands(*RegSeq, TII, TRI, RBI);
   constrainSelectedInstRegOperands(*TBL2, TII, TRI, RBI);
   I.eraseFromParent();
@@ -4062,7 +4089,7 @@ bool AArch64InstructionSelector::selectIntrinsic(
   switch (IntrinID) {
   default:
     break;
-  case Intrinsic::aarch64_crypto_sha1h:
+  case Intrinsic::aarch64_crypto_sha1h: {
     Register DstReg = I.getOperand(0).getReg();
     Register SrcReg = I.getOperand(2).getReg();
 
@@ -4100,6 +4127,46 @@ bool AArch64InstructionSelector::selectIntrinsic(
 
     I.eraseFromParent();
     return true;
+  }
+  case Intrinsic::frameaddress:
+  case Intrinsic::returnaddress: {
+    MachineFunction &MF = *I.getParent()->getParent();
+    MachineFrameInfo &MFI = MF.getFrameInfo();
+
+    unsigned Depth = I.getOperand(2).getImm();
+    Register DstReg = I.getOperand(0).getReg();
+    RBI.constrainGenericRegister(DstReg, AArch64::GPR64RegClass, MRI);
+
+    if (Depth == 0 && IntrinID == Intrinsic::returnaddress) {
+      MFI.setReturnAddressIsTaken(true);
+      MF.addLiveIn(AArch64::LR, &AArch64::GPR64spRegClass);
+      I.getParent()->addLiveIn(AArch64::LR);
+      MIRBuilder.buildCopy({DstReg}, {Register(AArch64::LR)});
+      I.eraseFromParent();
+      return true;
+    }
+
+    MFI.setFrameAddressIsTaken(true);
+    Register FrameAddr(AArch64::FP);
+    while (Depth--) {
+      Register NextFrame = MRI.createVirtualRegister(&AArch64::GPR64spRegClass);
+      auto Ldr =
+          MIRBuilder.buildInstr(AArch64::LDRXui, {NextFrame}, {FrameAddr})
+              .addImm(0);
+      constrainSelectedInstRegOperands(*Ldr, TII, TRI, RBI);
+      FrameAddr = NextFrame;
+    }
+
+    if (IntrinID == Intrinsic::frameaddress)
+      MIRBuilder.buildCopy({DstReg}, {FrameAddr});
+    else {
+      MFI.setReturnAddressIsTaken(true);
+      MIRBuilder.buildInstr(AArch64::LDRXui, {DstReg}, {FrameAddr}).addImm(1);
+    }
+
+    I.eraseFromParent();
+    return true;
+  }
   }
   return false;
 }
@@ -4822,25 +4889,29 @@ AArch64InstructionSelector::selectArithExtendedRegister(
 }
 
 void AArch64InstructionSelector::renderTruncImm(MachineInstrBuilder &MIB,
-                                                const MachineInstr &MI) const {
+                                                const MachineInstr &MI,
+                                                int OpIdx) const {
   const MachineRegisterInfo &MRI = MI.getParent()->getParent()->getRegInfo();
-  assert(MI.getOpcode() == TargetOpcode::G_CONSTANT && "Expected G_CONSTANT");
+  assert(MI.getOpcode() == TargetOpcode::G_CONSTANT && OpIdx == -1 &&
+         "Expected G_CONSTANT");
   Optional<int64_t> CstVal = getConstantVRegVal(MI.getOperand(0).getReg(), MRI);
   assert(CstVal && "Expected constant value");
   MIB.addImm(CstVal.getValue());
 }
 
 void AArch64InstructionSelector::renderLogicalImm32(
-    MachineInstrBuilder &MIB, const MachineInstr &I) const {
-  assert(I.getOpcode() == TargetOpcode::G_CONSTANT && "Expected G_CONSTANT");
+  MachineInstrBuilder &MIB, const MachineInstr &I, int OpIdx) const {
+  assert(I.getOpcode() == TargetOpcode::G_CONSTANT && OpIdx == -1 &&
+         "Expected G_CONSTANT");
   uint64_t CstVal = I.getOperand(1).getCImm()->getZExtValue();
   uint64_t Enc = AArch64_AM::encodeLogicalImmediate(CstVal, 32);
   MIB.addImm(Enc);
 }
 
 void AArch64InstructionSelector::renderLogicalImm64(
-    MachineInstrBuilder &MIB, const MachineInstr &I) const {
-  assert(I.getOpcode() == TargetOpcode::G_CONSTANT && "Expected G_CONSTANT");
+  MachineInstrBuilder &MIB, const MachineInstr &I, int OpIdx) const {
+  assert(I.getOpcode() == TargetOpcode::G_CONSTANT && OpIdx == -1 &&
+         "Expected G_CONSTANT");
   uint64_t CstVal = I.getOperand(1).getCImm()->getZExtValue();
   uint64_t Enc = AArch64_AM::encodeLogicalImmediate(CstVal, 64);
   MIB.addImm(Enc);
