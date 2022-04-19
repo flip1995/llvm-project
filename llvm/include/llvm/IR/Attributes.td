@@ -182,6 +182,9 @@ def StackAlignment : IntAttr<"alignstack">;
 /// Function can be speculated.
 def Speculatable : EnumAttr<"speculatable">;
 
+/// Stack protection explicitly disabled.
+def NoStackProtect : EnumAttr<"nossp">;
+
 /// Stack protection.
 def StackProtect : EnumAttr<"ssp">;
 
@@ -241,6 +244,10 @@ def ZExt : EnumAttr<"zeroext">;
 // This MemTransferInst may transfer capabilities and must not be
 // split into smaller loads/stores that would break this property
 def MustPreserveCheriTags : EnumAttr<"must_preserve_cheri_tags">;
+
+/// Function is required to make Forward Progress.
+def MustProgress : TypeAttr<"mustprogress">;
+
 /// Target-independent string attributes.
 def LessPreciseFPMAD : StrBoolAttr<"less-precise-fpmad">;
 def NoInfsFPMath : StrBoolAttr<"no-infs-fp-math">;

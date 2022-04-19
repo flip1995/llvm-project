@@ -246,18 +246,20 @@ namespace llvm {
                               // will be determined by the opcode.
 
       exnref         = 161,   // WebAssembly's exnref type
+      funcref        = 162,   // WebAssembly's funcref type
+      externref      = 163,   // WebAssembly's externref type
 
-      iFATPTR64      =  162,   // 64-bit fat pointer type
-      iFATPTR128     =  163,   // 128-bit fat pointer type
-      iFATPTR256     =  164,   // 256-bit fat pointer type
-      iFATPTR512     =  165,   // 512-bit fat pointer type
-      iFATPTRAny     =  166,   // Generic fat pointer type (must be legalised
+      iFATPTR64      =  164,   // 64-bit fat pointer type
+      iFATPTR128     =  165,   // 128-bit fat pointer type
+      iFATPTR256     =  166,   // 256-bit fat pointer type
+      iFATPTR512     =  167,   // 512-bit fat pointer type
+      iFATPTRAny     =  168,   // Generic fat pointer type (must be legalised
                                // to a sized  version)
       FIRST_FAT_POINTER = iFATPTR64,
       LAST_FAT_POINTER = iFATPTRAny,
 
       FIRST_VALUETYPE =  1,   // This is always the beginning of the list.
-      LAST_VALUETYPE = 167,   // This always remains at the end of the list.
+      LAST_VALUETYPE = 169,   // This always remains at the end of the list.
 
       // This is the current maximum for LAST_VALUETYPE.
       // MVT::MAX_ALLOWED_VALUETYPE is used for asserts and to size bit vectors
@@ -439,6 +441,36 @@ namespace llvm {
       return (SimpleTy == MVT::Any || SimpleTy == MVT::iAny ||
               SimpleTy == MVT::fAny || SimpleTy == MVT::vAny ||
               SimpleTy == MVT::iPTRAny || SimpleTy == MVT::iFATPTRAny);
+    }
+
+    /// Return a vector with the same number of elements as this vector, but
+    /// with the element type converted to an integer type with the same
+    /// bitwidth.
+    MVT changeVectorElementTypeToInteger() const {
+      MVT EltTy = getVectorElementType();
+      MVT IntTy = MVT::getIntegerVT(EltTy.getSizeInBits());
+      MVT VecTy = MVT::getVectorVT(IntTy, getVectorElementCount());
+      assert(VecTy.SimpleTy != MVT::INVALID_SIMPLE_VALUE_TYPE &&
+             "Simple vector VT not representable by simple integer vector VT!");
+      return VecTy;
+    }
+
+    /// Return a VT for a vector type whose attributes match ourselves
+    /// with the exception of the element type that is chosen by the caller.
+    MVT changeVectorElementType(MVT EltVT) const {
+      MVT VecTy = MVT::getVectorVT(EltVT, getVectorElementCount());
+      assert(VecTy.SimpleTy != MVT::INVALID_SIMPLE_VALUE_TYPE &&
+             "Simple vector VT not representable by simple integer vector VT!");
+      return VecTy;
+    }
+
+    /// Return the type converted to an equivalently sized integer or vector
+    /// with integer element type. Similar to changeVectorElementTypeToInteger,
+    /// but also handles scalars.
+    MVT changeTypeToInteger() {
+      if (isVector())
+        return changeVectorElementTypeToInteger();
+      return MVT::getIntegerVT(getSizeInBits());
     }
 
     /// Return a VT for a vector type with the same element type but
@@ -964,7 +996,9 @@ namespace llvm {
       case v1024f32:  return TypeSize::Fixed(32768);
       case v2048i32:
       case v2048f32:  return TypeSize::Fixed(65536);
-      case exnref: return TypeSize::Fixed(0); // opaque type
+      case exnref:
+      case funcref:
+      case externref: return TypeSize::Fixed(0); // opaque type
       }
     }
 

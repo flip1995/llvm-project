@@ -701,6 +701,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_SPECULATABLE;
   case Attribute::StackAlignment:
     return bitc::ATTR_KIND_STACK_ALIGNMENT;
+  case Attribute::NoStackProtect:
+    return bitc::ATTR_KIND_NO_STACK_PROTECT;
   case Attribute::StackProtect:
     return bitc::ATTR_KIND_STACK_PROTECT;
   case Attribute::StackProtectReq:
@@ -747,6 +749,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_NOUNDEF;
   case Attribute::ByRef:
     return bitc::ATTR_KIND_BYREF;
+  case Attribute::MustProgress:
+    return bitc::ATTR_KIND_MUSTPROGRESS;
   case Attribute::EndAttrKinds:
     llvm_unreachable("Can not encode end-attribute kinds marker.");
   case Attribute::None:

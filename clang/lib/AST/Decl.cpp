@@ -2280,7 +2280,9 @@ void VarDecl::setInit(Expr *I) {
 bool VarDecl::mightBeUsableInConstantExpressions(const ASTContext &C) const {
   const LangOptions &Lang = C.getLangOpts();
 
-  if (!Lang.CPlusPlus)
+  // OpenCL permits const integral variables to be used in constant
+  // expressions, like in C++98.
+  if (!Lang.CPlusPlus && !Lang.OpenCL)
     return false;
 
   // Function parameters are never usable in constant expressions.
@@ -2299,7 +2301,7 @@ bool VarDecl::mightBeUsableInConstantExpressions(const ASTContext &C) const {
   // Only const objects can be used in constant expressions in C++. C++98 does
   // not require the variable to be non-volatile, but we consider this to be a
   // defect.
-  if (!getType().isConstQualified() || getType().isVolatileQualified())
+  if (!getType().isConstant(C) || getType().isVolatileQualified())
     return false;
 
   // In C++, const, non-volatile variables of integral or enumeration types
@@ -2325,14 +2327,14 @@ bool VarDecl::isUsableInConstantExpressions(const ASTContext &Context) const {
   if (!DefVD->mightBeUsableInConstantExpressions(Context))
     return false;
   //   ... and its initializer is a constant initializer.
-  if (!DefVD->hasConstantInitialization())
+  if (Context.getLangOpts().CPlusPlus && !DefVD->hasConstantInitialization())
     return false;
   // C++98 [expr.const]p1:
   //   An integral constant-expression can involve only [...] const variables
   //   or static data members of integral or enumeration types initialized with
   //   [integer] constant expressions (dcl.init)
-  if (Context.getLangOpts().CPlusPlus && !Context.getLangOpts().CPlusPlus11 &&
-      !DefVD->hasICEInitializer(Context))
+  if ((Context.getLangOpts().CPlusPlus || Context.getLangOpts().OpenCL) &&
+      !Context.getLangOpts().CPlusPlus11 && !DefVD->hasICEInitializer(Context))
     return false;
   return true;
 }
@@ -2360,11 +2362,11 @@ EvaluatedStmt *VarDecl::getEvaluatedStmt() const {
 
 APValue *VarDecl::evaluateValue() const {
   SmallVector<PartialDiagnosticAt, 8> Notes;
-  return evaluateValue(Notes);
+  return evaluateValueImpl(Notes, hasConstantInitialization());
 }
 
-APValue *VarDecl::evaluateValue(
-    SmallVectorImpl<PartialDiagnosticAt> &Notes) const {
+APValue *VarDecl::evaluateValueImpl(SmallVectorImpl<PartialDiagnosticAt> &Notes,
+                                    bool IsConstantInitialization) const {
   EvaluatedStmt *Eval = ensureEvaluatedStmt();
 
   const auto *Init = cast<Expr>(Eval->Value);
@@ -2383,8 +2385,16 @@ APValue *VarDecl::evaluateValue(
 
   Eval->IsEvaluating = true;
 
-  bool Result = Init->EvaluateAsInitializer(Eval->Evaluated, getASTContext(),
-                                            this, Notes);
+  ASTContext &Ctx = getASTContext();
+  bool Result = Init->EvaluateAsInitializer(Eval->Evaluated, Ctx, this, Notes,
+                                            IsConstantInitialization);
+
+  // In C++11, this isn't a constant initializer if we produced notes. In that
+  // case, we can't keep the result, because it may only be correct under the
+  // assumption that the initializer is a constant context.
+  if (IsConstantInitialization && Ctx.getLangOpts().CPlusPlus11 &&
+      !Notes.empty())
+    Result = false;
 
   // Ensure the computed APValue is cleaned up later if evaluation succeeded,
   // or that it's empty (so that there's nothing to clean up) if evaluation
@@ -2392,7 +2402,7 @@ APValue *VarDecl::evaluateValue(
   if (!Result)
     Eval->Evaluated = APValue();
   else if (Eval->Evaluated.needsCleanup())
-    getASTContext().addDestruction(&Eval->Evaluated);
+    Ctx.addDestruction(&Eval->Evaluated);
 
   Eval->IsEvaluating = false;
   Eval->WasEvaluated = true;
@@ -2451,7 +2461,14 @@ bool VarDecl::checkForConstantInitialization(
   assert(!Init->isValueDependent());
 
   // Evaluate the initializer to check whether it's a constant expression.
-  Eval->HasConstantInitialization = evaluateValue(Notes) && Notes.empty();
+  Eval->HasConstantInitialization =
+      evaluateValueImpl(Notes, true) && Notes.empty();
+
+  // If evaluation as a constant initializer failed, allow re-evaluation as a
+  // non-constant initializer if we later find we want the value.
+  if (!Eval->HasConstantInitialization)
+    Eval->WasEvaluated = false;
+
   return Eval->HasConstantInitialization;
 }
 

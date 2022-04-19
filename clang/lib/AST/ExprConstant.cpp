@@ -1610,7 +1610,7 @@ namespace {
     }
 
     void setNull(ASTContext &Ctx, QualType PointerTy) {
-      Base = (Expr *)nullptr;
+      Base = (const ValueDecl *)nullptr;
       Offset =
           CharUnits::fromQuantity(Ctx.getTargetNullPointerValue(PointerTy));
       InvalidBase = false;
@@ -1986,6 +1986,8 @@ static bool IsGlobalLValue(APValue::LValueBase B) {
     // ... the address of an object with static storage duration,
     if (const VarDecl *VD = dyn_cast<VarDecl>(D))
       return VD->hasGlobalStorage();
+    if (isa<TemplateParamObjectDecl>(D))
+      return true;
     // ... the address of a function,
     // ... the address of a GUID [MS extension],
     return isa<FunctionDecl>(D) || isa<MSGuidDecl>(D);
@@ -2221,7 +2223,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
       QualType TempType = getType(Base);
       if (TempType.isDestructedType()) {
         Info.FFDiag(MTE->getExprLoc(),
-                    diag::note_constexpr_unsupported_tempoarary_nontrivial_dtor)
+                    diag::note_constexpr_unsupported_temporary_nontrivial_dtor)
             << TempType;
         return false;
       }
@@ -3277,12 +3279,9 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
 
   // Check that we can fold the initializer. In C++, we will have already done
   // this in the cases where it matters for conformance.
-  SmallVector<PartialDiagnosticAt, 8> Notes;
-  if (!VD->evaluateValue(Notes)) {
-    Info.FFDiag(E, diag::note_constexpr_var_init_non_constant,
-              Notes.size() + 1) << VD;
+  if (!VD->evaluateValue()) {
+    Info.FFDiag(E, diag::note_constexpr_var_init_non_constant, 1) << VD;
     NoteLValueLocation(Info, Base);
-    Info.addNotes(Notes);
     return false;
   }
 
@@ -3295,10 +3294,10 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
   // FIXME: We don't diagnose cases that aren't potentially usable in constant
   // expressions here; doing so would regress diagnostics for things like
   // reading from a volatile constexpr variable.
-  if ((!VD->hasConstantInitialization() &&
+  if ((Info.getLangOpts().CPlusPlus && !VD->hasConstantInitialization() &&
        VD->mightBeUsableInConstantExpressions(Info.Ctx)) ||
-      (Info.getLangOpts().CPlusPlus && !Info.getLangOpts().CPlusPlus11 &&
-       !VD->hasICEInitializer(Info.Ctx))) {
+      ((Info.getLangOpts().CPlusPlus || Info.getLangOpts().OpenCL) &&
+       !Info.getLangOpts().CPlusPlus11 && !VD->hasICEInitializer(Info.Ctx))) {
     Info.CCEDiag(E, diag::note_constexpr_var_init_non_constant, 1) << VD;
     NoteLValueLocation(Info, Base);
   }
@@ -3991,6 +3990,16 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
       return CompleteObject(LVal.Base, &V, GD->getType());
     }
 
+    // Allow reading from template parameter objects.
+    if (auto *TPO = dyn_cast<TemplateParamObjectDecl>(D)) {
+      if (isModification(AK)) {
+        Info.FFDiag(E, diag::note_constexpr_modify_global);
+        return CompleteObject();
+      }
+      return CompleteObject(LVal.Base, const_cast<APValue *>(&TPO->getValue()),
+                            TPO->getType());
+    }
+
     // In C++98, const, non-volatile integers initialized with ICEs are ICEs.
     // In C++11, constexpr, non-volatile variables initialized with constant
     // expressions are constant expressions too. Inside constexpr functions,
@@ -4008,10 +4017,7 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
       return CompleteObject();
     }
 
-    // In OpenCL if a variable is in constant address space it is a const value.
-    bool IsConstant = BaseType.isConstQualified() ||
-                      (Info.getLangOpts().OpenCL &&
-                       BaseType.getAddressSpace() == LangAS::opencl_constant);
+    bool IsConstant = BaseType.isConstant(Info.Ctx);
 
     // Unless we're looking at a local variable or argument in a constexpr call,
     // the variable we're reading must be const.
@@ -4032,8 +4038,6 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
       } else if (VD->isConstexpr()) {
         // OK, we can read this variable.
       } else if (BaseType->isIntegralOrEnumerationType()) {
-        // In OpenCL if a variable is in constant address space it is a const
-        // value.
         if (!IsConstant) {
           if (!IsAccess)
             return CompleteObject(LVal.getLValueBase(), nullptr, BaseType);
@@ -4097,27 +4101,32 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
         assert(MTE->getStorageDuration() == SD_Static &&
                "should have a frame for a non-global materialized temporary");
 
-        // Per C++1y [expr.const]p2:
+        // C++20 [expr.const]p4: [DR2126]
+        //   An object or reference is usable in constant expressions if it is
+        //   - a temporary object of non-volatile const-qualified literal type
+        //     whose lifetime is extended to that of a variable that is usable
+        //     in constant expressions
+        //
+        // C++20 [expr.const]p5:
         //  an lvalue-to-rvalue conversion [is not allowed unless it applies to]
-        //   - a [...] glvalue of integral or enumeration type that refers to
-        //     a non-volatile const object [...]
-        //   [...]
-        //   - a [...] glvalue of literal type that refers to a non-volatile
-        //     object whose lifetime began within the evaluation of e.
+        //   - a non-volatile glvalue that refers to an object that is usable
+        //     in constant expressions, or
+        //   - a non-volatile glvalue of literal type that refers to a
+        //     non-volatile object whose lifetime began within the evaluation
+        //     of E;
         //
         // C++11 misses the 'began within the evaluation of e' check and
         // instead allows all temporaries, including things like:
         //   int &&r = 1;
         //   int x = ++r;
         //   constexpr int k = r;
-        // Therefore we use the C++14 rules in C++11 too.
+        // Therefore we use the C++14-onwards rules in C++11 too.
         //
         // Note that temporaries whose lifetimes began while evaluating a
         // variable's constructor are not usable while evaluating the
         // corresponding destructor, not even if they're of const-qualified
         // types.
-        if (!(BaseType.isConstQualified() &&
-              BaseType->isIntegralOrEnumerationType()) &&
+        if (!MTE->isUsableInConstantExpressions(Info.Ctx) &&
             !lifetimeStartedInEvaluation(Info, LVal.Base)) {
           if (!IsAccess)
             return CompleteObject(LVal.getLValueBase(), nullptr, BaseType);
@@ -8044,14 +8053,13 @@ static bool EvaluateLValue(const Expr *E, LValue &Result, EvalInfo &Info,
 }
 
 bool LValueExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
-  if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(E->getDecl()))
-    return Success(FD);
-  if (const VarDecl *VD = dyn_cast<VarDecl>(E->getDecl()))
+  const NamedDecl *D = E->getDecl();
+  if (isa<FunctionDecl, MSGuidDecl, TemplateParamObjectDecl>(D))
+    return Success(cast<ValueDecl>(D));
+  if (const VarDecl *VD = dyn_cast<VarDecl>(D))
     return VisitVarDecl(E, VD);
-  if (const BindingDecl *BD = dyn_cast<BindingDecl>(E->getDecl()))
+  if (const BindingDecl *BD = dyn_cast<BindingDecl>(D))
     return Visit(BD->getBinding());
-  if (const MSGuidDecl *GD = dyn_cast<MSGuidDecl>(E->getDecl()))
-    return Success(GD);
   return Error(E);
 }
 
@@ -9648,7 +9656,7 @@ static bool HandleClassZeroInitialization(EvalInfo &Info, const Expr *E,
 
   for (const auto *I : RD->fields()) {
     // -- if T is a reference type, no initialization is performed.
-    if (I->getType()->isReferenceType())
+    if (I->isUnnamedBitfield() || I->getType()->isReferenceType())
       continue;
 
     LValue Subobject = This;
@@ -9671,6 +9679,8 @@ bool RecordExprEvaluator::ZeroInitialization(const Expr *E, QualType T) {
     // C++11 [dcl.init]p5: If T is a (possibly cv-qualified) union type, the
     // object's first non-static named data member is zero-initialized
     RecordDecl::field_iterator I = RD->field_begin();
+    while (I != RD->field_end() && (*I)->isUnnamedBitfield())
+      ++I;
     if (I == RD->field_end()) {
       Result = APValue((const FieldDecl*)nullptr);
       return true;
@@ -14824,7 +14834,8 @@ bool Expr::EvaluateAsConstantExpr(EvalResult &Result, ConstExprUsage Usage,
 
 bool Expr::EvaluateAsInitializer(APValue &Value, const ASTContext &Ctx,
                                  const VarDecl *VD,
-                            SmallVectorImpl<PartialDiagnosticAt> &Notes) const {
+                                 SmallVectorImpl<PartialDiagnosticAt> &Notes,
+                                 bool IsConstantInitialization) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
@@ -14837,11 +14848,12 @@ bool Expr::EvaluateAsInitializer(APValue &Value, const ASTContext &Ctx,
   Expr::EvalStatus EStatus;
   EStatus.Diag = &Notes;
 
-  EvalInfo Info(Ctx, EStatus, VD->isConstexpr()
-                                      ? EvalInfo::EM_ConstantExpression
-                                      : EvalInfo::EM_ConstantFold);
+  EvalInfo Info(Ctx, EStatus,
+                (IsConstantInitialization && Ctx.getLangOpts().CPlusPlus11)
+                    ? EvalInfo::EM_ConstantExpression
+                    : EvalInfo::EM_ConstantFold);
   Info.setEvaluatingDecl(VD, Value);
-  Info.InConstantContext = true;
+  Info.InConstantContext = IsConstantInitialization;
 
   SourceLocation DeclLoc = VD->getLocation();
   QualType DeclTy = VD->getType();
@@ -14977,7 +14989,6 @@ bool Expr::EvalResult::isGlobalLValue() const {
   assert(Val.isLValue());
   return IsGlobalLValue(Val.getLValueBase());
 }
-
 
 /// isIntegerConstantExpr - this recursive routine will test if an expression is
 /// an integer constant expression.
@@ -15182,15 +15193,20 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     return CheckICE(cast<CXXRewrittenBinaryOperator>(E)->getSemanticForm(),
                     Ctx);
   case Expr::DeclRefExprClass: {
-    if (isa<EnumConstantDecl>(cast<DeclRefExpr>(E)->getDecl()))
+    const NamedDecl *D = cast<DeclRefExpr>(E)->getDecl();
+    if (isa<EnumConstantDecl>(D))
       return NoDiag();
-    const VarDecl *VD = dyn_cast<VarDecl>(cast<DeclRefExpr>(E)->getDecl());
-    if (VD && VD->isUsableInConstantExpressions(Ctx)) {
-      // C++ 7.1.5.1p2
-      //   A variable of non-volatile const-qualified integral or enumeration
-      //   type initialized by an ICE can be used in ICEs.
+
+    // C++ and OpenCL (FIXME: spec reference?) allow reading const-qualified
+    // integer variables in constant expressions:
+    //
+    // C++ 7.1.5.1p2
+    //   A variable of non-volatile const-qualified integral or enumeration
+    //   type initialized by an ICE can be used in ICEs.
+    const VarDecl *VD = dyn_cast<VarDecl>(D);
+    if (VD && VD->isUsableInConstantExpressions(Ctx))
       return NoDiag();
-    }
+
     return ICEDiag(IK_NotICE, E->getBeginLoc());
   }
   case Expr::UnaryOperatorClass: {

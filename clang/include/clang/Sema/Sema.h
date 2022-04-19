@@ -3373,7 +3373,8 @@ public:
   ExprResult CheckConvertedConstantExpression(Expr *From, QualType T,
                                               llvm::APSInt &Value, CCEKind CCE);
   ExprResult CheckConvertedConstantExpression(Expr *From, QualType T,
-                                              APValue &Value, CCEKind CCE);
+                                              APValue &Value, CCEKind CCE,
+                                              NamedDecl *Dest = nullptr);
 
   /// Abstract base class used to perform a contextual implicit
   /// conversion from an expression to any type passing a filter.
@@ -12821,7 +12822,7 @@ template <> struct DenseMapInfo<clang::Sema::FunctionDeclAndLoc> {
 
   static unsigned getHashValue(const FunctionDeclAndLoc &FDL) {
     return hash_combine(FDBaseInfo::getHashValue(FDL.FD),
-                        FDL.Loc.getRawEncoding());
+                        FDL.Loc.getHashValue());
   }
 
   static bool isEqual(const FunctionDeclAndLoc &LHS,
