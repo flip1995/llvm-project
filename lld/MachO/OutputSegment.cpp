@@ -100,6 +100,8 @@ static int sectionOrder(OutputSection *osec) {
     // sections can be zerofills, we end up putting all TLV data sections at the
     // end of the segment.
     switch (sectionType(osec->flags)) {
+    case S_THREAD_LOCAL_VARIABLE_POINTERS:
+      return std::numeric_limits<int>::max() - 3;
     case S_THREAD_LOCAL_REGULAR:
       return std::numeric_limits<int>::max() - 2;
     case S_THREAD_LOCAL_ZEROFILL:
@@ -128,18 +130,25 @@ static int sectionOrder(OutputSection *osec) {
         .Case(section_names::codeSignature, std::numeric_limits<int>::max())
         .Default(osec->inputOrder);
   }
-  // ZeroFill sections must always be the at the end of their segments,
-  // otherwise subsequent sections may get overwritten with zeroes at runtime.
+  // ZeroFill sections must always be the at the end of their segments:
+  // dyld checks if a segment's file size is smaller than its in-memory
+  // size to detect if a segment has zerofill sections, and if so it maps
+  // the missing tail as zerofill.
   if (sectionType(osec->flags) == S_ZEROFILL)
     return std::numeric_limits<int>::max();
   return osec->inputOrder;
 }
 
 void OutputSegment::sortOutputSections() {
-  llvm::sort(sections, compareByOrder<OutputSection *>(sectionOrder));
+  // Must be stable_sort() to keep special sections such as
+  // S_THREAD_LOCAL_REGULAR in input order.
+  llvm::stable_sort(sections, compareByOrder<OutputSection *>(sectionOrder));
 }
 
 void macho::sortOutputSegments() {
+  // sort() instead of stable_sort() is fine because segmentOrder() is
+  // name-based and getOrCreateOutputSegment() makes there's only a single
+  // segment for every name.
   llvm::sort(outputSegments, compareByOrder<OutputSegment *>(segmentOrder));
 }
 

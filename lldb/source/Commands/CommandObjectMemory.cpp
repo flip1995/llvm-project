@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CommandObjectMemory.h"
+#include "CommandObjectMemoryTag.h"
 #include "lldb/Core/DumpDataExtractor.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Core/ValueObjectMemory.h"
@@ -1678,6 +1679,28 @@ protected:
       if (memory_tagged == MemoryRegionInfo::OptionalBool::eYes)
         result.AppendMessage("memory tagging: enabled");
 
+      const llvm::Optional<std::vector<addr_t>> &dirty_page_list =
+          range_info.GetDirtyPageList();
+      if (dirty_page_list.hasValue()) {
+        const size_t page_count = dirty_page_list.getValue().size();
+        result.AppendMessageWithFormat(
+            "Modified memory (dirty) page list provided, %zu entries.\n",
+            page_count);
+        if (page_count > 0) {
+          bool print_comma = false;
+          result.AppendMessageWithFormat("Dirty pages: ");
+          for (size_t i = 0; i < page_count; i++) {
+            if (print_comma)
+              result.AppendMessageWithFormat(", ");
+            else
+              print_comma = true;
+            result.AppendMessageWithFormat("0x%" PRIx64,
+                                           dirty_page_list.getValue()[i]);
+          }
+          result.AppendMessageWithFormat(".\n");
+        }
+      }
+
       m_prev_end_addr = range_info.GetRange().GetRangeEnd();
       result.SetStatus(eReturnStatusSuccessFinishResult);
       return true;
@@ -1714,6 +1737,8 @@ CommandObjectMemory::CommandObjectMemory(CommandInterpreter &interpreter)
                  CommandObjectSP(new CommandObjectMemoryHistory(interpreter)));
   LoadSubCommand("region",
                  CommandObjectSP(new CommandObjectMemoryRegion(interpreter)));
+  LoadSubCommand("tag",
+                 CommandObjectSP(new CommandObjectMemoryTag(interpreter)));
 }
 
 CommandObjectMemory::~CommandObjectMemory() = default;

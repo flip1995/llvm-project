@@ -753,6 +753,7 @@ namespace llvm {
 extern MCAsmParserExtension *createDarwinAsmParser();
 extern MCAsmParserExtension *createELFAsmParser();
 extern MCAsmParserExtension *createCOFFAsmParser();
+extern MCAsmParserExtension *createXCOFFAsmParser();
 extern MCAsmParserExtension *createWasmAsmParser();
 
 } // end namespace llvm
@@ -789,8 +790,7 @@ AsmParser::AsmParser(SourceMgr &SM, MCContext &Ctx, MCStreamer &Out,
     PlatformParser.reset(createWasmAsmParser());
     break;
   case MCContext::IsXCOFF:
-    report_fatal_error(
-        "Need to implement createXCOFFAsmParser for XCOFF format.");
+    PlatformParser.reset(createXCOFFAsmParser());
     break;
   }
 
@@ -1235,7 +1235,8 @@ bool AsmParser::parsePrimaryExpr(const MCExpr *&Res, SMLoc &EndLoc,
 
     MCSymbol *Sym = getContext().getInlineAsmLabel(SymbolName);
     if (!Sym)
-      Sym = getContext().getOrCreateSymbol(SymbolName);
+      Sym = getContext().getOrCreateSymbol(
+          MAI.shouldEmitLabelsInUpperCase() ? SymbolName.upper() : SymbolName);
 
     // If this is an absolute variable reference, substitute it now to preserve
     // semantics in the face of reassignment.
@@ -3260,9 +3261,10 @@ bool AsmParser::parseRealValue(const fltSemantics &Semantics, APInt &Res) {
   APFloat Value(Semantics);
   StringRef IDVal = getTok().getString();
   if (getLexer().is(AsmToken::Identifier)) {
-    if (!IDVal.compare_lower("infinity") || !IDVal.compare_lower("inf"))
+    if (!IDVal.compare_insensitive("infinity") ||
+        !IDVal.compare_insensitive("inf"))
       Value = APFloat::getInf(Semantics);
-    else if (!IDVal.compare_lower("nan"))
+    else if (!IDVal.compare_insensitive("nan"))
       Value = APFloat::getNaN(Semantics, false, ~0);
     else
       return TokError("invalid floating point literal");
@@ -6297,8 +6299,10 @@ bool HLASMAsmParser::parseAsHLASMLabel(ParseStatementInfo &Info,
     return Error(LabelLoc,
                  "Cannot have just a label for an HLASM inline asm statement");
 
-  // FIXME: Later on, ensure emitted labels are case-insensitive.
-  MCSymbol *Sym = getContext().getOrCreateSymbol(LabelVal);
+  MCSymbol *Sym = getContext().getOrCreateSymbol(
+      getContext().getAsmInfo()->shouldEmitLabelsInUpperCase()
+          ? LabelVal.upper()
+          : LabelVal);
 
   getTargetParser().doBeforeLabelEmit(Sym);
 
@@ -6383,8 +6387,12 @@ bool HLASMAsmParser::parseStatement(ParseStatementInfo &Info,
   if (ShouldParseAsHLASMLabel) {
     // If there were any errors while handling and emitting the label,
     // early return.
-    if (parseAsHLASMLabel(Info, SI))
+    if (parseAsHLASMLabel(Info, SI)) {
+      // If we know we've failed in parsing, simply eat until end of the
+      // statement. This ensures that we don't process any other statements.
+      eatToEndOfStatement();
       return true;
+    }
   }
 
   return parseAsMachineInstruction(Info, SI);

@@ -533,6 +533,7 @@ void Formula::canonicalize(const Loop &L) {
     if (I != BaseRegs.end())
       std::swap(ScaledReg, *I);
   }
+  assert(isCanonical(L) && "Failed to canonicalize?");
 }
 
 /// Get rid of the scale in the formula.
@@ -2712,13 +2713,13 @@ void LSRInstance::CollectInterestingTypesAndFactors() {
       if (const SCEVConstant *Factor =
             dyn_cast_or_null<SCEVConstant>(getExactSDiv(NewStride, OldStride,
                                                         SE, true))) {
-        if (Factor->getAPInt().getMinSignedBits() <= 64)
+        if (Factor->getAPInt().getMinSignedBits() <= 64 && !Factor->isZero())
           Factors.insert(Factor->getAPInt().getSExtValue());
       } else if (const SCEVConstant *Factor =
                    dyn_cast_or_null<SCEVConstant>(getExactSDiv(OldStride,
                                                                NewStride,
                                                                SE, true))) {
-        if (Factor->getAPInt().getMinSignedBits() <= 64)
+        if (Factor->getAPInt().getMinSignedBits() <= 64 && !Factor->isZero())
           Factors.insert(Factor->getAPInt().getSExtValue());
       }
     }
@@ -2962,7 +2963,7 @@ void LSRInstance::ChainInstruction(Instruction *UserInst, Instruction *IVOper,
     // The increment must be loop-invariant so it can be kept in a register.
     const SCEV *PrevExpr = SE.getSCEV(PrevIV);
     const SCEV *IncExpr = SE.getMinusSCEV(OperExpr, PrevExpr);
-    if (!SE.isLoopInvariant(IncExpr, L))
+    if (isa<SCEVCouldNotCompute>(IncExpr) || !SE.isLoopInvariant(IncExpr, L))
       continue;
 
     if (Chain.isProfitableIncrement(OperExpr, IncExpr, SE)) {
@@ -3315,7 +3316,9 @@ void LSRInstance::CollectFixupsAndInitialFormulae() {
 
         // x == y  -->  x - y == 0
         const SCEV *N = SE.getSCEV(NV);
-        if (SE.isLoopInvariant(N, L) && isSafeToExpand(N, SE)) {
+        if (SE.isLoopInvariant(N, L) && isSafeToExpand(N, SE) &&
+            (!NV->getType()->isPointerTy() ||
+             SE.getPointerBase(N) == SE.getPointerBase(S))) {
           // S is normalized, so normalize N before folding it into S
           // to keep the result normalized.
           N = normalizeForPostIncUse(N, TmpPostIncLoops, SE);
@@ -3919,6 +3922,7 @@ void LSRInstance::GenerateICmpZeroScales(LSRUse &LU, unsigned LUIdx,
     if (Base.BaseOffset == std::numeric_limits<int64_t>::min() && Factor == -1)
       continue;
     int64_t NewBaseOffset = (uint64_t)Base.BaseOffset * Factor;
+    assert(Factor != 0 && "Zero factor not expected!");
     if (NewBaseOffset / Factor != Base.BaseOffset)
       continue;
     // If the offset will be truncated at this use, check that it is in bounds.

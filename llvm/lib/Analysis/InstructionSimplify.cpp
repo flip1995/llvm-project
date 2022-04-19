@@ -192,12 +192,15 @@ static Value *handleOtherCmpSelSimplifications(Value *TCmp, Value *FCmp,
   // If the false value simplified to false, then the result of the compare
   // is equal to "Cond && TCmp".  This also catches the case when the false
   // value simplified to false and the true value to true, returning "Cond".
-  if (match(FCmp, m_Zero()))
+  // Folding select to and/or isn't poison-safe in general; impliesPoison
+  // checks whether folding it does not convert a well-defined value into
+  // poison.
+  if (match(FCmp, m_Zero()) && impliesPoison(TCmp, Cond))
     if (Value *V = SimplifyAndInst(Cond, TCmp, Q, MaxRecurse))
       return V;
   // If the true value simplified to true, then the result of the compare
   // is equal to "Cond || FCmp".
-  if (match(TCmp, m_One()))
+  if (match(TCmp, m_One()) && impliesPoison(FCmp, Cond))
     if (Value *V = SimplifyOrInst(Cond, FCmp, Q, MaxRecurse))
       return V;
   // Finally, if the false value simplified to true and the true value to
@@ -737,6 +740,11 @@ static Value *SimplifySubInst(Value *Op0, Value *Op1, bool isNSW, bool isNUW,
   if (Constant *C = foldOrCommuteConstant(Instruction::Sub, Op0, Op1, Q))
     return C;
 
+  // X - poison -> poison
+  // poison - X -> poison
+  if (isa<PoisonValue>(Op0) || isa<PoisonValue>(Op1))
+    return PoisonValue::get(Op0->getType());
+
   // X - undef -> undef
   // undef - X -> undef
   if (Q.isUndefValue(Op0) || Q.isUndefValue(Op1))
@@ -872,6 +880,10 @@ static Value *SimplifyMulInst(Value *Op0, Value *Op1, const SimplifyQuery &Q,
   if (Constant *C = foldOrCommuteConstant(Instruction::Mul, Op0, Op1, Q))
     return C;
 
+  // X * poison -> poison
+  if (isa<PoisonValue>(Op1))
+    return Op1;
+
   // X * undef -> 0
   // X * 0 -> 0
   if (Q.isUndefValue(Op1) || match(Op1, m_Zero()))
@@ -957,6 +969,11 @@ static Value *simplifyDivRem(Instruction::BinaryOps Opcode, Value *Op0,
         return PoisonValue::get(Ty);
     }
   }
+
+  // poison / X -> poison
+  // poison % X -> poison
+  if (isa<PoisonValue>(Op0))
+    return Op0;
 
   // undef / X -> 0
   // undef % X -> 0
@@ -1243,6 +1260,10 @@ static Value *SimplifyShift(Instruction::BinaryOps Opcode, Value *Op0,
                             unsigned MaxRecurse) {
   if (Constant *C = foldOrCommuteConstant(Opcode, Op0, Op1, Q))
     return C;
+
+  // poison shift by X -> poison
+  if (isa<PoisonValue>(Op0))
+    return Op0;
 
   // 0 shift by X -> 0
   if (match(Op0, m_Zero()))
@@ -1987,6 +2008,10 @@ static Value *SimplifyAndInst(Value *Op0, Value *Op1, const SimplifyQuery &Q,
   if (Constant *C = foldOrCommuteConstant(Instruction::And, Op0, Op1, Q))
     return C;
 
+  // X & poison -> poison
+  if (isa<PoisonValue>(Op1))
+    return Op1;
+
   // X & undef -> 0
   if (Q.isUndefValue(Op1))
     return Constant::getNullValue(Op0->getType());
@@ -2154,6 +2179,10 @@ static Value *SimplifyOrInst(Value *Op0, Value *Op1, const SimplifyQuery &Q,
                              unsigned MaxRecurse) {
   if (Constant *C = foldOrCommuteConstant(Instruction::Or, Op0, Op1, Q))
     return C;
+
+  // X | poison -> poison
+  if (isa<PoisonValue>(Op1))
+    return Op1;
 
   // X | undef -> -1
   // X | -1 = -1
@@ -3356,6 +3385,10 @@ static Value *SimplifyICmpInst(unsigned Predicate, Value *LHS, Value *RHS,
 
   Type *ITy = GetCompareTy(LHS); // The return type.
 
+  // icmp poison, X -> poison
+  if (isa<PoisonValue>(RHS))
+    return PoisonValue::get(ITy);
+
   // For EQ and NE, we can always pick a value for the undef to make the
   // predicate pass or fail, so we can return undef.
   // Matches behavior in llvm::ConstantFoldCompareInstruction.
@@ -3687,6 +3720,11 @@ static Value *SimplifyFCmpInst(unsigned Predicate, Value *LHS, Value *RHS,
          "Comparison must be either ordered or unordered");
   if (match(RHS, m_NaN()))
     return ConstantInt::get(RetTy, CmpInst::isUnordered(Pred));
+
+  // fcmp pred x, poison and  fcmp pred poison, x
+  // fold to poison
+  if (isa<PoisonValue>(LHS) || isa<PoisonValue>(RHS))
+    return PoisonValue::get(RetTy);
 
   // fcmp pred x, undef  and  fcmp pred undef, x
   // fold to true if unordered, false if ordered
@@ -4155,6 +4193,10 @@ static Value *SimplifySelectInst(Value *Cond, Value *TrueVal, Value *FalseVal,
       if (auto *FalseC = dyn_cast<Constant>(FalseVal))
         return ConstantFoldSelectInstruction(CondC, TrueC, FalseC);
 
+    // select poison, X, Y -> poison
+    if (isa<PoisonValue>(CondC))
+      return PoisonValue::get(TrueVal->getType());
+
     // select undef, X, Y -> X or Y
     if (Q.isUndefValue(CondC))
       return isa<Constant>(FalseVal) ? FalseVal : TrueVal;
@@ -4182,15 +4224,20 @@ static Value *SimplifySelectInst(Value *Cond, Value *TrueVal, Value *FalseVal,
   if (TrueVal == FalseVal)
     return TrueVal;
 
+  // If the true or false value is poison, we can fold to the other value.
   // If the true or false value is undef, we can fold to the other value as
   // long as the other value isn't poison.
-  // select ?, undef, X -> X
-  if (Q.isUndefValue(TrueVal) &&
-      isGuaranteedNotToBeUndefOrPoison(FalseVal, Q.AC, Q.CxtI, Q.DT))
+  // select ?, poison, X -> X
+  // select ?, undef,  X -> X
+  if (isa<PoisonValue>(TrueVal) ||
+      (Q.isUndefValue(TrueVal) &&
+       isGuaranteedNotToBePoison(FalseVal, Q.AC, Q.CxtI, Q.DT)))
     return FalseVal;
-  // select ?, X, undef -> X
-  if (Q.isUndefValue(FalseVal) &&
-      isGuaranteedNotToBeUndefOrPoison(TrueVal, Q.AC, Q.CxtI, Q.DT))
+  // select ?, X, poison -> X
+  // select ?, X, undef  -> X
+  if (isa<PoisonValue>(FalseVal) ||
+      (Q.isUndefValue(FalseVal) &&
+       isGuaranteedNotToBePoison(TrueVal, Q.AC, Q.CxtI, Q.DT)))
     return TrueVal;
 
   // Deal with partial undef vector constants: select ?, VecC, VecC' --> VecC''
@@ -4212,11 +4259,11 @@ static Value *SimplifySelectInst(Value *Cond, Value *TrueVal, Value *FalseVal,
       // one element is undef, choose the defined element as the safe result.
       if (TEltC == FEltC)
         NewC.push_back(TEltC);
-      else if (Q.isUndefValue(TEltC) &&
-               isGuaranteedNotToBeUndefOrPoison(FEltC))
+      else if (isa<PoisonValue>(TEltC) ||
+               (Q.isUndefValue(TEltC) && isGuaranteedNotToBePoison(FEltC)))
         NewC.push_back(FEltC);
-      else if (Q.isUndefValue(FEltC) &&
-               isGuaranteedNotToBeUndefOrPoison(TEltC))
+      else if (isa<PoisonValue>(FEltC) ||
+               (Q.isUndefValue(FEltC) && isGuaranteedNotToBePoison(TEltC)))
         NewC.push_back(TEltC);
       else
         break;
@@ -4487,13 +4534,14 @@ static Value *SimplifyExtractElementInst(Value *Vec, Value *Idx,
     if (auto *CIdx = dyn_cast<Constant>(Idx))
       return ConstantExpr::getExtractElement(CVec, CIdx);
 
-    // The index is not relevant if our vector is a splat.
-    if (auto *Splat = CVec->getSplatValue())
-      return Splat;
-
     if (Q.isUndefValue(Vec))
       return UndefValue::get(VecVTy->getElementType());
   }
+
+  // An undef extract index can be arbitrarily chosen to be an out-of-range
+  // index value, which would result in the instruction being poison.
+  if (Q.isUndefValue(Idx))
+    return PoisonValue::get(VecVTy->getElementType());
 
   // If extracting a specified index from the vector, see if we can recursively
   // find a previously computed scalar that was inserted into the vector.
@@ -4508,13 +4556,11 @@ static Value *SimplifyExtractElementInst(Value *Vec, Value *Idx,
         return Splat;
     if (Value *Elt = findScalarElement(Vec, IdxC->getZExtValue()))
       return Elt;
+  } else {
+    // The index is not relevant if our vector is a splat.
+    if (Value *Splat = getSplatValue(Vec))
+      return Splat;
   }
-
-  // An undef extract index can be arbitrarily chosen to be an out-of-range
-  // index value, which would result in the instruction being poison.
-  if (Q.isUndefValue(Idx))
-    return PoisonValue::get(VecVTy->getElementType());
-
   return nullptr;
 }
 
@@ -4814,12 +4860,12 @@ static Constant *propagateNaN(Constant *In) {
 /// difference to the result.
 static Constant *simplifyFPOp(ArrayRef<Value *> Ops, FastMathFlags FMF,
                               const SimplifyQuery &Q) {
-  for (Value *V : Ops) {
-    // Poison is independent of anything else. It always propagates from an
-    // operand to a math result.
-    if (match(V, m_Poison()))
-      return PoisonValue::get(V->getType());
+  // Poison is independent of anything else. It always propagates from an
+  // operand to a math result.
+  if (any_of(Ops, [](Value *V) { return match(V, m_Poison()); }))
+    return PoisonValue::get(Ops[0]->getType());
 
+  for (Value *V : Ops) {
     bool IsNan = match(V, m_NaN());
     bool IsInf = match(V, m_Inf());
     bool IsUndef = Q.isUndefValue(V);

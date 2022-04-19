@@ -55,10 +55,18 @@ def time_trace_file_eq: Joined<["--"], "time-trace-file=">,
     HelpText<"Specify time trace output file">,
     Group<grp_lld>;
 def deduplicate_literals: Flag<["--"], "deduplicate-literals">,
-    HelpText<"Enable literal deduplication">,
+    HelpText<"Enable literal deduplication. This is implied by --icf={safe,all}">,
     Group<grp_lld>;
 def print_dylib_search: Flag<["--"], "print-dylib-search">,
     HelpText<"Print which paths lld searched when trying to find dylibs">,
+    Group<grp_lld>;
+def icf_eq: Joined<["--"], "icf=">,
+    HelpText<"Set level for identical code folding (default: none)">,
+    MetaVarName<"[none,safe,all]">,
+    Group<grp_lld>;
+def lto_O: Joined<["--"], "lto-O">,
+    HelpText<"Set optimization level for LTO (default: 2)">,
+    MetaVarName<"<opt-level>">,
     Group<grp_lld>;
 
 // This is a complete Options.td compiled from Apple's ld(1) manpage
@@ -275,6 +283,9 @@ def no_branch_islands : Flag<["-"], "no_branch_islands">,
     HelpText<"Disable infra for branches beyond the maximum branch distance.">,
     Flags<[HelpHidden]>,
     Group<grp_opts>;
+def no_deduplicate : Flag<["-"], "no_deduplicate">,
+    HelpText<"Disable code deduplicaiton (synonym for `--icf=none')">,
+    Group<grp_opts>;
 
 def grp_version : OptionGroup<"version">, HelpText<"VERSION TARGETING">;
 
@@ -413,8 +424,7 @@ def allow_stack_execute : Flag<["-"], "allow_stack_execute">,
     Flags<[HelpHidden]>,
     Group<grp_main>;
 def export_dynamic : Flag<["-"], "export_dynamic">,
-    HelpText<"Preserve all global symbols during LTO">,
-    Flags<[HelpHidden]>,
+    HelpText<"Preserve all global symbols during LTO and when dead-stripping executables">,
     Group<grp_main>;
 
 def grp_bundle : OptionGroup<"bundle">, HelpText<"CREATING A BUNDLE">;
@@ -601,10 +611,6 @@ def no_weak_imports : Flag<["-"], "no_weak_imports">,
     HelpText<"Fail if any symbols are weak imports, allowed to be NULL at runtime">,
     Flags<[HelpHidden]>,
     Group<grp_rare>;
-def no_deduplicate : Flag<["-"], "no_deduplicate">,
-    HelpText<"Omit the deduplication pass">,
-    Flags<[HelpHidden]>,
-    Group<grp_rare>;
 def verbose_deduplicate : Flag<["-"], "verbose_deduplicate">,
     HelpText<"Print function names eliminated by deduplication and the total size of code savings">,
     Flags<[HelpHidden]>,
@@ -773,9 +779,8 @@ def client_name : Separate<["-"], "client_name">,
     Flags<[HelpHidden]>,
     Group<grp_rare>;
 def umbrella : Separate<["-"], "umbrella">,
-    MetaVarName<"<<name>>">,
-    HelpText<"Re-export this dylib through the umbrella framework <name>a">,
-    Flags<[HelpHidden]>,
+    MetaVarName<"<name>">,
+    HelpText<"Re-export this dylib through the umbrella framework <name>">,
     Group<grp_rare>;
 def headerpad : Separate<["-"], "headerpad">,
     MetaVarName<"<size>">,
@@ -867,12 +872,10 @@ def w : Flag<["-"], "w">,
     Group<grp_rare>;
 def final_output : Separate<["-"], "final_output">,
     MetaVarName<"<name>">,
-    HelpText<"Specify the dylib install name if -install_name is not used--used by compiler driver for multiple -arch arguments">,
-    Flags<[HelpHidden]>,
+    HelpText<"Specify dylib install name if -install_name is not used; used by compiler driver for multiple -arch arguments">,
     Group<grp_rare>;
 def arch_multiple : Flag<["-"], "arch_multiple">,
     HelpText<"Augment error and warning messages with the architecture name">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def dot : Separate<["-"], "dot">,
     MetaVarName<"<path>">,
@@ -901,7 +904,7 @@ def interposable_list : Separate<["-"], "interposable_list">,
     Flags<[HelpHidden]>,
     Group<grp_rare>;
 def no_function_starts : Flag<["-"], "no_function_starts">,
-    HelpText<"Do not create a table of function start addresses">,
+    HelpText<"Do not create table of function start addresses">,
     Group<grp_rare>;
 def no_objc_category_merging : Flag<["-"], "no_objc_category_merging">,
     HelpText<"Do not merge Objective-C categories into their classes">,
@@ -1166,8 +1169,7 @@ def classic_linker : Flag<["-"], "classic_linker">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
 def data_in_code_info : Flag<["-"], "data_in_code_info">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
+    HelpText<"Emit data-in-code information (default)">,
     Group<grp_undocumented>;
 def no_data_in_code_info : Flag<["-"], "no_data_in_code_info">,
     HelpText<"Do not emit data-in-code information">,
@@ -1225,8 +1227,7 @@ def force_symbol_weak : Flag<["-"], "force_symbol_weak">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
 def function_starts : Flag<["-"], "function_starts">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
+    HelpText<"Create table of function start addresses (default)">,
     Group<grp_undocumented>;
 def i : Flag<["-"], "i">,
     HelpText<"This option is undocumented in ld64">,

@@ -250,6 +250,7 @@ void InitThreads() {
   ProtectGap(thread_space_end,
              __hwasan_shadow_memory_dynamic_address - thread_space_end);
   InitThreadList(thread_space_start, thread_space_end - thread_space_start);
+  hwasanThreadList().CreateCurrentThread();
 }
 
 bool MemIsApp(uptr p) {
@@ -337,14 +338,6 @@ void AndroidTestTlsSlot() {
 void AndroidTestTlsSlot() {}
 #endif
 
-Thread *GetCurrentThread() {
-  uptr *ThreadLongPtr = GetCurrentThreadLongPtr();
-  if (UNLIKELY(*ThreadLongPtr == 0))
-    return nullptr;
-  auto *R = (StackAllocationsRingBuffer *)ThreadLongPtr;
-  return hwasanThreadList().GetThreadByBufferAddress((uptr)R->Next());
-}
-
 static AccessInfo GetAccessInfo(siginfo_t *info, ucontext_t *uc) {
   // Access type is passed in a platform dependent way (see below) and encoded
   // as 0xXY, where X&1 is 1 for store, 0 for load, and X&2 is 1 if the error is
@@ -427,6 +420,14 @@ void HwasanOnDeadlySignal(int signo, void *info, void *context) {
   HandleDeadlySignal(info, context, GetTid(), &OnStackUnwind, nullptr);
 }
 
+void Thread::InitStackAndTls(const InitState *) {
+  uptr tls_size;
+  uptr stack_size;
+  GetThreadStackAndTls(IsMainThread(), &stack_bottom_, &stack_size, &tls_begin_,
+                       &tls_size);
+  stack_top_ = stack_bottom_ + stack_size;
+  tls_end_ = tls_begin_ + tls_size;
+}
 
 } // namespace __hwasan
 

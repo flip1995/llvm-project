@@ -191,4 +191,24 @@ namespace PR50591 {
     a2 f;
   };
   std::partial_ordering cmp_b2 = b2() <=> b2();
+
+  using fp = void (*)();
+
+  struct a3 {
+    operator fp() const;
+  };
+  struct b3 {
+    auto operator<=>(b3 const &) const = default; // expected-warning {{implicitly deleted}}
+    a3 f;                                         // expected-note {{because there is no viable three-way comparison function}}
+  };
+
+  struct a4 { // Test that function pointer conversion operator here is ignored for this overload resolution.
+    operator int() const;
+    operator fp() const;
+  };
+  struct b4 {
+    auto operator<=>(b4 const &) const = default;
+    a4 f;
+  };
+  std::strong_ordering cmp_b4 = b4() <=> b4();
 }

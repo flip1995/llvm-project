@@ -76,6 +76,10 @@ public:
 
   LCUuid *uuidCommand = nullptr;
   OutputSegment *linkEditSegment = nullptr;
+
+  // Output sections are added to output segments in iteration order
+  // of ConcatOutputSection, so must have deterministic iteration order.
+  MapVector<NamePair, ConcatOutputSection *> concatOutputSections;
 };
 
 // LC_DYLD_INFO_ONLY stores the offsets of symbol import/export information.
@@ -122,6 +126,31 @@ public:
   WeakBindingSection *weakBindingSection;
   LazyBindingSection *lazyBindingSection;
   ExportSection *exportSection;
+};
+
+class LCSubFramework final : public LoadCommand {
+public:
+  LCSubFramework(StringRef umbrella) : umbrella(umbrella) {}
+
+  uint32_t getSize() const override {
+    return alignTo(sizeof(sub_framework_command) + umbrella.size() + 1,
+                   target->wordSize);
+  }
+
+  void writeTo(uint8_t *buf) const override {
+    auto *c = reinterpret_cast<sub_framework_command *>(buf);
+    buf += sizeof(sub_framework_command);
+
+    c->cmd = LC_SUB_FRAMEWORK;
+    c->cmdsize = getSize();
+    c->umbrella = sizeof(sub_framework_command);
+
+    memcpy(buf, umbrella.data(), umbrella.size());
+    buf[umbrella.size()] = '\0';
+  }
+
+private:
+  const StringRef umbrella;
 };
 
 class LCFunctionStarts final : public LoadCommand {
@@ -578,25 +607,16 @@ static void prepareSymbolRelocation(Symbol *sym, const InputSection *isec,
     // References from thread-local variable sections are treated as offsets
     // relative to the start of the referent section, and therefore have no
     // need of rebase opcodes.
-    if (!(isThreadLocalVariables(isec->flags) && isa<Defined>(sym)))
+    if (!(isThreadLocalVariables(isec->getFlags()) && isa<Defined>(sym)))
       addNonLazyBindingEntries(sym, isec, r.offset, r.addend);
   }
 }
 
 void Writer::scanRelocations() {
   TimeTraceScope timeScope("Scan relocations");
-  for (InputSection *isec : inputSections) {
-    if (!isa<ConcatInputSection>(isec))
+  for (ConcatInputSection *isec : inputSections) {
+    if (isec->shouldOmitFromOutput())
       continue;
-    auto concatIsec = cast<ConcatInputSection>(isec);
-
-    if (concatIsec->shouldOmitFromOutput())
-      continue;
-
-    if (concatIsec->segname == segment_names::ld) {
-      in.unwindInfo->prepareRelocations(concatIsec);
-      continue;
-    }
 
     for (auto it = isec->relocs.begin(); it != isec->relocs.end(); ++it) {
       Reloc &r = *it;
@@ -614,12 +634,18 @@ void Writer::scanRelocations() {
         if (!isa<Undefined>(sym) && validateSymbolRelocation(sym, isec, r))
           prepareSymbolRelocation(sym, isec, r);
       } else {
-        assert(r.referent.is<InputSection *>());
+        // Canonicalize the referent so that later accesses in Writer won't
+        // have to worry about it. Perhaps we should do this for Defined::isec
+        // too...
+        auto *referentIsec = r.referent.get<InputSection *>();
+        r.referent = referentIsec->canonical();
         if (!r.pcrel)
           in.rebase->addEntry(isec, r.offset);
       }
     }
   }
+
+  in.unwindInfo->prepareRelocations();
 }
 
 void Writer::scanSymbols() {
@@ -664,6 +690,8 @@ template <class LP> void Writer::createLoadCommands() {
   in.header->addLoadCommand(make<LCSymtab>(symtabSection, stringTableSection));
   in.header->addLoadCommand(
       make<LCDysymtab>(symtabSection, indirectSymtabSection));
+  if (!config->umbrella.empty())
+    in.header->addLoadCommand(make<LCSubFramework>(config->umbrella));
   if (functionStartsSection)
     in.header->addLoadCommand(make<LCFunctionStarts>(functionStartsSection));
   if (dataInCodeSection)
@@ -801,7 +829,8 @@ static DenseMap<const InputSection *, size_t> buildInputSectionPriorities() {
 
     SymbolPriorityEntry &entry = it->second;
     size_t &priority = sectionPriorities[sym.isec];
-    priority = std::max(priority, getSymbolPriority(entry, sym.isec->file));
+    priority =
+        std::max(priority, getSymbolPriority(entry, sym.isec->getFile()));
   };
 
   // TODO: Make sure this handles weak symbols correctly.
@@ -848,7 +877,7 @@ static void sortSegmentsAndSections() {
   }
 }
 
-static NamePair maybeRenameSection(NamePair key) {
+NamePair macho::maybeRenameSection(NamePair key) {
   auto newNames = config->sectionRenameMap.find(key);
   if (newNames != config->sectionRenameMap.end())
     return newNames->second;
@@ -885,29 +914,16 @@ template <class LP> void Writer::createOutputSections() {
   }
 
   // Then add input sections to output sections.
-  DenseMap<NamePair, ConcatOutputSection *> concatOutputSections;
-  for (const auto &p : enumerate(inputSections)) {
-    InputSection *isec = p.value();
-    OutputSection *osec;
-    if (auto *concatIsec = dyn_cast<ConcatInputSection>(isec)) {
-      if (concatIsec->shouldOmitFromOutput())
-        continue;
-      NamePair names = maybeRenameSection({isec->segname, isec->name});
-      ConcatOutputSection *&concatOsec = concatOutputSections[names];
-      if (concatOsec == nullptr)
-        concatOsec = make<ConcatOutputSection>(names.second);
-      concatOsec->addInput(concatIsec);
-      osec = concatOsec;
-    } else if (auto *cStringIsec = dyn_cast<CStringInputSection>(isec)) {
-      in.cStringSection->addInput(cStringIsec);
-      osec = in.cStringSection;
-    } else if (auto *litIsec = dyn_cast<WordLiteralInputSection>(isec)) {
-      in.wordLiteralSection->addInput(litIsec);
-      osec = in.wordLiteralSection;
-    } else {
-      llvm_unreachable("unhandled InputSection type");
-    }
-    osec->inputOrder = std::min(osec->inputOrder, static_cast<int>(p.index()));
+  for (ConcatInputSection *isec : inputSections) {
+    if (isec->shouldOmitFromOutput())
+      continue;
+    NamePair names = maybeRenameSection({isec->getSegName(), isec->getName()});
+    ConcatOutputSection *&osec = concatOutputSections[names];
+    if (!osec)
+      osec = make<ConcatOutputSection>(names.second);
+    osec->addInput(isec);
+    osec->inputOrder =
+        std::min(osec->inputOrder, static_cast<int>(isec->outSecOff));
   }
 
   // Once all the inputs are added, we can finalize the output section
@@ -915,12 +931,8 @@ template <class LP> void Writer::createOutputSections() {
   for (const auto &it : concatOutputSections) {
     StringRef segname = it.first.first;
     ConcatOutputSection *osec = it.second;
-    if (segname == segment_names::ld) {
-      assert(osec->name == section_names::compactUnwind);
-      in.unwindInfo->setCompactUnwindSection(osec);
-    } else {
-      getOrCreateOutputSegment(segname)->addOutputSection(osec);
-    }
+    assert(segname != segment_names::ld);
+    getOrCreateOutputSegment(segname)->addOutputSection(osec);
   }
 
   for (SyntheticSection *ssec : syntheticSections) {
@@ -929,7 +941,8 @@ template <class LP> void Writer::createOutputSections() {
       if (it == concatOutputSections.end()) {
         getOrCreateOutputSegment(ssec->segname)->addOutputSection(ssec);
       } else {
-        fatal("section from " + toString(it->second->firstSection()->file) +
+        fatal("section from " +
+              toString(it->second->firstSection()->getFile()) +
               " conflicts with synthetic section " + ssec->segname + "," +
               ssec->name);
       }
@@ -1088,7 +1101,11 @@ template <class LP> void macho::writeResult() { Writer().run<LP>(); }
 
 void macho::createSyntheticSections() {
   in.header = make<MachHeaderSection>();
-  in.cStringSection = config->dedupLiterals ? make<CStringSection>() : nullptr;
+  if (config->dedupLiterals) {
+    in.cStringSection = make<DeduplicatedCStringSection>();
+  } else {
+    in.cStringSection = make<CStringSection>();
+  }
   in.wordLiteralSection =
       config->dedupLiterals ? make<WordLiteralSection>() : nullptr;
   in.rebase = make<RebaseSection>();

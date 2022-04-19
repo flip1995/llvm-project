@@ -355,7 +355,7 @@ static void buildCopyFromRegs(MachineIRBuilder &B, ArrayRef<Register> OrigRegs,
     assert(OrigRegs.size() == 1);
     LLT OrigTy = MRI.getType(OrigRegs[0]);
 
-    unsigned SrcSize = PartLLT.getSizeInBits() * Regs.size();
+    unsigned SrcSize = PartLLT.getSizeInBits().getFixedSize() * Regs.size();
     if (SrcSize == OrigTy.getSizeInBits())
       B.buildMerge(OrigRegs[0], Regs);
     else {
@@ -377,7 +377,7 @@ static void buildCopyFromRegs(MachineIRBuilder &B, ArrayRef<Register> OrigRegs,
         PartLLT.getScalarSizeInBits() == LLTy.getScalarSizeInBits() * 2 &&
         Regs.size() == 1) {
       LLT NewTy = PartLLT.changeElementType(LLTy.getElementType())
-                      .changeNumElements(PartLLT.getNumElements() * 2);
+                      .changeElementCount(PartLLT.getElementCount() * 2);
       CastRegs[0] = B.buildBitcast(NewTy, Regs[0]).getReg(0);
       PartLLT = NewTy;
     }
@@ -438,7 +438,7 @@ static void buildCopyFromRegs(MachineIRBuilder &B, ArrayRef<Register> OrigRegs,
   } else {
     // Vector was split, and elements promoted to a wider type.
     // FIXME: Should handle floating point promotions.
-    LLT BVType = LLT::vector(LLTy.getNumElements(), PartLLT);
+    LLT BVType = LLT::fixed_vector(LLTy.getNumElements(), PartLLT);
     auto BV = B.buildBuildVector(BVType, Regs);
     B.buildTrunc(OrigRegs[0], BV);
   }
@@ -682,14 +682,13 @@ bool CallLowering::handleAssignments(ValueHandler &Handler,
 
         // TODO: The memory size may be larger than the value we need to
         // store. We may need to adjust the offset for big endian targets.
-        uint64_t MemSize = Handler.getStackValueStoreSize(DL, VA);
+        LLT MemTy = Handler.getStackValueStoreType(DL, VA);
 
         MachinePointerInfo MPO;
-        Register StackAddr =
-            Handler.getStackAddress(MemSize, VA.getLocMemOffset(), MPO, Flags);
+        Register StackAddr = Handler.getStackAddress(
+            MemTy.getSizeInBytes(), VA.getLocMemOffset(), MPO, Flags);
 
-        Handler.assignValueToAddress(Args[i], Part, StackAddr, MemSize, MPO,
-                                     VA);
+        Handler.assignValueToAddress(Args[i], Part, StackAddr, MemTy, MPO, VA);
         continue;
       }
 
@@ -1016,14 +1015,14 @@ bool CallLowering::resultsCompatible(CallLoweringInfo &Info,
   return true;
 }
 
-uint64_t CallLowering::ValueHandler::getStackValueStoreSize(
+LLT CallLowering::ValueHandler::getStackValueStoreType(
     const DataLayout &DL, const CCValAssign &VA) const {
-  const EVT ValVT = VA.getValVT();
+  const MVT ValVT = VA.getValVT();
   if (ValVT != MVT::iPTR)
-    return ValVT.getStoreSize();
+    return LLT(ValVT);
 
   /// FIXME: We need to get the correct pointer address space.
-  return DL.getPointerSize();
+  return LLT::pointer(0, DL.getPointerSize(0));
 }
 
 void CallLowering::ValueHandler::copyArgumentMemory(

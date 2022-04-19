@@ -1728,7 +1728,7 @@ public:
               true /* condense_trivial */, m_options.m_unreported);
           // If we didn't find a TID, stop here and return an error.
           if (!success) {
-            result.SetError("Error dumping plans:");
+            result.AppendError("Error dumping plans:");
             result.AppendError(tmp_strm.GetString());
             return false;
           }
@@ -1868,11 +1868,11 @@ public:
 
   bool DoExecute(Args &args, CommandReturnObject &result) override {
     Process *process = m_exe_ctx.GetProcessPtr();
-    
+
     if (args.GetArgumentCount() == 0) {
       process->PruneThreadPlans();
       result.SetStatus(eReturnStatusSuccessFinishNoResult);
-      return true;  
+      return true;
     }
 
     const size_t num_args = args.GetArgumentCount();
@@ -1960,13 +1960,13 @@ public:
   ~CommandObjectTraceStop() override = default;
 
   bool DoExecuteOnThreads(Args &command, CommandReturnObject &result,
-                          const std::vector<lldb::tid_t> &tids) override {
+                          llvm::ArrayRef<lldb::tid_t> tids) override {
     ProcessSP process_sp = m_exe_ctx.GetProcessSP();
 
     TraceSP trace_sp = process_sp->GetTarget().GetTrace();
 
-    if (llvm::Error err = trace_sp->StopThreads(tids))
-      result.SetError(toString(std::move(err)));
+    if (llvm::Error err = trace_sp->Stop(tids))
+      result.AppendError(toString(std::move(err)));
     else
       result.SetStatus(eReturnStatusSuccessFinishResult);
 
@@ -2086,15 +2086,20 @@ protected:
     ThreadSP thread_sp =
         m_exe_ctx.GetProcessPtr()->GetThreadList().FindThreadByID(tid);
 
-    size_t count = m_options.m_count;
-    ssize_t position = m_options.m_position.getValueOr(
-                           trace_sp->GetCursorPosition(*thread_sp)) -
-                       m_consecutive_repetitions * count;
-    if (position < 0)
-      result.SetError("error: no more data");
-    else
-      trace_sp->DumpTraceInstructions(*thread_sp, result.GetOutputStream(),
-                                      count, position, m_options.m_raw);
+    if (llvm::Optional<size_t> insn_count =
+            trace_sp->GetInstructionCount(*thread_sp)) {
+      size_t count = m_options.m_count;
+      ssize_t position =
+          m_options.m_position.getValueOr((ssize_t)*insn_count - 1) -
+          m_consecutive_repetitions * count;
+      if (position < 0)
+        result.AppendError("error: no more data");
+      else
+        trace_sp->DumpTraceInstructions(*thread_sp, result.GetOutputStream(),
+                                        count, position, m_options.m_raw);
+    } else {
+      result.AppendError("error: not traced");
+    }
     return true;
   }
 

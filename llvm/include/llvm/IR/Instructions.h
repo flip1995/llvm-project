@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Bitfields.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -986,15 +987,15 @@ public:
                                           NameStr, InsertAtEnd);
   }
 
-  /// Create an "inbounds" getelementptr. See the documentation for the
-  /// "inbounds" flag in LangRef.html for details.
-  static GetElementPtrInst *CreateInBounds(Value *Ptr,
-                                           ArrayRef<Value *> IdxList,
-                                           const Twine &NameStr = "",
-                                           Instruction *InsertBefore = nullptr){
+  LLVM_ATTRIBUTE_DEPRECATED(static GetElementPtrInst *CreateInBounds(
+        Value *Ptr, ArrayRef<Value *> IdxList, const Twine &NameStr = "",
+        Instruction *InsertBefore = nullptr),
+      "Use the version with explicit element type instead") {
     return CreateInBounds(nullptr, Ptr, IdxList, NameStr, InsertBefore);
   }
 
+  /// Create an "inbounds" getelementptr. See the documentation for the
+  /// "inbounds" flag in LangRef.html for details.
   static GetElementPtrInst *
   CreateInBounds(Type *PointeeType, Value *Ptr, ArrayRef<Value *> IdxList,
                  const Twine &NameStr = "",
@@ -1005,10 +1006,10 @@ public:
     return GEP;
   }
 
-  static GetElementPtrInst *CreateInBounds(Value *Ptr,
-                                           ArrayRef<Value *> IdxList,
-                                           const Twine &NameStr,
-                                           BasicBlock *InsertAtEnd) {
+  LLVM_ATTRIBUTE_DEPRECATED(static GetElementPtrInst *CreateInBounds(
+        Value *Ptr, ArrayRef<Value *> IdxList, const Twine &NameStr,
+        BasicBlock *InsertAtEnd),
+      "Use the version with explicit element type instead") {
     return CreateInBounds(nullptr, Ptr, IdxList, NameStr, InsertAtEnd);
   }
 
@@ -1098,8 +1099,12 @@ public:
   /// instruction, which may be a vector of pointers.
   static Type *getGEPReturnType(Type *ElTy, Value *Ptr,
                                 ArrayRef<Value *> IdxList) {
-    Type *PtrTy = PointerType::get(checkGEPType(getIndexedType(ElTy, IdxList)),
-                                   Ptr->getType()->getPointerAddressSpace());
+    PointerType *OrigPtrTy = cast<PointerType>(Ptr->getType()->getScalarType());
+    unsigned AddrSpace = OrigPtrTy->getAddressSpace();
+    Type *ResultElemTy = checkGEPType(getIndexedType(ElTy, IdxList));
+    Type *PtrTy = OrigPtrTy->isOpaque()
+      ? PointerType::get(OrigPtrTy->getContext(), AddrSpace)
+      : PointerType::get(ResultElemTy, AddrSpace);
     // Vector GEP
     if (auto *PtrVTy = dyn_cast<VectorType>(Ptr->getType())) {
       ElementCount EltCount = PtrVTy->getElementCount();
@@ -1148,7 +1153,9 @@ public:
   /// must be at least as wide as the IntPtr type for the address space of
   /// the base GEP pointer.
   bool accumulateConstantOffset(const DataLayout &DL, APInt &Offset) const;
-
+  bool collectOffset(const DataLayout &DL, unsigned BitWidth,
+                     MapVector<Value *, APInt> &VariableOffsets,
+                     APInt &ConstantOffset) const;
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const Instruction *I) {
     return (I->getOpcode() == Instruction::GetElementPtr);
