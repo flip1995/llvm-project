@@ -460,7 +460,7 @@ MCSymbol *AsmPrinter::getSymbolPreferLocal(const GlobalValue &GV) const {
   // assumed it.
   if (TM.getTargetTriple().isOSBinFormatELF() &&
       GlobalObject::isExternalLinkage(GV.getLinkage()) && GV.isDSOLocal() &&
-      !GV.isDeclaration() && !isa<GlobalIFunc>(GV))
+      !GV.isDeclaration() && !isa<GlobalIFunc>(GV) && !GV.hasComdat())
     return getSymbolWithGlobalValueBase(&GV, "$local");
   return TM.getSymbol(&GV);
 }
@@ -950,7 +950,7 @@ static bool emitDebugValueComment(const MachineInstr *MI, AsmPrinter &AP) {
     OS << "!target-index(" << Op.getIndex() << "," << Op.getOffset() << ")";
     return true;
   } else {
-    unsigned Reg;
+    Register Reg;
     if (MI->getOperand(0).isReg()) {
       Reg = MI->getOperand(0).getReg();
     } else {
@@ -1781,11 +1781,6 @@ void AsmPrinter::SetupMachineFunction(MachineFunction &MF) {
     // Get the function entry point symbol.
     CurrentFnSym = OutContext.getOrCreateSymbol(
         "." + cast<MCSymbolXCOFF>(CurrentFnDescSym)->getUnqualifiedName());
-
-    // Set the containing csect.
-    MCSectionXCOFF *FnEntryPointSec =
-        cast<MCSectionXCOFF>(getObjFileLowering().SectionForGlobal(&F, TM));
-    cast<MCSymbolXCOFF>(CurrentFnSym)->setContainingCsect(FnEntryPointSec);
   }
 
   CurrentFnSymForSize = CurrentFnSym;
@@ -1877,11 +1872,6 @@ void AsmPrinter::emitConstantPool() {
       MCSymbol *Sym = GetCPISymbol(CPI);
       if (!Sym->isUndefined())
         continue;
-
-      if (TM.getTargetTriple().isOSBinFormatXCOFF()) {
-        cast<MCSymbolXCOFF>(Sym)->setContainingCsect(
-            cast<MCSectionXCOFF>(CPSections[i].S));
-      }
 
       if (CurSection != CPSections[i].S) {
         OutStreamer->SwitchSection(CPSections[i].S);
@@ -1981,10 +1971,6 @@ void AsmPrinter::emitJumpTableInfo() {
       OutStreamer->emitLabel(GetJTISymbol(JTI, true));
 
     MCSymbol* JTISymbol = GetJTISymbol(JTI);
-    if (TM.getTargetTriple().isOSBinFormatXCOFF()) {
-      cast<MCSymbolXCOFF>(JTISymbol)->setContainingCsect(
-          cast<MCSectionXCOFF>(TLOF.getSectionForJumpTable(F, TM)));
-    }
     OutStreamer->emitLabel(JTISymbol);
 
     for (unsigned ii = 0, ee = JTBBs.size(); ii != ee; ++ii)
@@ -2542,8 +2528,8 @@ static void emitGlobalConstantDataSequential(const DataLayout &DL,
   }
 
   unsigned Size = DL.getTypeAllocSize(CDS->getType());
-  unsigned EmittedSize = DL.getTypeAllocSize(CDS->getType()->getElementType()) *
-                        CDS->getNumElements();
+  unsigned EmittedSize =
+      DL.getTypeAllocSize(CDS->getElementType()) * CDS->getNumElements();
   assert(EmittedSize <= Size && "Size cannot be less than EmittedSize!");
   if (unsigned Padding = Size - EmittedSize)
     AP.OutStreamer->emitZeros(Padding);

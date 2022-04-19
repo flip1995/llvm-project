@@ -248,8 +248,7 @@ Align IRTranslator::getMemOpAlign(const Instruction &I) {
     return SI->getAlign().getValueOr(DL->getABITypeAlign(ValTy));
   }
   if (const LoadInst *LI = dyn_cast<LoadInst>(&I)) {
-    Type *ValTy = LI->getType();
-    return LI->getAlign().getValueOr(DL->getABITypeAlign(ValTy));
+    return DL->getValueOrABITypeAlignment(LI->getAlign(), LI->getType());
   }
   if (const AtomicCmpXchgInst *AI = dyn_cast<AtomicCmpXchgInst>(&I)) {
     // TODO(PR27168): This instruction has no alignment attribute, but unlike
@@ -1861,7 +1860,6 @@ bool IRTranslator::translateAlloca(const User &U,
 
   // Now we're in the harder dynamic case.
   Register NumElts = getOrCreateVReg(*AI.getArraySize());
-
   Type *IntPtrIRTy = DL->getIntPtrType(AI.getType());
   LLT IntPtrTy = getLLTForType(*IntPtrIRTy, *DL);
   if (MRI->getType(NumElts) != IntPtrTy) {
@@ -1880,22 +1878,20 @@ bool IRTranslator::translateAlloca(const User &U,
   // Round the size of the allocation up to the stack alignment size
   // by add SA-1 to the size. This doesn't overflow because we're computing
   // an address inside an alloca.
-  unsigned StackAlign =
-      MF->getSubtarget().getFrameLowering()->getStackAlignment();
-  auto SAMinusOne = MIRBuilder.buildConstant(IntPtrTy, StackAlign - 1);
+  Align StackAlign = MF->getSubtarget().getFrameLowering()->getStackAlign();
+  auto SAMinusOne = MIRBuilder.buildConstant(IntPtrTy, StackAlign.value() - 1);
   auto AllocAdd = MIRBuilder.buildAdd(IntPtrTy, AllocSize, SAMinusOne,
                                       MachineInstr::NoUWrap);
   auto AlignCst =
-      MIRBuilder.buildConstant(IntPtrTy, ~(uint64_t)(StackAlign - 1));
+      MIRBuilder.buildConstant(IntPtrTy, ~(uint64_t)(StackAlign.value() - 1));
   auto AlignedAlloc = MIRBuilder.buildAnd(IntPtrTy, AllocAdd, AlignCst);
 
-  unsigned Align =
-      std::max((unsigned)DL->getPrefTypeAlignment(Ty), AI.getAlignment());
-  if (Align <= StackAlign)
-    Align = 0;
-  MIRBuilder.buildDynStackAlloc(getOrCreateVReg(AI), AlignedAlloc, Align);
+  Align Alignment = max(AI.getAlign(), DL->getPrefTypeAlign(Ty));
+  if (Alignment <= StackAlign)
+    Alignment = Align(1);
+  MIRBuilder.buildDynStackAlloc(getOrCreateVReg(AI), AlignedAlloc, Alignment);
 
-  MF->getFrameInfo().CreateVariableSizedObject(Align ? Align : 1, &AI);
+  MF->getFrameInfo().CreateVariableSizedObject(Alignment, &AI);
   assert(MF->getFrameInfo().hasVarSizedObjects());
   return true;
 }

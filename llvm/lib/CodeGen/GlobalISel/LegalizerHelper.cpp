@@ -741,19 +741,34 @@ LegalizerHelper::LegalizeResult LegalizerHelper::narrowScalar(MachineInstr &MI,
   default:
     return UnableToLegalize;
   case TargetOpcode::G_IMPLICIT_DEF: {
-    // FIXME: add support for when SizeOp0 isn't an exact multiple of
-    // NarrowSize.
-    if (SizeOp0 % NarrowSize != 0)
-      return UnableToLegalize;
+    Register DstReg = MI.getOperand(0).getReg();
+    LLT DstTy = MRI.getType(DstReg);
+
+    // If SizeOp0 is not an exact multiple of NarrowSize, emit
+    // G_ANYEXT(G_IMPLICIT_DEF). Cast result to vector if needed.
+    // FIXME: Although this would also be legal for the general case, it causes
+    //  a lot of regressions in the emitted code (superfluous COPYs, artifact
+    //  combines not being hit). This seems to be a problem related to the
+    //  artifact combiner.
+    if (SizeOp0 % NarrowSize != 0) {
+      LLT ImplicitTy = NarrowTy;
+      if (DstTy.isVector())
+        ImplicitTy = LLT::vector(DstTy.getNumElements(), ImplicitTy);
+
+      Register ImplicitReg = MIRBuilder.buildUndef(ImplicitTy).getReg(0);
+      MIRBuilder.buildAnyExt(DstReg, ImplicitReg);
+
+      MI.eraseFromParent();
+      return Legalized;
+    }
+
     int NumParts = SizeOp0 / NarrowSize;
 
     SmallVector<Register, 2> DstRegs;
     for (int i = 0; i < NumParts; ++i)
-      DstRegs.push_back(
-          MIRBuilder.buildUndef(NarrowTy).getReg(0));
+      DstRegs.push_back(MIRBuilder.buildUndef(NarrowTy).getReg(0));
 
-    Register DstReg = MI.getOperand(0).getReg();
-    if(MRI.getType(DstReg).isVector())
+    if (DstTy.isVector())
       MIRBuilder.buildBuildVector(DstReg, DstRegs);
     else
       MIRBuilder.buildMerge(DstReg, DstRegs);
@@ -4891,7 +4906,7 @@ LegalizerHelper::LegalizeResult
 LegalizerHelper::lowerDynStackAlloc(MachineInstr &MI) {
   Register Dst = MI.getOperand(0).getReg();
   Register AllocSize = MI.getOperand(1).getReg();
-  unsigned Align = MI.getOperand(2).getImm();
+  Align Alignment = assumeAligned(MI.getOperand(2).getImm());
 
   const auto &MF = *MI.getMF();
   const auto &TLI = *MF.getSubtarget().getTargetLowering();
@@ -4907,8 +4922,8 @@ LegalizerHelper::lowerDynStackAlloc(MachineInstr &MI) {
   // have to generate an extra instruction to negate the alloc and then use
   // G_PTR_ADD to add the negative offset.
   auto Alloc = MIRBuilder.buildSub(IntPtrTy, SPTmp, AllocSize);
-  if (Align) {
-    APInt AlignMask(IntPtrTy.getSizeInBits(), Align, true);
+  if (Alignment > Align(1)) {
+    APInt AlignMask(IntPtrTy.getSizeInBits(), Alignment.value(), true);
     AlignMask.negate();
     auto AlignCst = MIRBuilder.buildConstant(IntPtrTy, AlignMask);
     Alloc = MIRBuilder.buildAnd(IntPtrTy, Alloc, AlignCst);

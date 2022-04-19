@@ -6,6 +6,7 @@
 #
 #===----------------------------------------------------------------------===##
 
+import copy
 import locale
 import os
 import platform
@@ -164,6 +165,8 @@ class Configuration(object):
         self.configure_coverage()
         self.configure_modules()
         self.configure_coroutines()
+        self.configure_blocks()
+        self.configure_objc_arc()
         self.configure_substitutions()
         self.configure_features()
         # Add the ABI library link flags to cxx for use by libunwind tests
@@ -1035,6 +1038,16 @@ class Configuration(object):
             if intMacroValue(macros['__cpp_coroutines']) >= 201703:
                 self.config.available_features.add('fcoroutines-ts')
 
+    def configure_blocks(self):
+        if self.cxx.hasCompileFlag('-fblocks'):
+            self.config.available_features.add('has-fblocks')
+
+    def configure_objc_arc(self):
+        cxx = copy.deepcopy(self.cxx)
+        cxx.source_lang = 'objective-c++'
+        if cxx.hasCompileFlag('-fobjc-arc'):
+            self.config.available_features.add('has-fobjc-arc')
+
     def configure_modules(self):
         modules_flags = ['-fmodules']
         if not self.target_info.is_darwin():
@@ -1079,7 +1092,8 @@ class Configuration(object):
         sub.append(('%{cxx}', '{} {}'.format(tool_env, pipes.quote(self.cxx.path))))
         sub.append(('%{libcxx_src_root}', self.libcxx_src_root))
         # Configure flags substitutions
-        sub.append(('%{flags}',         ' '.join(map(pipes.quote, self.cxx.flags))))
+        flags = self.cxx.flags + (self.cxx.modules_flags if self.cxx.use_modules else [])
+        sub.append(('%{flags}',         ' '.join(map(pipes.quote, flags))))
         sub.append(('%{compile_flags}', ' '.join(map(pipes.quote, self.cxx.compile_flags))))
         sub.append(('%{link_flags}',    ' '.join(map(pipes.quote, self.cxx.link_flags))))
         sub.append(('%{link_libcxxabi}', pipes.quote(self.cxx.link_libcxxabi_flag)))
@@ -1106,14 +1120,12 @@ class Configuration(object):
             exec_args.append('--host {}'.format(self.executor.user_prefix + self.executor.host))
             executor = os.path.join(self.libcxx_src_root, 'utils', 'ssh.py')
         else:
+            exec_args.append('--execdir %t.execdir')
             executor = os.path.join(self.libcxx_src_root, 'utils', 'run.py')
         sub.append(('%{exec}', '{} {} {} -- '.format(pipes.quote(sys.executable),
                                                      pipes.quote(executor),
                                                      ' '.join(exec_args))))
         sub.append(('%{run}', '%{exec} %t.exe'))
-        # Configure not program substitutions
-        not_py = os.path.join(self.libcxx_src_root, 'utils', 'not.py')
-        sub.append(('%{not}', '{} {}'.format(pipes.quote(sys.executable), pipes.quote(not_py))))
         if self.get_lit_conf('libcxx_gdb'):
             sub.append(('%{libcxx_gdb}', self.get_lit_conf('libcxx_gdb')))
 
@@ -1228,6 +1240,7 @@ class Configuration(object):
 
     def configure_env(self):
         self.target_info.configure_env(self.exec_env)
+        self.config.environment = dict(os.environ)
 
     def add_path(self, dest_env, new_path):
         self.target_info.add_path(dest_env, new_path)

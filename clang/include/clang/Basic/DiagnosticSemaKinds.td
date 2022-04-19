@@ -280,7 +280,9 @@ def err_bad_parameter_name : Error<
   "%0 cannot be the name of a parameter">;
 def err_bad_parameter_name_template_id : Error<
   "parameter name cannot have template arguments">;
-def err_parameter_name_omitted : Error<"parameter name omitted">;
+def ext_parameter_name_omitted_c2x : ExtWarn<
+  "omitting the parameter name in a function definition is a C2x extension">,
+  InGroup<C2x>;
 def err_anyx86_interrupt_attribute : Error<
   "%select{x86|x86-64}0 'interrupt' attribute only applies to functions that "
   "have %select{a 'void' return type|"
@@ -4007,6 +4009,8 @@ def err_use_of_default_argument_to_function_declared_later : Error<
 def note_default_argument_declared_here : Note<
   "default argument declared here">;
 def err_recursive_default_argument : Error<"recursive evaluation of default argument">;
+def note_recursive_default_argument_used_here : Note<
+  "default argument used here">;
 
 def ext_param_promoted_not_compatible_with_prototype : ExtWarn<
   "%diff{promoted type $ of K&R function parameter is not compatible with the "
@@ -9946,8 +9950,6 @@ def err_omp_ambiguous_conversion : Error<
   "enumeration type">;
 def err_omp_iterator_not_integral_or_pointer : Error<
   "expected integral or pointer type as the iterator-type, not %0">;
-def err_omp_iterator_constant : Error<
-  "expected non-constant type as the iterator-type, constant %0 is provided">;
 def err_omp_iterator_step_not_integral : Error<
   "iterator step expression %0 is not the integral expression">;
 def err_omp_iterator_step_constant_zero : Error<
