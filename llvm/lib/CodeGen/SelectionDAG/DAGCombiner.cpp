@@ -9365,6 +9365,16 @@ SDValue DAGCombiner::visitMLOAD(SDNode *N) {
   if (ISD::isBuildVectorAllZeros(Mask.getNode()))
     return CombineTo(N, MLD->getPassThru(), MLD->getChain());
 
+  // If this is a masked load with an all ones mask, we can use a unmasked load.
+  // FIXME: Can we do this for indexed, expanding, or extending loads?
+  if (ISD::isBuildVectorAllOnes(Mask.getNode()) &&
+      MLD->isUnindexed() && !MLD->isExpandingLoad() &&
+      MLD->getExtensionType() == ISD::NON_EXTLOAD) {
+    SDValue NewLd = DAG.getLoad(N->getValueType(0), SDLoc(N), MLD->getChain(),
+                                MLD->getBasePtr(), MLD->getMemOperand());
+    return CombineTo(N, NewLd, NewLd.getValue(1));
+  }
+
   // Try transforming N to an indexed load.
   if (CombineToPreIndexedLoadStore(N) || CombineToPostIndexedLoadStore(N))
     return SDValue(N, 0);
@@ -10306,7 +10316,7 @@ SDValue DAGCombiner::visitSIGN_EXTEND(SDNode *N) {
     SDValue N00 = N0.getOperand(0);
     SDValue N01 = N0.getOperand(1);
     ISD::CondCode CC = cast<CondCodeSDNode>(N0.getOperand(2))->get();
-    EVT N00VT = N0.getOperand(0).getValueType();
+    EVT N00VT = N00.getValueType();
 
     // sext(setcc) -> sext_in_reg(vsetcc) for vectors.
     // Only do this before legalize for now.
