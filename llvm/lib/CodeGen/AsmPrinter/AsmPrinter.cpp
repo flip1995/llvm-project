@@ -39,7 +39,6 @@
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/GCMetadata.h"
 #include "llvm/CodeGen/GCMetadataPrinter.h"
-#include "llvm/CodeGen/GCStrategy.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineDominators.h"
@@ -70,6 +69,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GCStrategy.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalIndirectSymbol.h"
@@ -353,6 +353,9 @@ bool AsmPrinter::doInitialization(Module &M) {
   }
 
   switch (MAI->getExceptionHandlingType()) {
+  case ExceptionHandling::None:
+    // We may want to emit CFI for debug.
+    LLVM_FALLTHROUGH;
   case ExceptionHandling::SjLj:
   case ExceptionHandling::DwarfCFI:
   case ExceptionHandling::ARM:
@@ -374,7 +377,9 @@ bool AsmPrinter::doInitialization(Module &M) {
   EHStreamer *ES = nullptr;
   switch (MAI->getExceptionHandlingType()) {
   case ExceptionHandling::None:
-    break;
+    if (!needsCFIForDebug())
+      break;
+    LLVM_FALLTHROUGH;
   case ExceptionHandling::SjLj:
   case ExceptionHandling::DwarfCFI:
     ES = new DwarfCFIException(this);
@@ -1091,9 +1096,15 @@ bool AsmPrinter::needsSEHMoves() {
   return MAI->usesWindowsCFI() && MF->getFunction().needsUnwindTableEntry();
 }
 
+bool AsmPrinter::needsCFIForDebug() const {
+  return MAI->getExceptionHandlingType() == ExceptionHandling::None &&
+         MAI->doesUseCFIForDebug() && ModuleCFISection == CFISection::Debug;
+}
+
 void AsmPrinter::emitCFIInstruction(const MachineInstr &MI) {
   ExceptionHandling ExceptionHandlingType = MAI->getExceptionHandlingType();
-  if (ExceptionHandlingType != ExceptionHandling::DwarfCFI &&
+  if (!needsCFIForDebug() &&
+      ExceptionHandlingType != ExceptionHandling::DwarfCFI &&
       ExceptionHandlingType != ExceptionHandling::ARM)
     return;
 
