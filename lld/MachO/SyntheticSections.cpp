@@ -48,11 +48,10 @@ std::vector<SyntheticSection *> macho::syntheticSections;
 
 SyntheticSection::SyntheticSection(const char *segname, const char *name)
     : OutputSection(SyntheticKind, name), segname(segname) {
-  isec = make<InputSection>();
+  isec = make<ConcatInputSection>();
   isec->segname = segname;
   isec->name = name;
   isec->parent = this;
-  isec->outSecOff = 0;
   syntheticSections.push_back(this);
 }
 
@@ -202,10 +201,10 @@ void RebaseSection::finalizeContents() {
   os << static_cast<uint8_t>(REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER);
 
   llvm::sort(locations, [](const Location &a, const Location &b) {
-    return a.isec->getVA() < b.isec->getVA();
+    return a.isec->getVA(a.offset) < b.isec->getVA(b.offset);
   });
   for (const Location &loc : locations)
-    encodeRebase(loc.isec->parent, loc.isec->outSecOff + loc.offset, lastRebase,
+    encodeRebase(loc.isec->parent, loc.isec->getOffset(loc.offset), lastRebase,
                  os);
   if (lastRebase.consecutiveCount != 0)
     encodeDoRebase(lastRebase, os);
@@ -312,9 +311,10 @@ static void encodeBinding(const Symbol *sym, const OutputSection *osec,
 
 // Non-weak bindings need to have their dylib ordinal encoded as well.
 static int16_t ordinalForDylibSymbol(const DylibSymbol &dysym) {
-  return config->namespaceKind == NamespaceKind::flat || dysym.isDynamicLookup()
-             ? static_cast<int16_t>(BIND_SPECIAL_DYLIB_FLAT_LOOKUP)
-             : dysym.getFile()->ordinal;
+  if (config->namespaceKind == NamespaceKind::flat || dysym.isDynamicLookup())
+    return static_cast<int16_t>(BIND_SPECIAL_DYLIB_FLAT_LOOKUP);
+  assert(dysym.getFile()->isReferenced());
+  return dysym.getFile()->ordinal;
 }
 
 static void encodeDylibOrdinal(int16_t ordinal, raw_svector_ostream &os) {
@@ -366,7 +366,7 @@ void BindingSection::finalizeContents() {
       lastBinding.ordinal = ordinal;
     }
     encodeBinding(b.dysym, b.target.isec->parent,
-                  b.target.isec->outSecOff + b.target.offset, b.addend,
+                  b.target.isec->getOffset(b.target.offset), b.addend,
                   /*isWeakBinding=*/false, lastBinding, os);
   }
   if (!bindings.empty())
@@ -395,7 +395,7 @@ void WeakBindingSection::finalizeContents() {
              });
   for (const WeakBindingEntry &b : bindings)
     encodeBinding(b.symbol, b.target.isec->parent,
-                  b.target.isec->outSecOff + b.target.offset, b.addend,
+                  b.target.isec->getOffset(b.target.offset), b.addend,
                   /*isWeakBinding=*/true, lastBinding, os);
   if (!bindings.empty() || !definitions.empty())
     os << static_cast<uint8_t>(BIND_OPCODE_DONE);
@@ -464,15 +464,19 @@ void StubHelperSection::setup() {
           "Needed to perform lazy binding.");
     return;
   }
-  stubBinder->refState = RefState::Strong;
+  stubBinder->reference(RefState::Strong);
   in.got->addEntry(stubBinder);
 
   inputSections.push_back(in.imageLoaderCache);
+  // Since this isn't in the symbol table or in any input file, the noDeadStrip
+  // argument doesn't matter. It's kept alive by ImageLoaderCacheSection()
+  // setting `live` to true on the backing InputSection.
   dyldPrivate =
       make<Defined>("__dyld_private", nullptr, in.imageLoaderCache, 0, 0,
                     /*isWeakDef=*/false,
                     /*isExternal=*/false, /*isPrivateExtern=*/false,
-                    /*isThumb=*/false, /*isReferencedDynamically=*/false);
+                    /*isThumb=*/false, /*isReferencedDynamically=*/false,
+                    /*noDeadStrip=*/false);
 }
 
 ImageLoaderCacheSection::ImageLoaderCacheSection() {
@@ -482,6 +486,7 @@ ImageLoaderCacheSection::ImageLoaderCacheSection() {
   memset(arr, 0, target->wordSize);
   data = {arr, target->wordSize};
   align = target->wordSize;
+  live = true;
 }
 
 LazyPointerSection::LazyPointerSection()
@@ -570,7 +575,7 @@ void ExportSection::finalizeContents() {
   trieBuilder.setImageBase(in.header->addr);
   for (const Symbol *sym : symtab->getSymbols()) {
     if (const auto *defined = dyn_cast<Defined>(sym)) {
-      if (defined->privateExtern)
+      if (defined->privateExtern || !defined->isLive())
         continue;
       trieBuilder.addSymbol(*defined);
       hasWeakSymbol = hasWeakSymbol || sym->isWeakDef();
@@ -589,7 +594,7 @@ void FunctionStartsSection::finalizeContents() {
   uint64_t addr = in.header->addr;
   for (const Symbol *sym : symtab->getSymbols()) {
     if (const auto *defined = dyn_cast<Defined>(sym)) {
-      if (!defined->isec || !isCodeSection(defined->isec))
+      if (!defined->isec || !isCodeSection(defined->isec) || !defined->isLive())
         continue;
       // TODO: Add support for thumbs, in that case
       // the lowest bit of nextAddr needs to be set to 1.
@@ -666,6 +671,8 @@ void SymtabSection::emitStabs() {
   for (const SymtabEntry &entry :
        concat<SymtabEntry>(localSymbols, externalSymbols)) {
     Symbol *sym = entry.sym;
+    assert(sym->isLive() &&
+           "dead symbols should not be in localSymbols, externalSymbols");
     if (auto *defined = dyn_cast<Defined>(sym)) {
       if (defined->isAbsolute())
         continue;
@@ -728,12 +735,8 @@ void SymtabSection::finalizeContents() {
   for (const InputFile *file : inputFiles) {
     if (auto *objFile = dyn_cast<ObjFile>(file)) {
       for (Symbol *sym : objFile->symbols) {
-        if (sym == nullptr)
-          continue;
-        // TODO: when we implement -dead_strip, we should filter out symbols
-        // that belong to dead sections.
-        if (auto *defined = dyn_cast<Defined>(sym)) {
-          if (!defined->isExternal()) {
+        if (auto *defined = dyn_cast_or_null<Defined>(sym)) {
+          if (!defined->isExternal() && defined->isLive()) {
             StringRef name = defined->getName();
             if (!name.startswith("l") && !name.startswith("L"))
               addSymbol(localSymbols, sym);
@@ -749,6 +752,8 @@ void SymtabSection::finalizeContents() {
     addSymbol(localSymbols, dyldPrivate);
 
   for (Symbol *sym : symtab->getSymbols()) {
+    if (!sym->isLive())
+      continue;
     if (auto *defined = dyn_cast<Defined>(sym)) {
       if (!defined->includeInSymtab)
         continue;
@@ -1068,6 +1073,63 @@ void BitcodeBundleSection::writeTo(uint8_t *buf) const {
 
   closeFile(handle);
   remove(xarPath);
+}
+
+// Mergeable cstring literals are found under the __TEXT,__cstring section. In
+// contrast to ELF, which puts strings that need different alignments into
+// different sections, clang's Mach-O backend puts them all in one section.
+// Strings that need to be aligned have the .p2align directive emitted before
+// them, which simply translates into zero padding in the object file.
+//
+// I *think* ld64 extracts the desired per-string alignment from this data by
+// preserving each string's offset from the last section-aligned address. I'm
+// not entirely certain since it doesn't seem consistent about doing this, and
+// in fact doesn't seem to be correct in general: we can in fact can induce ld64
+// to produce a crashing binary just by linking in an additional object file
+// that only contains a duplicate cstring at a different alignment. See PR50563
+// for details.
+//
+// In practice, the cstrings we've seen so far that require special aligment are
+// all accessed by x86_64 SIMD operations -- x86_64 requires SIMD accesses to be
+// 16-byte-aligned. So for now, I'm just aligning all strings to 16 bytes on
+// x86_64. This is indeed wasteful, but implementation-wise it's simpler than
+// preserving per-string alignment+offsets. It also avoids the aforementioned
+// crash after deduplication of differently-aligned strings. Finally, the
+// overhead is not huge: using 16-byte alignment (vs no alignment) is only a
+// 0.5% size overhead when linking chromium_framework.
+CStringSection::CStringSection()
+    : SyntheticSection(segment_names::text, section_names::cString),
+      builder(StringTableBuilder::RAW,
+              /*Alignment=*/target->cpuType == CPU_TYPE_X86_64 ? 16 : 1) {
+  align = target->cpuType == CPU_TYPE_X86_64 ? 16 : 1;
+  flags = S_CSTRING_LITERALS;
+}
+
+void CStringSection::addInput(CStringInputSection *isec) {
+  isec->parent = this;
+  inputs.push_back(isec);
+}
+
+void CStringSection::finalize() {
+  // Add all string pieces to the string table builder to create section
+  // contents.
+  for (const CStringInputSection *isec : inputs)
+    for (size_t i = 0, e = isec->pieces.size(); i != e; ++i)
+      builder.add(isec->getCachedHashStringRef(i));
+
+  // Fix the string table content. After this, the contents will never change.
+  builder.finalizeInOrder();
+
+  // finalize() fixed tail-optimized strings, so we can now get
+  // offsets of strings. Get an offset for each string and save it
+  // to a corresponding SectionPiece for easy access.
+  for (CStringInputSection *isec : inputs) {
+    for (size_t i = 0, e = isec->pieces.size(); i != e; ++i) {
+      isec->pieces[i].outSecOff =
+          builder.getOffset(isec->getCachedHashStringRef(i));
+      isec->isFinal = true;
+    }
+  }
 }
 
 void macho::createSyntheticSymbols() {

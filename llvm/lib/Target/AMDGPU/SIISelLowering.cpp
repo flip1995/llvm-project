@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/GlobalISel/GISelKnownBits.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/IR/IntrinsicsR600.h"
 #include "llvm/Support/CommandLine.h"
@@ -4221,11 +4222,35 @@ MachineBasicBlock *SITargetLowering::EmitInstrWithCustomInserter(
     return BB;
   }
   case AMDGPU::DS_GWS_INIT:
-  case AMDGPU::DS_GWS_SEMA_V:
   case AMDGPU::DS_GWS_SEMA_BR:
+  case AMDGPU::DS_GWS_BARRIER:
+    if (Subtarget->needsAlignedVGPRs()) {
+      // Add implicit aligned super-reg to force alignment on the data operand.
+      const DebugLoc &DL = MI.getDebugLoc();
+      MachineRegisterInfo &MRI = BB->getParent()->getRegInfo();
+      const SIRegisterInfo *TRI = Subtarget->getRegisterInfo();
+      MachineOperand *Op = TII->getNamedOperand(MI, AMDGPU::OpName::data0);
+      Register DataReg = Op->getReg();
+      bool IsAGPR = TRI->isAGPR(MRI, DataReg);
+      Register Undef = MRI.createVirtualRegister(
+          IsAGPR ? &AMDGPU::AGPR_32RegClass : &AMDGPU::VGPR_32RegClass);
+      BuildMI(*BB, MI, DL, TII->get(AMDGPU::IMPLICIT_DEF), Undef);
+      Register NewVR =
+          MRI.createVirtualRegister(IsAGPR ? &AMDGPU::AReg_64_Align2RegClass
+                                           : &AMDGPU::VReg_64_Align2RegClass);
+      BuildMI(*BB, MI, DL, TII->get(AMDGPU::REG_SEQUENCE), NewVR)
+          .addReg(DataReg, 0, Op->getSubReg())
+          .addImm(AMDGPU::sub0)
+          .addReg(Undef)
+          .addImm(AMDGPU::sub1);
+      Op->setReg(NewVR);
+      Op->setSubReg(AMDGPU::sub0);
+      MI.addOperand(MachineOperand::CreateReg(NewVR, false, true));
+    }
+    LLVM_FALLTHROUGH;
+  case AMDGPU::DS_GWS_SEMA_V:
   case AMDGPU::DS_GWS_SEMA_P:
   case AMDGPU::DS_GWS_SEMA_RELEASE_ALL:
-  case AMDGPU::DS_GWS_BARRIER:
     // A s_waitcnt 0 is required to be the instruction immediately following.
     if (getSubtarget()->hasGWSAutoReplay()) {
       bundleInstWithWaitcnt(MI);
@@ -5795,6 +5820,9 @@ static SDValue getBuildDwordsVector(SelectionDAG &DAG, SDLoc DL,
   } else if (Elts.size() <= 4) {
     Type = MVT::v4f32;
     NumElts = 4;
+  } else if (Elts.size() <= 5) {
+    Type = MVT::v5f32;
+    NumElts = 5;
   } else if (Elts.size() <= 8) {
     Type = MVT::v8f32;
     NumElts = 8;
@@ -7311,6 +7339,11 @@ SDValue SITargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
            NodePtr.getValueType() == MVT::i64);
     assert(RayDir.getValueType() == MVT::v4f16 ||
            RayDir.getValueType() == MVT::v4f32);
+
+    if (!Subtarget->hasGFX10_AEncoding()) {
+      emitRemovedIntrinsicError(DAG, DL, Op.getValueType());
+      return SDValue();
+    }
 
     bool IsA16 = RayDir.getValueType().getVectorElementType() == MVT::f16;
     bool Is64 = NodePtr.getValueType() == MVT::i64;

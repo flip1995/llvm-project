@@ -1819,8 +1819,6 @@ static void emitBody(CodeGenFunction &CGF, const Stmt *S, const Stmt *NextLoop,
     return;
   }
   if (SimplifiedS == NextLoop) {
-    OMPTransformDirectiveScopeRAII PossiblyTransformDirectiveScope(CGF,
-                                                                   SimplifiedS);
     if (auto *Dir = dyn_cast<OMPTileDirective>(SimplifiedS))
       SimplifiedS = Dir->getTransformedStmt();
     if (const auto *CanonLoop = dyn_cast<OMPCanonicalLoop>(SimplifiedS))
@@ -3675,11 +3673,11 @@ void CodeGenFunction::EmitSections(const OMPExecutableDirective &S) {
     CodeGenFunction::OpaqueValueMapping OpaqueUB(CGF, &UBRefExpr, UB);
     // Generate condition for loop.
     BinaryOperator *Cond = BinaryOperator::Create(
-        C, &IVRefExpr, &UBRefExpr, BO_LE, C.BoolTy, VK_RValue, OK_Ordinary,
+        C, &IVRefExpr, &UBRefExpr, BO_LE, C.BoolTy, VK_PRValue, OK_Ordinary,
         S.getBeginLoc(), FPOptionsOverride());
     // Increment for loop counter.
     UnaryOperator *Inc = UnaryOperator::Create(
-        C, &IVRefExpr, UO_PreInc, KmpInt32Ty, VK_RValue, OK_Ordinary,
+        C, &IVRefExpr, UO_PreInc, KmpInt32Ty, VK_PRValue, OK_Ordinary,
         S.getBeginLoc(), true, FPOptionsOverride());
     auto &&BodyGen = [CapturedStmt, CS, &S, &IV](CodeGenFunction &CGF) {
       // Iterate through all sections and emit a switch construct:
@@ -4573,7 +4571,7 @@ createImplicitFirstprivateForType(ASTContext &C, OMPTaskDataTy &Data,
   PrivateVD->setInitStyle(VarDecl::CInit);
   PrivateVD->setInit(ImplicitCastExpr::Create(C, ElemType, CK_LValueToRValue,
                                               InitRef, /*BasePath=*/nullptr,
-                                              VK_RValue, FPOptionsOverride()));
+                                              VK_PRValue, FPOptionsOverride()));
   Data.FirstprivateVars.emplace_back(OrigRef);
   Data.FirstprivateCopies.emplace_back(PrivateRef);
   Data.FirstprivateInits.emplace_back(InitRef);

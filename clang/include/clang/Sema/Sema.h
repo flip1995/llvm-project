@@ -1518,6 +1518,11 @@ public:
 
   bool WarnedStackExhausted = false;
 
+  /// Increment when we find a reference; decrement when we find an ignored
+  /// assignment.  Ultimately the value is 0 if every reference is an ignored
+  /// assignment.
+  llvm::DenseMap<const VarDecl *, int> RefsMinusAssignments;
+
 public:
   Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
        TranslationUnitKind TUKind = TU_Complete,
@@ -4876,6 +4881,10 @@ public:
   void DiagnoseUnusedNestedTypedefs(const RecordDecl *D);
   void DiagnoseUnusedDecl(const NamedDecl *ND);
 
+  /// If VD is set but not otherwise used, diagnose, for a parameter or a
+  /// variable.
+  void DiagnoseUnusedButSetDecl(const VarDecl *VD);
+
   /// Emit \p DiagID if statement located on \p StmtLoc has a suspicious null
   /// statement as a \p Body, and it is located on the same line.
   ///
@@ -5703,11 +5712,12 @@ public:
                                SourceLocation IdentLoc,
                                IdentifierInfo *Ident);
 
+  void FilterUsingLookup(Scope *S, LookupResult &lookup);
   void HideUsingShadowDecl(Scope *S, UsingShadowDecl *Shadow);
-  bool CheckUsingShadowDecl(UsingDecl *UD, NamedDecl *Target,
+  bool CheckUsingShadowDecl(BaseUsingDecl *BUD, NamedDecl *Target,
                             const LookupResult &PreviousDecls,
                             UsingShadowDecl *&PrevShadow);
-  UsingShadowDecl *BuildUsingShadowDecl(Scope *S, UsingDecl *UD,
+  UsingShadowDecl *BuildUsingShadowDecl(Scope *S, BaseUsingDecl *BUD,
                                         NamedDecl *Target,
                                         UsingShadowDecl *PrevDecl);
 
@@ -5716,17 +5726,23 @@ public:
                                    const CXXScopeSpec &SS,
                                    SourceLocation NameLoc,
                                    const LookupResult &Previous);
-  bool CheckUsingDeclQualifier(SourceLocation UsingLoc,
-                               bool HasTypename,
+  bool CheckUsingDeclQualifier(SourceLocation UsingLoc, bool HasTypename,
                                const CXXScopeSpec &SS,
                                const DeclarationNameInfo &NameInfo,
-                               SourceLocation NameLoc);
+                               SourceLocation NameLoc,
+                               const LookupResult *R = nullptr,
+                               const UsingDecl *UD = nullptr);
 
   NamedDecl *BuildUsingDeclaration(
       Scope *S, AccessSpecifier AS, SourceLocation UsingLoc,
       bool HasTypenameKeyword, SourceLocation TypenameLoc, CXXScopeSpec &SS,
       DeclarationNameInfo NameInfo, SourceLocation EllipsisLoc,
-      const ParsedAttributesView &AttrList, bool IsInstantiation);
+      const ParsedAttributesView &AttrList, bool IsInstantiation,
+      bool IsUsingIfExists);
+  NamedDecl *BuildUsingEnumDeclaration(Scope *S, AccessSpecifier AS,
+                                       SourceLocation UsingLoc,
+                                       SourceLocation EnumLoc,
+                                       SourceLocation NameLoc, EnumDecl *ED);
   NamedDecl *BuildUsingPackDecl(NamedDecl *InstantiatedFrom,
                                 ArrayRef<NamedDecl *> Expansions);
 
@@ -5744,6 +5760,9 @@ public:
                               SourceLocation TypenameLoc, CXXScopeSpec &SS,
                               UnqualifiedId &Name, SourceLocation EllipsisLoc,
                               const ParsedAttributesView &AttrList);
+  Decl *ActOnUsingEnumDeclaration(Scope *CurScope, AccessSpecifier AS,
+                                  SourceLocation UsingLoc,
+                                  SourceLocation EnumLoc, const DeclSpec &);
   Decl *ActOnAliasDeclaration(Scope *CurScope, AccessSpecifier AS,
                               MultiTemplateParamsArg TemplateParams,
                               SourceLocation UsingLoc, UnqualifiedId &Name,
@@ -6398,6 +6417,9 @@ public:
 
   // Marks SS invalid if it represents an incomplete type.
   bool RequireCompleteDeclContext(CXXScopeSpec &SS, DeclContext *DC);
+  // Complete an enum decl, maybe without a scope spec.
+  bool RequireCompleteEnumDecl(EnumDecl *D, SourceLocation L,
+                               CXXScopeSpec *SS = nullptr);
 
   DeclContext *computeDeclContext(QualType T);
   DeclContext *computeDeclContext(const CXXScopeSpec &SS,
@@ -11311,11 +11333,11 @@ public:
   /// ImpCastExprToType - If Expr is not of type 'Type', insert an implicit
   /// cast.  If there is already an implicit cast, merge into the existing one.
   /// If isLvalue, the result of the cast is an lvalue.
-  ExprResult ImpCastExprToType(Expr *E, QualType Type, CastKind CK,
-                               ExprValueKind VK = VK_RValue,
-                               const CXXCastPath *BasePath = nullptr,
-                               CheckedConversionKind CCK
-                                  = CCK_ImplicitConversion);
+  ExprResult
+  ImpCastExprToType(Expr *E, QualType Type, CastKind CK,
+                    ExprValueKind VK = VK_PRValue,
+                    const CXXCastPath *BasePath = nullptr,
+                    CheckedConversionKind CCK = CCK_ImplicitConversion);
 
   /// ImpCastPointerToCHERICapability - Checks if pointer type FromTy can be
   /// implicitly converted to capability type ToTy
@@ -11612,7 +11634,7 @@ public:
                                        CheckedConversionKind CCK);
 
   ExprResult PerformQualificationConversion(
-      Expr *E, QualType Ty, ExprValueKind VK = VK_RValue,
+      Expr *E, QualType Ty, ExprValueKind VK = VK_PRValue,
       CheckedConversionKind CCK = CCK_ImplicitConversion);
 
   /// the following "Check" methods will return a valid/converted QualType

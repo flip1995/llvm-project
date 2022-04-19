@@ -6861,12 +6861,10 @@ static SDValue isVMOVModifiedImm(uint64_t SplatBits, uint64_t SplatUndef,
       return SDValue();
     // NEON has a 64-bit VMOV splat where each byte is either 0 or 0xff.
     uint64_t BitMask = 0xff;
-    uint64_t Val = 0;
     unsigned ImmMask = 1;
     Imm = 0;
     for (int ByteNum = 0; ByteNum < 8; ++ByteNum) {
       if (((SplatBits | SplatUndef) & BitMask) == BitMask) {
-        Val |= BitMask;
         Imm |= ImmMask;
       } else if ((SplatBits & BitMask) != 0) {
         return SDValue();
@@ -7636,6 +7634,18 @@ SDValue ARMTargetLowering::LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
           SDValue Val = DAG.getTargetConstant(ImmVal, dl, MVT::i32);
           return DAG.getNode(ARMISD::VMOVFPIMM, dl, VT, Val);
         }
+      }
+
+      // If we are under MVE, generate a VDUP(constant), bitcast to the original
+      // type.
+      if (ST->hasMVEIntegerOps() &&
+          (SplatBitSize == 8 || SplatBitSize == 16 || SplatBitSize == 32)) {
+        EVT DupVT = SplatBitSize == 32   ? MVT::v4i32
+                    : SplatBitSize == 16 ? MVT::v8i16
+                                         : MVT::v16i8;
+        SDValue Const = DAG.getConstant(SplatBits.getZExtValue(), dl, MVT::i32);
+        SDValue VDup = DAG.getNode(ARMISD::VDUP, dl, DupVT, Const);
+        return DAG.getNode(ARMISD::VECTOR_REG_CAST, dl, VT, VDup);
       }
     }
   }
@@ -19378,7 +19388,7 @@ bool ARMTargetLowering::isExtractSubvectorCheap(EVT ResVT, EVT SrcVT,
   return (Index == 0 || Index == ResVT.getVectorNumElements());
 }
 
-Instruction* ARMTargetLowering::makeDMB(IRBuilder<> &Builder,
+Instruction *ARMTargetLowering::makeDMB(IRBuilderBase &Builder,
                                         ARM_MB::MemBOpt Domain) const {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
 
@@ -19408,7 +19418,7 @@ Instruction* ARMTargetLowering::makeDMB(IRBuilder<> &Builder,
 }
 
 // Based on http://www.cl.cam.ac.uk/~pes20/cpp/cpp0xmappings.html
-Instruction *ARMTargetLowering::emitLeadingFence(IRBuilder<> &Builder,
+Instruction *ARMTargetLowering::emitLeadingFence(IRBuilderBase &Builder,
                                                  Instruction *Inst,
                                                  AtomicOrdering Ord) const {
   switch (Ord) {
@@ -19433,7 +19443,7 @@ Instruction *ARMTargetLowering::emitLeadingFence(IRBuilder<> &Builder,
   llvm_unreachable("Unknown fence ordering in emitLeadingFence");
 }
 
-Instruction *ARMTargetLowering::emitTrailingFence(IRBuilder<> &Builder,
+Instruction *ARMTargetLowering::emitTrailingFence(IRBuilderBase &Builder,
                                                   Instruction *Inst,
                                                   AtomicOrdering Ord) const {
   switch (Ord) {
@@ -19595,7 +19605,7 @@ bool ARMTargetLowering::shouldExpandShift(SelectionDAG &DAG, SDNode *N) const {
   return !Subtarget->hasMinSize() || Subtarget->isTargetWindows();
 }
 
-Value *ARMTargetLowering::emitLoadLinked(IRBuilder<> &Builder, Value *Addr,
+Value *ARMTargetLowering::emitLoadLinked(IRBuilderBase &Builder, Value *Addr,
                                          AtomicOrdering Ord) const {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
   Type *ValTy = cast<PointerType>(Addr->getType())->getElementType();
@@ -19632,15 +19642,15 @@ Value *ARMTargetLowering::emitLoadLinked(IRBuilder<> &Builder, Value *Addr,
 }
 
 void ARMTargetLowering::emitAtomicCmpXchgNoStoreLLBalance(
-    IRBuilder<> &Builder) const {
+    IRBuilderBase &Builder) const {
   if (!Subtarget->hasV7Ops())
     return;
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
   Builder.CreateCall(Intrinsic::getDeclaration(M, Intrinsic::arm_clrex));
 }
 
-Value *ARMTargetLowering::emitStoreConditional(IRBuilder<> &Builder, Value *Val,
-                                               Value *Addr,
+Value *ARMTargetLowering::emitStoreConditional(IRBuilderBase &Builder,
+                                               Value *Val, Value *Addr,
                                                AtomicOrdering Ord) const {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
   bool IsRelease = isReleaseOrStronger(Ord);

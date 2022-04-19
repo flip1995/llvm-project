@@ -31,6 +31,8 @@ namespace llvm {
   class MVT {
   public:
     enum SimpleValueType : uint8_t {
+      // clang-format off
+
       // Simple value types that aren't explicitly part of this enumeration
       // are considered extended value types.
       INVALID_SIMPLE_VALUE_TYPE = 0,
@@ -245,31 +247,32 @@ namespace llvm {
       FIRST_VECTOR_VALUETYPE = v1i1,
       LAST_VECTOR_VALUETYPE  = nxv8f64,
 
-      x86mmx         = 161,   // This is an X86 MMX value
+      x86mmx         = 161,    // This is an X86 MMX value
 
-      Glue           = 162,   // This glues nodes together during pre-RA sched
+      Glue           = 162,    // This glues nodes together during pre-RA sched
 
-      isVoid         = 163,   // This has no value
+      isVoid         = 163,    // This has no value
 
-      Untyped        = 164,   // This value takes a register, but has
-                              // unspecified type.  The register class
-                              // will be determined by the opcode.
+      Untyped        = 164,    // This value takes a register, but has
+                               // unspecified type.  The register class
+                               // will be determined by the opcode.
 
-      funcref        = 165,   // WebAssembly's funcref type
-      externref      = 166,   // WebAssembly's externref type
-      x86amx         = 167,   // This is an X86 AMX value
+      funcref        = 165,    // WebAssembly's funcref type
+      externref      = 166,    // WebAssembly's externref type
+      x86amx         = 167,    // This is an X86 AMX value
 
-      iFATPTR64 = 168,  // 64-bit fat pointer type
-      iFATPTR128 = 169, // 128-bit fat pointer type
-      iFATPTR256 = 170, // 256-bit fat pointer type
-      iFATPTR512 = 171, // 512-bit fat pointer type
-      iFATPTRAny = 172, // Generic fat pointer type (must be legalised to a
+      iFATPTR64      = 168,  // 64-bit fat pointer type
+      iFATPTR128     = 169, // 128-bit fat pointer type
+      iFATPTR256     = 170, // 256-bit fat pointer type
+      iFATPTR512     = 171, // 512-bit fat pointer type
+      iFATPTRAny     = 172, // Generic fat pointer type (must be legalised to a
       // sized  version)
       FIRST_FAT_POINTER = iFATPTR64,
       LAST_FAT_POINTER = iFATPTRAny,
 
-      FIRST_VALUETYPE =  1,   // This is always the beginning of the list.
-      LAST_VALUETYPE = 173,   // This always remains at the end of the list.
+      FIRST_VALUETYPE = 1, // This is always the beginning of the list.
+      LAST_VALUETYPE = iFATPTRAny, // This always remains at the end of the list.
+      VALUETYPE_SIZE = LAST_VALUETYPE + 1,
 
       // This is the current maximum for LAST_VALUETYPE.
       // MVT::MAX_ALLOWED_VALUETYPE is used for asserts and to size bit vectors
@@ -309,6 +312,8 @@ namespace llvm {
       // Any type. This is used for intrinsics that have overloadings.
       // This is only for tblgen's consumption!
       Any            = 255
+
+      // clang-format on
     };
 
     SimpleValueType SimpleTy = INVALID_SIMPLE_VALUE_TYPE;
@@ -326,7 +331,7 @@ namespace llvm {
     /// Return true if this is a valid simple valuetype.
     bool isValid() const {
       return (SimpleTy >= MVT::FIRST_VALUETYPE &&
-              SimpleTy < MVT::LAST_VALUETYPE);
+              SimpleTy <= MVT::LAST_VALUETYPE);
     }
 
     /// Return true if this is a FP or a vector FP type.
@@ -1404,7 +1409,8 @@ namespace llvm {
     /// SimpleValueType Iteration
     /// @{
     static mvt_range all_valuetypes() {
-      return mvt_range(MVT::FIRST_VALUETYPE, MVT::LAST_VALUETYPE);
+      return mvt_range(MVT::FIRST_VALUETYPE,
+                       (MVT::SimpleValueType)(MVT::LAST_VALUETYPE + 1));
     }
 
     static mvt_range integer_valuetypes() {

@@ -2510,6 +2510,13 @@ AvailabilityAttr *Sema::mergeAvailabilityAttr(
 }
 
 static void handleAvailabilityAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
+  if (isa<UsingDecl, UnresolvedUsingTypenameDecl, UnresolvedUsingValueDecl>(
+          D)) {
+    S.Diag(AL.getRange().getBegin(), diag::warn_deprecated_ignored_on_using)
+        << AL;
+    return;
+  }
+
   if (!AL.checkExactlyNumArgs(S, 1))
     return;
   IdentifierLoc *Platform = AL.getArgAsIdent(0);
@@ -3826,11 +3833,11 @@ void Sema::AddAnnotationAttr(Decl *D, const AttributeCommonInfo &CI,
       E = ImplicitCastExpr::Create(Context,
                                    Context.getPointerType(E->getType()),
                                    clang::CK_FunctionToPointerDecay, E, nullptr,
-                                   VK_RValue, FPOptionsOverride());
+                                   VK_PRValue, FPOptionsOverride());
     if (E->isLValue())
       E = ImplicitCastExpr::Create(Context, E->getType().getNonReferenceType(),
                                    clang::CK_LValueToRValue, E, nullptr,
-                                   VK_RValue, FPOptionsOverride());
+                                   VK_PRValue, FPOptionsOverride());
 
     Expr::EvalResult Eval;
     Notes.clear();
@@ -7426,6 +7433,11 @@ static void handleDeprecatedAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
       // namespace.
       return;
     }
+  } else if (isa<UsingDecl, UnresolvedUsingTypenameDecl,
+                 UnresolvedUsingValueDecl>(D)) {
+    S.Diag(AL.getRange().getBegin(), diag::warn_deprecated_ignored_on_using)
+        << AL;
+    return;
   }
 
   // Handle the cases where the attribute has a text message.
@@ -8509,6 +8521,10 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
 
   case ParsedAttr::AT_BuiltinAlias:
     handleBuiltinAliasAttr(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_UsingIfExists:
+    handleSimpleAttribute<UsingIfExistsAttr>(S, D, AL);
     break;
   }
 }

@@ -1601,6 +1601,8 @@ DEF_TRAVERSE_DECL(UsingDecl, {
   TRY_TO(TraverseDeclarationNameInfo(D->getNameInfo()));
 })
 
+DEF_TRAVERSE_DECL(UsingEnumDecl, {})
+
 DEF_TRAVERSE_DECL(UsingPackDecl, {})
 
 DEF_TRAVERSE_DECL(UsingDirectiveDecl, {
@@ -1853,6 +1855,8 @@ DEF_TRAVERSE_DECL(UnresolvedUsingTypenameDecl, {
   // declaring the type, not something that was written in the
   // source.
 })
+
+DEF_TRAVERSE_DECL(UnresolvedUsingIfExistsDecl, {})
 
 DEF_TRAVERSE_DECL(EnumDecl, {
   TRY_TO(TraverseDeclTemplateParameterLists(D));
@@ -2646,7 +2650,16 @@ DEF_TRAVERSE_STMT(ObjCMessageExpr, {
     TRY_TO(TraverseTypeLoc(TInfo->getTypeLoc()));
 })
 
-DEF_TRAVERSE_STMT(ObjCPropertyRefExpr, {})
+DEF_TRAVERSE_STMT(ObjCPropertyRefExpr, {
+  if (S->isClassReceiver()) {
+    ObjCInterfaceDecl *IDecl = S->getClassReceiver();
+    QualType Type = IDecl->getASTContext().getObjCInterfaceType(IDecl);
+    ObjCInterfaceLocInfo Data;
+    Data.NameLoc = S->getReceiverLocation();
+    Data.NameEndLoc = Data.NameLoc;
+    TRY_TO(TraverseTypeLoc(TypeLoc(Type, &Data)));
+  }
+})
 DEF_TRAVERSE_STMT(ObjCSubscriptRefExpr, {})
 DEF_TRAVERSE_STMT(ObjCProtocolExpr, {})
 DEF_TRAVERSE_STMT(ObjCSelectorExpr, {})

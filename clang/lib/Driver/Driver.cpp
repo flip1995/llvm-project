@@ -520,14 +520,21 @@ static llvm::Triple computeTargetTriple(const Driver &D,
       AT = Target.get64BitArchVariant().getArch();
       if (Target.getEnvironment() == llvm::Triple::GNUX32)
         Target.setEnvironment(llvm::Triple::GNU);
+      else if (Target.getEnvironment() == llvm::Triple::MuslX32)
+        Target.setEnvironment(llvm::Triple::Musl);
     } else if (A->getOption().matches(options::OPT_mx32) &&
                Target.get64BitArchVariant().getArch() == llvm::Triple::x86_64) {
       AT = llvm::Triple::x86_64;
-      Target.setEnvironment(llvm::Triple::GNUX32);
+      if (Target.getEnvironment() == llvm::Triple::Musl)
+        Target.setEnvironment(llvm::Triple::MuslX32);
+      else
+        Target.setEnvironment(llvm::Triple::GNUX32);
     } else if (A->getOption().matches(options::OPT_m32)) {
       AT = Target.get32BitArchVariant().getArch();
       if (Target.getEnvironment() == llvm::Triple::GNUX32)
         Target.setEnvironment(llvm::Triple::GNU);
+      else if (Target.getEnvironment() == llvm::Triple::MuslX32)
+        Target.setEnvironment(llvm::Triple::Musl);
     } else if (A->getOption().matches(options::OPT_m16) &&
                Target.get32BitArchVariant().getArch() == llvm::Triple::x86) {
       AT = llvm::Triple::x86;
@@ -4923,6 +4930,11 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
 
   // Default to writing to stdout?
   if (AtTopLevel && !CCGenDiagnostics && HasPreprocessOutput(JA)) {
+    return "-";
+  }
+
+  if (JA.getType() == types::TY_ModuleFile &&
+      C.getArgs().getLastArg(options::OPT_module_file_info)) {
     return "-";
   }
 

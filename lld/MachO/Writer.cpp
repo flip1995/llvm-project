@@ -359,12 +359,6 @@ private:
   StringRef path;
 };
 
-static uint32_t encodeVersion(const VersionTuple &version) {
-  return ((version.getMajor() << 020) |
-          (version.getMinor().getValueOr(0) << 010) |
-          version.getSubminor().getValueOr(0));
-}
-
 class LCMinVersion : public LoadCommand {
 public:
   explicit LCMinVersion(const PlatformInfo &platformInfo)
@@ -609,13 +603,14 @@ void Writer::scanSymbols() {
   TimeTraceScope timeScope("Scan symbols");
   for (const Symbol *sym : symtab->getSymbols()) {
     if (const auto *defined = dyn_cast<Defined>(sym)) {
-      if (defined->overridesWeakDef)
+      if (defined->overridesWeakDef && defined->isLive())
         in.weakBinding->addNonWeakDefinition(defined);
     } else if (const auto *dysym = dyn_cast<DylibSymbol>(sym)) {
+      // This branch intentionally doesn't check isLive().
       if (dysym->isDynamicLookup())
         continue;
       dysym->getFile()->refState =
-          std::max(dysym->getFile()->refState, dysym->refState);
+          std::max(dysym->getFile()->refState, dysym->getRefState());
     }
   }
 }
@@ -678,6 +673,7 @@ template <class LP> void Writer::createLoadCommands() {
     in.header->addLoadCommand(make<LCMinVersion>(config->platformInfo));
 
   int64_t dylibOrdinal = 1;
+  DenseMap<StringRef, int64_t> ordinalForInstallName;
   for (InputFile *file : inputFiles) {
     if (auto *dylibFile = dyn_cast<DylibFile>(file)) {
       if (dylibFile->isBundleLoader) {
@@ -688,18 +684,57 @@ template <class LP> void Writer::createLoadCommands() {
         continue;
       }
 
-      dylibFile->ordinal = dylibOrdinal++;
+      // Don't emit load commands for a dylib that is not referenced if:
+      // - it was added implicitly (via a reexport, an LC_LOAD_DYLINKER --
+      //   if it's on the linker command line, it's explicit)
+      // - or it's marked MH_DEAD_STRIPPABLE_DYLIB
+      // - or the flag -dead_strip_dylibs is used
+      // FIXME: `isReferenced()` is currently computed before dead code
+      // stripping, so references from dead code keep a dylib alive. This
+      // matches ld64, but it's something we should do better.
+      if (!dylibFile->isReferenced() && !dylibFile->forceNeeded &&
+          (!dylibFile->explicitlyLinked || dylibFile->deadStrippable ||
+           config->deadStripDylibs))
+        continue;
+
+      // Several DylibFiles can have the same installName. Only emit a single
+      // load command for that installName and give all these DylibFiles the
+      // same ordinal.
+      // This can happen in several cases:
+      // - a new framework could change its installName to an older
+      //   framework name via an $ld$ symbol depending on platform_version
+      // - symlinks (for example, libpthread.tbd is a symlink to libSystem.tbd;
+      //   Foo.framework/Foo.tbd is usually a symlink to
+      //   Foo.framework/Versions/Current/Foo.tbd, where
+      //   Foo.framework/Versions/Current is usually a symlink to
+      //   Foo.framework/Versions/A)
+      // - a framework can be linked both explicitly on the linker
+      //   command line and implicitly as a reexport from a different
+      //   framework. The re-export will usually point to the tbd file
+      //   in Foo.framework/Versions/A/Foo.tbd, while the explicit link will
+      //   usually find Foo.framwork/Foo.tbd. These are usually symlinks,
+      //   but in a --reproduce archive they will be identical but distinct
+      //   files.
+      // In the first case, *semantically distinct* DylibFiles will have the
+      // same installName.
+      int64_t &ordinal = ordinalForInstallName[dylibFile->installName];
+      if (ordinal) {
+        dylibFile->ordinal = ordinal;
+        continue;
+      }
+
+      ordinal = dylibFile->ordinal = dylibOrdinal++;
       LoadCommandType lcType =
           dylibFile->forceWeakImport || dylibFile->refState == RefState::Weak
               ? LC_LOAD_WEAK_DYLIB
               : LC_LOAD_DYLIB;
-      in.header->addLoadCommand(make<LCDylib>(lcType, dylibFile->dylibName,
+      in.header->addLoadCommand(make<LCDylib>(lcType, dylibFile->installName,
                                               dylibFile->compatibilityVersion,
                                               dylibFile->currentVersion));
 
       if (dylibFile->reexport)
         in.header->addLoadCommand(
-            make<LCDylib>(LC_REEXPORT_DYLIB, dylibFile->dylibName));
+            make<LCDylib>(LC_REEXPORT_DYLIB, dylibFile->installName));
     }
   }
 
@@ -828,15 +863,23 @@ template <class LP> void Writer::createOutputSections() {
     InputSection *isec = p.value();
     if (isec->shouldOmitFromOutput())
       continue;
-    NamePair names = maybeRenameSection({isec->segname, isec->name});
-    ConcatOutputSection *&osec = concatOutputSections[names];
-    if (osec == nullptr) {
-      osec = make<ConcatOutputSection>(names.second);
-      osec->inputOrder = p.index();
+    if (auto *concatIsec = dyn_cast<ConcatInputSection>(isec)) {
+      NamePair names = maybeRenameSection({isec->segname, isec->name});
+      ConcatOutputSection *&osec = concatOutputSections[names];
+      if (osec == nullptr) {
+        osec = make<ConcatOutputSection>(names.second);
+        osec->inputOrder = p.index();
+      }
+      osec->addInput(concatIsec);
+    } else if (auto *cStringIsec = dyn_cast<CStringInputSection>(isec)) {
+      if (in.cStringSection->inputs.empty())
+        in.cStringSection->inputOrder = p.index();
+      in.cStringSection->addInput(cStringIsec);
     }
-    osec->addInput(isec);
   }
 
+  // Once all the inputs are added, we can finalize the output section
+  // properties and create the corresponding output segments.
   for (const auto &it : concatOutputSections) {
     StringRef segname = it.first.first;
     ConcatOutputSection *osec = it.second;
@@ -850,13 +893,14 @@ template <class LP> void Writer::createOutputSections() {
 
   for (SyntheticSection *ssec : syntheticSections) {
     auto it = concatOutputSections.find({ssec->segname, ssec->name});
-    if (it == concatOutputSections.end()) {
-      if (ssec->isNeeded())
+    if (ssec->isNeeded()) {
+      if (it == concatOutputSections.end()) {
         getOrCreateOutputSegment(ssec->segname)->addOutputSection(ssec);
-    } else {
-      error("section from " + toString(it->second->firstSection()->file) +
-            " conflicts with synthetic section " + ssec->segname + "," +
-            ssec->name);
+      } else {
+        fatal("section from " + toString(it->second->firstSection()->file) +
+              " conflicts with synthetic section " + ssec->segname + "," +
+              ssec->name);
+      }
     }
   }
 
@@ -1005,6 +1049,7 @@ template <class LP> void macho::writeResult() { Writer().run<LP>(); }
 
 void macho::createSyntheticSections() {
   in.header = make<MachHeaderSection>();
+  in.cStringSection = config->dedupLiterals ? make<CStringSection>() : nullptr;
   in.rebase = make<RebaseSection>();
   in.binding = make<BindingSection>();
   in.weakBinding = make<WeakBindingSection>();

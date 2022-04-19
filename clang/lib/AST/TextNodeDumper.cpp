@@ -144,7 +144,7 @@ void TextNodeDumper::Visit(const Stmt *Node) {
     {
       ColorScope Color(OS, ShowColors, ValueKindColor);
       switch (E->getValueKind()) {
-      case VK_RValue:
+      case VK_PRValue:
         break;
       case VK_LValue:
         OS << " lvalue";
@@ -2068,6 +2068,11 @@ void TextNodeDumper::VisitUsingDecl(const UsingDecl *D) {
   if (D->getQualifier())
     D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
   OS << D->getDeclName();
+}
+
+void TextNodeDumper::VisitUsingEnumDecl(const UsingEnumDecl *D) {
+  OS << ' ';
+  dumpBareDeclRef(D->getEnumDecl());
 }
 
 void TextNodeDumper::VisitUnresolvedUsingTypenameDecl(

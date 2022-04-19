@@ -21,7 +21,7 @@ static lsp::Position getPosFromLoc(llvm::SourceMgr &mgr, llvm::SMLoc loc) {
   std::pair<unsigned, unsigned> lineAndCol = mgr.getLineAndColumn(loc);
   lsp::Position pos;
   pos.line = lineAndCol.first - 1;
-  pos.character = lineAndCol.second;
+  pos.character = lineAndCol.second - 1;
   return pos;
 }
 
@@ -33,10 +33,7 @@ static llvm::SMLoc getPosFromLoc(llvm::SourceMgr &mgr, lsp::Position pos) {
 
 /// Returns a language server range for the given source range.
 static lsp::Range getRangeFromLoc(llvm::SourceMgr &mgr, llvm::SMRange range) {
-  // lsp::Range is an inclusive range, SMRange is half-open.
-  llvm::SMLoc inclusiveEnd =
-      llvm::SMLoc::getFromPointer(range.End.getPointer() - 1);
-  return {getPosFromLoc(mgr, range.Start), getPosFromLoc(mgr, inclusiveEnd)};
+  return {getPosFromLoc(mgr, range.Start), getPosFromLoc(mgr, range.End)};
 }
 
 /// Returns a language server location from the given source range.
@@ -67,7 +64,8 @@ static Optional<lsp::Location> getLocationFromLoc(FileLineColLoc loc) {
 /// one couldn't be created. `uri` is an optional additional filter that, when
 /// present, is used to filter sub locations that do not share the same uri.
 static Optional<lsp::Location>
-getLocationFromLoc(Location loc, const lsp::URIForFile *uri = nullptr) {
+getLocationFromLoc(llvm::SourceMgr &sourceMgr, Location loc,
+                   const lsp::URIForFile *uri = nullptr) {
   Optional<lsp::Location> location;
   loc->walk([&](Location nestedLoc) {
     FileLineColLoc fileLoc = nestedLoc.dyn_cast<FileLineColLoc>();
@@ -77,6 +75,18 @@ getLocationFromLoc(Location loc, const lsp::URIForFile *uri = nullptr) {
     Optional<lsp::Location> sourceLoc = getLocationFromLoc(fileLoc);
     if (sourceLoc && (!uri || sourceLoc->uri == *uri)) {
       location = *sourceLoc;
+      llvm::SMLoc loc = sourceMgr.FindLocForLineAndColumn(
+          sourceMgr.getMainFileID(), fileLoc.getLine(), fileLoc.getColumn());
+
+      // Use range of potential identifier starting at location, else length 1
+      // range.
+      location->range.end.character += 1;
+      if (Optional<llvm::SMRange> range =
+              AsmParserState::convertIdLocToRange(loc)) {
+        auto lineCol = sourceMgr.getLineAndColumn(range->End);
+        location->range.end.character =
+            std::max(fileLoc.getColumn() + 1, lineCol.second - 1);
+      }
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -195,7 +205,8 @@ static void printDefBlockName(raw_ostream &os,
 }
 
 /// Convert the given MLIR diagnostic to the LSP form.
-static lsp::Diagnostic getLspDiagnoticFromDiag(Diagnostic &diag,
+static lsp::Diagnostic getLspDiagnoticFromDiag(llvm::SourceMgr &sourceMgr,
+                                               Diagnostic &diag,
                                                const lsp::URIForFile &uri) {
   lsp::Diagnostic lspDiag;
   lspDiag.source = "mlir";
@@ -208,7 +219,7 @@ static lsp::Diagnostic getLspDiagnoticFromDiag(Diagnostic &diag,
   // TODO: For simplicity, we just grab the first one. It may be likely that we
   // will need a more interesting heuristic here.'
   Optional<lsp::Location> lspLocation =
-      getLocationFromLoc(diag.getLocation(), &uri);
+      getLocationFromLoc(sourceMgr, diag.getLocation(), &uri);
   if (lspLocation)
     lspDiag.range = lspLocation->range;
 
@@ -232,7 +243,8 @@ static lsp::Diagnostic getLspDiagnoticFromDiag(Diagnostic &diag,
   std::vector<lsp::DiagnosticRelatedInformation> relatedDiags;
   for (Diagnostic &note : diag.getNotes()) {
     lsp::Location noteLoc;
-    if (Optional<lsp::Location> loc = getLocationFromLoc(note.getLocation()))
+    if (Optional<lsp::Location> loc =
+            getLocationFromLoc(sourceMgr, note.getLocation()))
       noteLoc = *loc;
     else
       noteLoc.uri = uri;
@@ -274,7 +286,8 @@ struct MLIRDocument {
   Optional<lsp::Hover> findHover(const lsp::URIForFile &uri,
                                  const lsp::Position &hoverPos);
   Optional<lsp::Hover>
-  buildHoverForOperation(const AsmParserState::OperationDefinition &op);
+  buildHoverForOperation(llvm::SMRange hoverRange,
+                         const AsmParserState::OperationDefinition &op);
   lsp::Hover buildHoverForOperationResult(llvm::SMRange hoverRange,
                                           Operation *op, unsigned resultStart,
                                           unsigned resultEnd,
@@ -306,7 +319,7 @@ MLIRDocument::MLIRDocument(const lsp::URIForFile &uri, StringRef contents,
     : context(registry) {
   context.allowUnregisteredDialects();
   ScopedDiagnosticHandler handler(&context, [&](Diagnostic &diag) {
-    diagnostics.push_back(getLspDiagnoticFromDiag(diag, uri));
+    diagnostics.push_back(getLspDiagnoticFromDiag(sourceMgr, diag, uri));
   });
 
   // Try to parsed the given IR string.
@@ -350,6 +363,12 @@ void MLIRDocument::getLocationsOf(const lsp::URIForFile &uri,
     for (const auto &result : op.resultGroups)
       if (containsPosition(result.second))
         return collectLocationsFromLoc(op.op->getLoc(), locations, uri);
+    for (const auto &symUse : op.symbolUses) {
+      if (contains(symUse, posLoc)) {
+        locations.push_back(getLocationFromLoc(sourceMgr, op.loc, uri));
+        return collectLocationsFromLoc(op.op->getLoc(), locations, uri);
+      }
+    }
   }
 
   // Check all definitions related to blocks.
@@ -380,11 +399,21 @@ void MLIRDocument::findReferencesOf(const lsp::URIForFile &uri,
     if (contains(op.loc, posLoc)) {
       for (const auto &result : op.resultGroups)
         appendSMDef(result.second);
+      for (const auto &symUse : op.symbolUses)
+        if (contains(symUse, posLoc))
+          references.push_back(getLocationFromLoc(sourceMgr, symUse, uri));
       return;
     }
     for (const auto &result : op.resultGroups)
       if (isDefOrUse(result.second, posLoc))
         return appendSMDef(result.second);
+    for (const auto &symUse : op.symbolUses) {
+      if (!contains(symUse, posLoc))
+        continue;
+      for (const auto &symUse : op.symbolUses)
+        references.push_back(getLocationFromLoc(sourceMgr, symUse, uri));
+      return;
+    }
   }
 
   // Check all definitions related to blocks.
@@ -411,7 +440,12 @@ Optional<lsp::Hover> MLIRDocument::findHover(const lsp::URIForFile &uri,
   for (const AsmParserState::OperationDefinition &op : asmState.getOpDefs()) {
     // Check if the position points at this operation.
     if (contains(op.loc, posLoc))
-      return buildHoverForOperation(op);
+      return buildHoverForOperation(op.loc, op);
+
+    // Check if the position points at the symbol name.
+    for (auto &use : op.symbolUses)
+      if (contains(use, posLoc))
+        return buildHoverForOperation(use, op);
 
     // Check if the position points at a result group.
     for (unsigned i = 0, e = op.resultGroups.size(); i < e; ++i) {
@@ -445,21 +479,34 @@ Optional<lsp::Hover> MLIRDocument::findHover(const lsp::URIForFile &uri,
 }
 
 Optional<lsp::Hover> MLIRDocument::buildHoverForOperation(
-    const AsmParserState::OperationDefinition &op) {
-  // Don't show hovers for operations with regions to avoid huge hover  blocks.
-  // TODO: Should we add support for printing an op without its regions?
-  if (llvm::any_of(op.op->getRegions(),
-                   [](Region &region) { return !region.empty(); }))
-    return llvm::None;
-
-  lsp::Hover hover(getRangeFromLoc(sourceMgr, op.loc));
+    llvm::SMRange hoverRange, const AsmParserState::OperationDefinition &op) {
+  lsp::Hover hover(getRangeFromLoc(sourceMgr, hoverRange));
   llvm::raw_string_ostream os(hover.contents.value);
 
-  // For hovers on an operation, show the generic form.
-  os << "```mlir\n";
+  // Add the operation name to the hover.
+  os << "\"" << op.op->getName() << "\"";
+  if (SymbolOpInterface symbol = dyn_cast<SymbolOpInterface>(op.op))
+    os << " : " << symbol.getVisibility() << " @" << symbol.getName() << "";
+  os << "\n\n";
+
+  os << "Generic Form:\n\n```mlir\n";
+
+  // Temporary drop the regions of this operation so that they don't get
+  // printed in the output. This helps keeps the size of the output hover
+  // small.
+  SmallVector<std::unique_ptr<Region>> regions;
+  for (Region &region : op.op->getRegions()) {
+    regions.emplace_back(std::make_unique<Region>());
+    regions.back()->takeBody(region);
+  }
+
   op.op->print(
       os, OpPrintingFlags().printGenericOpForm().elideLargeElementsAttrs());
   os << "\n```\n";
+
+  // Move the regions back to the current operation.
+  for (Region &region : op.op->getRegions())
+    region.takeBody(*regions.back());
 
   return hover;
 }
