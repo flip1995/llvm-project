@@ -1021,6 +1021,16 @@ ARMTargetLowering::ARMTargetLowering(const TargetMachine &TM,
 
   setOperationAction(ISD::ADDCARRY, MVT::i32, Custom);
   setOperationAction(ISD::SUBCARRY, MVT::i32, Custom);
+  if (Subtarget->hasDSP()) {
+    setOperationAction(ISD::SADDSAT, MVT::i8, Custom);
+    setOperationAction(ISD::SSUBSAT, MVT::i8, Custom);
+    setOperationAction(ISD::SADDSAT, MVT::i16, Custom);
+    setOperationAction(ISD::SSUBSAT, MVT::i16, Custom);
+  }
+  if (Subtarget->hasBaseDSP()) {
+    setOperationAction(ISD::SADDSAT, MVT::i32, Legal);
+    setOperationAction(ISD::SSUBSAT, MVT::i32, Legal);
+  }
 
   // i64 operation support.
   setOperationAction(ISD::MUL,     MVT::i64, Expand);
@@ -1622,6 +1632,10 @@ const char *ARMTargetLowering::getTargetNodeName(unsigned Opcode) const {
   case ARMISD::SMLSLDX:       return "ARMISD::SMLSLDX";
   case ARMISD::SMMLAR:        return "ARMISD::SMMLAR";
   case ARMISD::SMMLSR:        return "ARMISD::SMMLSR";
+  case ARMISD::QADD16b:       return "ARMISD::QADD16b";
+  case ARMISD::QSUB16b:       return "ARMISD::QSUB16b";
+  case ARMISD::QADD8b:        return "ARMISD::QADD8b";
+  case ARMISD::QSUB8b:        return "ARMISD::QSUB8b";
   case ARMISD::BUILD_VECTOR:  return "ARMISD::BUILD_VECTOR";
   case ARMISD::BFI:           return "ARMISD::BFI";
   case ARMISD::VORRIMM:       return "ARMISD::VORRIMM";
@@ -3684,6 +3698,10 @@ ARMTargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG,
   case Intrinsic::arm_neon_vtbl2:
     return DAG.getNode(ARMISD::VTBL2, SDLoc(Op), Op.getValueType(),
                        Op.getOperand(1), Op.getOperand(2), Op.getOperand(3));
+  case Intrinsic::arm_mve_pred_i2v:
+  case Intrinsic::arm_mve_pred_v2i:
+    return DAG.getNode(ARMISD::PREDICATE_CAST, SDLoc(Op), Op.getValueType(),
+                       Op.getOperand(1));
   }
 }
 
@@ -4443,6 +4461,35 @@ SDValue ARMTargetLowering::LowerUnsignedALUO(SDValue Op,
   }
 
   return DAG.getNode(ISD::MERGE_VALUES, dl, VTs, Value, Overflow);
+}
+
+static SDValue LowerSADDSUBSAT(SDValue Op, SelectionDAG &DAG,
+                               const ARMSubtarget *Subtarget) {
+  EVT VT = Op.getValueType();
+  if (!Subtarget->hasDSP())
+    return SDValue();
+  if (!VT.isSimple())
+    return SDValue();
+
+  unsigned NewOpcode;
+  bool IsAdd = Op->getOpcode() == ISD::SADDSAT;
+  switch (VT.getSimpleVT().SimpleTy) {
+  default:
+    return SDValue();
+  case MVT::i8:
+    NewOpcode = IsAdd ? ARMISD::QADD8b : ARMISD::QSUB8b;
+    break;
+  case MVT::i16:
+    NewOpcode = IsAdd ? ARMISD::QADD16b : ARMISD::QSUB16b;
+    break;
+  }
+
+  SDLoc dl(Op);
+  SDValue Add =
+      DAG.getNode(NewOpcode, dl, MVT::i32,
+                  DAG.getSExtOrTrunc(Op->getOperand(0), dl, MVT::i32),
+                  DAG.getSExtOrTrunc(Op->getOperand(1), dl, MVT::i32));
+  return DAG.getNode(ISD::TRUNCATE, dl, VT, Add);
 }
 
 SDValue ARMTargetLowering::LowerSELECT(SDValue Op, SelectionDAG &DAG) const {
@@ -8895,9 +8942,13 @@ static SDValue LowerMLOAD(SDValue Op, SelectionDAG &DAG) {
   SDValue PassThru = N->getPassThru();
   SDLoc dl(Op);
 
-  if (ISD::isBuildVectorAllZeros(PassThru.getNode()) ||
+  auto IsZero = [](SDValue PassThru) {
+    return (ISD::isBuildVectorAllZeros(PassThru.getNode()) ||
       (PassThru->getOpcode() == ARMISD::VMOVIMM &&
-       isNullConstant(PassThru->getOperand(0))))
+       isNullConstant(PassThru->getOperand(0))));
+  };
+
+  if (IsZero(PassThru))
     return Op;
 
   // MVE Masked loads use zero as the passthru value. Here we convert undef to
@@ -8908,7 +8959,9 @@ static SDValue LowerMLOAD(SDValue Op, SelectionDAG &DAG) {
       VT, dl, N->getChain(), N->getBasePtr(), Mask, ZeroVec, N->getMemoryVT(),
       N->getMemOperand(), N->getExtensionType(), N->isExpandingLoad());
   SDValue Combo = NewLoad;
-  if (!PassThru.isUndef())
+  if (!PassThru.isUndef() &&
+      (PassThru.getOpcode() != ISD::BITCAST ||
+       !IsZero(PassThru->getOperand(0))))
     Combo = DAG.getNode(ISD::VSELECT, dl, VT, Mask, NewLoad, PassThru);
   return DAG.getMergeValues({Combo, NewLoad.getValue(1)}, dl);
 }
@@ -9112,6 +9165,9 @@ SDValue ARMTargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::UADDO:
   case ISD::USUBO:
     return LowerUnsignedALUO(Op, DAG);
+  case ISD::SADDSAT:
+  case ISD::SSUBSAT:
+    return LowerSADDSUBSAT(Op, DAG, Subtarget);
   case ISD::LOAD:
     return LowerPredicateLoad(Op, DAG);
   case ISD::STORE:
@@ -9196,6 +9252,10 @@ void ARMTargetLowering::ReplaceNodeResults(SDNode *N,
     Results.push_back(Res.getValue(0));
     Results.push_back(Res.getValue(1));
     return;
+  case ISD::SADDSAT:
+  case ISD::SSUBSAT:
+    Res = LowerSADDSUBSAT(SDValue(N, 0), DAG, Subtarget);
+    break;
   case ISD::READCYCLECOUNTER:
     ReplaceREADCYCLECOUNTER(N, Results, DAG, Subtarget);
     return;
@@ -11035,10 +11095,7 @@ static SDValue findMUL_LOHI(SDValue V) {
 static SDValue AddCombineTo64BitSMLAL16(SDNode *AddcNode, SDNode *AddeNode,
                                         TargetLowering::DAGCombinerInfo &DCI,
                                         const ARMSubtarget *Subtarget) {
-  if (Subtarget->isThumb()) {
-    if (!Subtarget->hasDSP())
-      return SDValue();
-  } else if (!Subtarget->hasV5TEOps())
+  if (!Subtarget->hasBaseDSP())
     return SDValue();
 
   // SMLALBB, SMLALBT, SMLALTB, SMLALTT multiply two 16-bit values and
@@ -14373,7 +14430,9 @@ SDValue ARMTargetLowering::PerformDAGCombine(SDNode *N,
       return SDValue();
     break;
   }
-  case ARMISD::SMLALBB: {
+  case ARMISD::SMLALBB:
+  case ARMISD::QADD16b:
+  case ARMISD::QSUB16b: {
     unsigned BitWidth = N->getValueType(0).getSizeInBits();
     APInt DemandedMask = APInt::getLowBitsSet(BitWidth, 16);
     if ((SimplifyDemandedBits(N->getOperand(0), DemandedMask, DCI)) ||
@@ -14404,6 +14463,15 @@ SDValue ARMTargetLowering::PerformDAGCombine(SDNode *N,
   case ARMISD::SMLALTT: {
     unsigned BitWidth = N->getValueType(0).getSizeInBits();
     APInt DemandedMask = APInt::getHighBitsSet(BitWidth, 16);
+    if ((SimplifyDemandedBits(N->getOperand(0), DemandedMask, DCI)) ||
+        (SimplifyDemandedBits(N->getOperand(1), DemandedMask, DCI)))
+      return SDValue();
+    break;
+  }
+  case ARMISD::QADD8b:
+  case ARMISD::QSUB8b: {
+    unsigned BitWidth = N->getValueType(0).getSizeInBits();
+    APInt DemandedMask = APInt::getLowBitsSet(BitWidth, 8);
     if ((SimplifyDemandedBits(N->getOperand(0), DemandedMask, DCI)) ||
         (SimplifyDemandedBits(N->getOperand(1), DemandedMask, DCI)))
       return SDValue();
@@ -14694,6 +14762,11 @@ bool ARMTargetLowering::isVectorLoadExtDesirable(SDValue ExtVal) const {
 
   if (!isTypeLegal(VT))
     return false;
+
+  if (auto *Ld = dyn_cast<MaskedLoadSDNode>(ExtVal.getOperand(0))) {
+    if (Ld->isExpandingLoad())
+      return false;
+  }
 
   // Don't create a loadext if we can fold the extension into a wide/long
   // instruction.
@@ -16919,16 +16992,15 @@ static bool isHomogeneousAggregate(Type *Ty, HABaseType &Base,
 }
 
 /// Return the correct alignment for the current calling convention.
-unsigned
-ARMTargetLowering::getABIAlignmentForCallingConv(Type *ArgTy,
-                                                 DataLayout DL) const {
+Align ARMTargetLowering::getABIAlignmentForCallingConv(Type *ArgTy,
+                                                       DataLayout DL) const {
+  const Align ABITypeAlign(DL.getABITypeAlignment(ArgTy));
   if (!ArgTy->isVectorTy())
-    return DL.getABITypeAlignment(ArgTy);
+    return ABITypeAlign;
 
   // Avoid over-aligning vector parameters. It would require realigning the
   // stack and waste space for no real benefit.
-  return std::min(DL.getABITypeAlignment(ArgTy),
-                  (unsigned)DL.getStackAlignment().value());
+  return std::min(ABITypeAlign, DL.getStackAlignment());
 }
 
 /// Return true if a type is an AAPCS-VFP homogeneous aggregate or one of

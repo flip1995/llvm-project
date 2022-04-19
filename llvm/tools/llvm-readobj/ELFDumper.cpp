@@ -5263,8 +5263,16 @@ void DumpStyle<ELFT>::printRelocatableStackSizes(
     if (SectionType != ELF::SHT_RELA && SectionType != ELF::SHT_REL)
       continue;
 
-    SectionRef Contents = *Sec.getRelocatedSection();
-    const Elf_Shdr *ContentsSec = Obj->getSection(Contents.getRawDataRefImpl());
+    Expected<section_iterator> RelSecOrErr = Sec.getRelocatedSection();
+    if (!RelSecOrErr)
+      reportError(createStringError(object_error::parse_failed,
+                                    "%s: failed to get a relocated section: %s",
+                                    SectionName.data(),
+                                    toString(RelSecOrErr.takeError()).c_str()),
+                  Obj->getFileName());
+
+    const Elf_Shdr *ContentsSec =
+        Obj->getSection((*RelSecOrErr)->getRawDataRefImpl());
     Expected<StringRef> ContentsSectionNameOrErr =
         EF->getSectionName(ContentsSec);
     if (!ContentsSectionNameOrErr) {
@@ -5985,7 +5993,7 @@ void LLVMStyle<ELFT>::printProgramHeaders(const ELFO *Obj) {
 template <class ELFT>
 void LLVMStyle<ELFT>::printVersionSymbolSection(const ELFFile<ELFT> *Obj,
                                                 const Elf_Shdr *Sec) {
-  ListScope SS(W, "Version symbols");
+  ListScope SS(W, "VersionSymbols");
   if (!Sec)
     return;
 
@@ -6009,7 +6017,7 @@ void LLVMStyle<ELFT>::printVersionSymbolSection(const ELFFile<ELFT> *Obj,
 template <class ELFT>
 void LLVMStyle<ELFT>::printVersionDefinitionSection(const ELFFile<ELFT> *Obj,
                                                     const Elf_Shdr *Sec) {
-  DictScope SD(W, "SHT_GNU_verdef");
+  ListScope SD(W, "VersionDefinitions");
   if (!Sec)
     return;
 
@@ -6057,7 +6065,7 @@ void LLVMStyle<ELFT>::printVersionDefinitionSection(const ELFFile<ELFT> *Obj,
 template <class ELFT>
 void LLVMStyle<ELFT>::printVersionDependencySection(const ELFFile<ELFT> *Obj,
                                                     const Elf_Shdr *Sec) {
-  DictScope SD(W, "SHT_GNU_verneed");
+  ListScope SD(W, "VersionRequirements");
   if (!Sec)
     return;
 

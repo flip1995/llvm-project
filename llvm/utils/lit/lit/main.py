@@ -9,7 +9,6 @@ See lit.pod for more information.
 import os
 import platform
 import sys
-import time
 
 import lit.cl_arguments
 import lit.discovery
@@ -189,34 +188,7 @@ def update_incremental_cache(test):
     fname = test.getFilePath()
     os.utime(fname, None)
 
-def increase_process_limit(litConfig, opts):
-    # Because some tests use threads internally, and at least on Linux each
-    # of these threads counts toward the current process limit, try to
-    # raise the (soft) process limit so that tests don't fail due to
-    # resource exhaustion.
-    try:
-        cpus = lit.util.detectCPUs()
-        desired_limit = opts.numWorkers * cpus * 2 # the 2 is a safety factor
-
-        # Import the resource module here inside this try block because it
-        # will likely fail on Windows.
-        import resource
-
-        max_procs_soft, max_procs_hard = resource.getrlimit(resource.RLIMIT_NPROC)
-        desired_limit = min(desired_limit, max_procs_hard)
-
-        if max_procs_soft < desired_limit:
-            resource.setrlimit(resource.RLIMIT_NPROC, (desired_limit, max_procs_hard))
-            litConfig.note('raised the process limit from %d to %d' % \
-                               (max_procs_soft, desired_limit))
-    except:
-        pass
-
 def run_tests(tests, litConfig, opts, numTotalTests):
-    increase_process_limit(litConfig, opts)
-
-    run = lit.run.Run(litConfig, tests)
-
     display = lit.display.create_display(opts, len(tests), numTotalTests,
                                          opts.numWorkers)
     def progress_callback(test):
@@ -224,18 +196,22 @@ def run_tests(tests, litConfig, opts, numTotalTests):
         if opts.incremental:
             update_incremental_cache(test)
 
-    run_callback = lambda: run.execute_tests(progress_callback, opts.numWorkers,
-                                             opts.maxTime)
+    run = lit.run.create_run(tests, litConfig, opts.numWorkers,
+                             progress_callback, opts.maxTime)
 
-    startTime = time.time()
     try:
-        run_tests_in_tmp_dir(run_callback, litConfig)
+        elapsed = run_tests_in_tmp_dir(run.execute, litConfig)
     except KeyboardInterrupt:
+        #TODO(yln): should we attempt to cleanup the progress bar here?
         sys.exit(2)
-    testing_time = time.time() - startTime
+    # TODO(yln): display.finish_interrupted(), which shows the most recently started test
+    # TODO(yln): change display to update when test starts, not when test completes
+    # Ensure everything still works with SimpleProgressBar as well
+    # finally:
+    #     display.finish()
 
     display.finish()
-    return testing_time
+    return elapsed
 
 def run_tests_in_tmp_dir(run_callback, litConfig):
     # Create a temp directory inside the normal temp directory so that we can
@@ -258,7 +234,7 @@ def run_tests_in_tmp_dir(run_callback, litConfig):
     # scanning for stale temp directories, and deleting temp directories whose
     # lit process has died.
     try:
-        run_callback()
+        return run_callback()
     finally:
         if tmp_dir:
             try:

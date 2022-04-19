@@ -2994,28 +2994,6 @@ struct GNUCompatibleParamWarning {
 
 } // end anonymous namespace
 
-/// getSpecialMember - get the special member enum for a method.
-Sema::CXXSpecialMember Sema::getSpecialMember(const CXXMethodDecl *MD) {
-  if (const CXXConstructorDecl *Ctor = dyn_cast<CXXConstructorDecl>(MD)) {
-    if (Ctor->isDefaultConstructor())
-      return Sema::CXXDefaultConstructor;
-
-    if (Ctor->isCopyConstructor())
-      return Sema::CXXCopyConstructor;
-
-    if (Ctor->isMoveConstructor())
-      return Sema::CXXMoveConstructor;
-  } else if (isa<CXXDestructorDecl>(MD)) {
-    return Sema::CXXDestructor;
-  } else if (MD->isCopyAssignmentOperator()) {
-    return Sema::CXXCopyAssignment;
-  } else if (MD->isMoveAssignmentOperator()) {
-    return Sema::CXXMoveAssignment;
-  }
-
-  return Sema::CXXInvalid;
-}
-
 // Determine whether the previous declaration was a definition, implicit
 // declaration, or a declaration.
 template <typename T>
@@ -9083,25 +9061,6 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     NewFD->addAttr(PragmaClangTextSectionAttr::CreateImplicit(
         Context, PragmaClangTextSection.SectionName,
         PragmaClangTextSection.PragmaLocation, AttributeCommonInfo::AS_Pragma));
-
-  if (D.isFunctionDefinition()) {
-    if (PragmaClangBSSSection.Valid)
-      NewFD->addAttr(PragmaClangBSSSectionAttr::CreateImplicit(
-          Context, PragmaClangBSSSection.SectionName,
-          PragmaClangBSSSection.PragmaLocation));
-    if (PragmaClangDataSection.Valid)
-      NewFD->addAttr(PragmaClangDataSectionAttr::CreateImplicit(
-          Context, PragmaClangDataSection.SectionName,
-          PragmaClangDataSection.PragmaLocation));
-    if (PragmaClangRodataSection.Valid)
-      NewFD->addAttr(PragmaClangRodataSectionAttr::CreateImplicit(
-          Context, PragmaClangRodataSection.SectionName,
-          PragmaClangRodataSection.PragmaLocation));
-    if (PragmaClangRelroSection.Valid)
-      NewFD->addAttr(PragmaClangRelroSectionAttr::CreateImplicit(
-          Context, PragmaClangRelroSection.SectionName,
-          PragmaClangRelroSection.PragmaLocation));
-  }
 
   // Apply an implicit SectionAttr if #pragma code_seg is active.
   if (CodeSegStack.CurrentValue && D.isFunctionDefinition() &&

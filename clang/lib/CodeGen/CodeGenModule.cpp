@@ -1804,8 +1804,11 @@ bool CodeGenModule::GetCPUAndFeaturesAttributes(GlobalDecl GD,
   return AddedAttr;
 }
 
-void CodeGenModule::setPragmaSectionAttributes(const Decl *D,
-					       llvm::GlobalObject *GO) {
+void CodeGenModule::setNonAliasAttributes(GlobalDecl GD,
+                                          llvm::GlobalObject *GO) {
+  const Decl *D = GD.getDecl();
+  SetCommonAttributes(GD, GO);
+
   if (D) {
     if (auto *GV = dyn_cast<llvm::GlobalVariable>(GO)) {
       if (auto *SA = D->getAttr<PragmaClangBSSSectionAttr>())
@@ -1823,26 +1826,6 @@ void CodeGenModule::setPragmaSectionAttributes(const Decl *D,
         if (!D->getAttr<SectionAttr>())
           F->addFnAttr("implicit-section-name", SA->getName());
 
-      if (auto *SA = D->getAttr<PragmaClangBSSSectionAttr>())
-        F->addFnAttr("bss-section", SA->getName());
-      if (auto *SA = D->getAttr<PragmaClangDataSectionAttr>())
-        F->addFnAttr("data-section", SA->getName());
-      if (auto *SA = D->getAttr<PragmaClangRodataSectionAttr>())
-        F->addFnAttr("rodata-section", SA->getName());
-      if (auto *SA = D->getAttr<PragmaClangRelroSectionAttr>())
-        F->addFnAttr("relro-section", SA->getName());
-    }
-  }
-}
-
-void CodeGenModule::setNonAliasAttributes(GlobalDecl GD,
-                                          llvm::GlobalObject *GO) {
-  const Decl *D = GD.getDecl();
-  SetCommonAttributes(GD, GO);
-  setPragmaSectionAttributes(D, GO);
-
-  if (D) {
-    if (auto *F = dyn_cast<llvm::Function>(GO)) {
       llvm::AttrBuilder Attrs;
       if (GetCPUAndFeaturesAttributes(GD, Attrs)) {
         // We know that GetCPUAndFeaturesAttributes will always have the
@@ -3671,7 +3654,8 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
               // Make a new global with the correct type, this is now guaranteed
               // to work.
               auto *NewGV = cast<llvm::GlobalVariable>(
-                  GetAddrOfGlobalVar(D, InitType, IsForDefinition));
+                  GetAddrOfGlobalVar(D, InitType, IsForDefinition)
+                      ->stripPointerCasts());
 
               // Erase the old global, since it is no longer used.
               GV->eraseFromParent();
@@ -4092,14 +4076,8 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
   llvm::Constant *Entry =
       GetAddrOfGlobalVar(D, InitType, ForDefinition_t(!IsTentative));
 
-  // Strip off a bitcast if we got one back.
-  if (auto *CE = dyn_cast<llvm::ConstantExpr>(Entry)) {
-    assert(CE->getOpcode() == llvm::Instruction::BitCast ||
-           CE->getOpcode() == llvm::Instruction::AddrSpaceCast ||
-           // All zero index gep.
-           CE->getOpcode() == llvm::Instruction::GetElementPtr);
-    Entry = CE->getOperand(0);
-  }
+  // Strip off pointer casts if we got them.
+  Entry = Entry->stripPointerCasts();
 
   // Entry is now either a Function or GlobalVariable.
   auto *GV = dyn_cast<llvm::GlobalVariable>(Entry);
@@ -4122,7 +4100,8 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
     // Make a new global with the correct type, this is now guaranteed to work.
     GV = cast<llvm::GlobalVariable>(
-        GetAddrOfGlobalVar(D, InitType, ForDefinition_t(!IsTentative)));
+        GetAddrOfGlobalVar(D, InitType, ForDefinition_t(!IsTentative))
+            ->stripPointerCasts());
 
     // Replace all uses of the old global with the new global
     llvm::Constant *NewPtrForOldDecl =
